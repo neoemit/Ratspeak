@@ -1,0 +1,1137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-visual">
+    <meta name="theme-color" content="#FAF7F3">
+    <script src="/static/js/theme.js"></script>
+    <!-- Safe-area insets (--sat/--sab/--sal/--sar) are defined in 00-tokens.css
+         via env(safe-area-inset-*). iOS feeds env() through viewport-fit=cover +
+         WKWebView contentInsetAdjustmentBehavior=.never; Android MainActivity
+         injects pixel values via evaluateJavascript; desktop falls back to 0. -->
+    <title>Ratspeak - Dashboard</title>
+    <link rel="stylesheet" href="/static/fonts/fonts.css">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="checking-setup">
+
+<div class="header">
+    <div class="header-left">
+        <button class="hamburger-btn" id="hamburger-btn" aria-label="Toggle menu">
+            <svg width="25" height="25" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                <line x1="3" y1="5" x2="17" y2="5"/>
+                <line x1="3" y1="10" x2="17" y2="10"/>
+                <line x1="3" y1="15" x2="17" y2="15"/>
+            </svg>
+        </button>
+        <svg class="header-logo-icon" viewBox="243 243 282 282" fill="var(--accent)" width="25" height="25">
+            <path d="M327.97,501.16C314.61,508.03 301.57,514.72 288.56,521.48C283.91,523.91 279.2,524.61 275.05,520.98C271.05,517.49 271.26,512.87 272.63,508.05C275.23,498.93 277.46,489.7 280.08,480.58C281.03,477.27 280.4,475.51 277.14,473.92C255.84,463.53 245.61,446.29 245.66,422.66C245.75,381.16 245.55,339.66 245.75,298.16C245.86,275.62 256.63,259.57 276.93,249.98C283.68,246.79 291.07,246.01 298.4,246C355.74,245.88 413.07,245.83 470.4,245.95C495.22,246.01 516.64,265.69 519.52,290.03C520.6,299.2 520.12,308.32 520.21,317.46C520.37,333.46 520.29,349.46 520.2,365.46C520.17,371.38 518.89,372.03 513.77,369.13C498.9,360.71 498.91,360.71 498.9,343.65C498.88,328.81 498.92,313.98 498.81,299.15C498.66,279.74 486.18,267.28 466.77,267.26C410.94,267.23 355.11,267.23 299.27,267.32C279.54,267.35 267.32,279.36 267.23,299.05C267.05,340.71 267.04,382.38 267.09,424.04C267.11,441.62 277.67,453.85 295.43,456.58C310.83,458.95 307.84,458.98 304.51,471.32C303.3,475.82 302.05,480.31 300.83,484.81C300.35,486.56 299.66,488.32 300.92,490.33C304.48,490.2 307.24,487.87 310.31,486.46C314.99,484.3 319.61,481.95 324.04,479.31C328.78,476.49 333.17,476.59 338.23,478.73C355.38,485.99 373.44,488.84 391.95,487.72C430.98,485.37 461.99,468.13 484.6,436.22C489.79,428.9 493.71,420.74 496.43,412.08C497.17,409.7 496.94,408 494.74,406.52C489.6,403.07 487.33,398.05 487.7,391.96C487.91,388.37 486.58,386.13 483.49,384.24C461.58,370.79 438.6,360.13 412.77,356.87C403.65,355.71 394.49,355.67 385.35,356.73C376.09,357.8 372.64,358.02 369.74,347.74C368.12,341.98 365.71,336.47 362.24,331.47C356.28,322.9 346.68,319.02 337.45,321.63C328.92,324.05 321.83,333.47 321.32,343.14C320.63,356 327.03,371.92 346.66,374.88C350.07,375.39 352.59,376.98 353.16,380.74C353.7,384.21 352.02,386.53 349.33,388.25C347.4,389.48 345.13,389.39 343,389.01C325.7,385.88 313.84,376.01 308.73,359.24C303.68,342.67 306.62,327.49 319.94,315.42C336.41,300.5 361.24,303.86 373.4,322.51C376.14,326.7 378.7,331.06 380.19,335.83C381.41,339.73 383.56,341.03 387.54,340.77C406.5,339.53 425.15,341.26 443.29,347.18C469.21,355.64 492.63,368.82 514.47,384.97C521.5,390.18 521.02,397.62 519.75,405.01C515.1,432.25 501.28,454.4 481.02,472.62C460.48,491.09 436.54,502.92 409.2,507.52C385.77,511.46 362.77,509.7 340.18,502.3C336.39,501.06 332.58,498.31 327.97,501.16z"/>
+            <path d="M414.19,335.38C405.75,335.93 397.65,334.86 389.54,335.84C387,336.15 385.78,334.06 384.8,332.07C380.73,323.83 376.21,315.95 368.77,310.17C366.48,308.38 367.23,307 369.43,305.62C379.53,299.3 389.62,299.22 399.19,306.49C408.52,313.58 414.08,323.09 414.19,335.38z"/>
+            <path d="M417.09,390.21C410.66,388.78 407.34,384.6 408.1,379.44C408.81,374.6 413.31,370.91 418.31,371.05C423.12,371.19 426.94,375.02 427.27,380C427.63,385.61 424.18,389.22 417.09,390.21z"/>
+            <path d="M430.83,418.71C429.47,419.23 428.59,420.25 427.03,419.59C426.81,417.6 428.52,416.83 429.77,416.07C441.62,408.88 453.85,402.56 467.79,400.42C469.45,400.16 471.08,399.82 472.69,400.53C474.42,401.28 475.23,402.66 475.09,404.49C474.92,406.75 473.27,407.6 471.34,407.79C465.71,408.35 460.12,409.05 454.59,410.3C446.44,412.13 438.57,414.68 430.83,418.71z"/>
+            <path d="M448.63,432.62C455.17,424.82 461.54,417.3 470.21,412.35C473.17,410.66 477.33,407.48 479.7,412.18C482.09,416.9 476.91,417.67 473.97,418.99C464.9,423.07 457.39,429.35 449.85,435.63C448.67,436.61 447.95,438.42 445.79,438.04C445.62,435.72 447.39,434.49 448.63,432.62z"/>
+        </svg>
+        <h1>Ratspeak</h1>
+        <div class="header-mobile-identity" id="header-mobile-identity">
+            <div class="header-mobile-avatar" id="header-mobile-avatar"></div>
+            <div class="header-mobile-info">
+                <span class="header-mobile-name" id="header-mobile-name"></span>
+                <span class="header-mobile-hash" id="header-mobile-hash"></span>
+            </div>
+            <svg class="header-identity-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+    </div>
+    <div class="header-right">
+        <button class="header-identity-pill hidden" id="header-identity-pill" title="Click to copy your LXMF address" aria-label="Copy LXMF address">
+            <span class="header-identity-icon" id="header-identity-icon"></span>
+            <span class="header-identity-hash" id="header-identity-hash"></span>
+            <svg class="header-identity-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+    </div>
+</div>
+
+<div class="app-layout">
+
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <nav class="sidebar" id="sidebar">
+        <button class="sidebar-close-btn" id="sidebar-close-btn" aria-label="Close menu">&times;</button>
+        <div class="sidebar-brand">
+            <svg class="sidebar-brand-logo" viewBox="243 243 282 282" fill="var(--accent)" width="20" height="20">
+                <path d="M327.97,501.16C314.61,508.03 301.57,514.72 288.56,521.48C283.91,523.91 279.2,524.61 275.05,520.98C271.05,517.49 271.26,512.87 272.63,508.05C275.23,498.93 277.46,489.7 280.08,480.58C281.03,477.27 280.4,475.51 277.14,473.92C255.84,463.53 245.61,446.29 245.66,422.66C245.75,381.16 245.55,339.66 245.75,298.16C245.86,275.62 256.63,259.57 276.93,249.98C283.68,246.79 291.07,246.01 298.4,246C355.74,245.88 413.07,245.83 470.4,245.95C495.22,246.01 516.64,265.69 519.52,290.03C520.6,299.2 520.12,308.32 520.21,317.46C520.37,333.46 520.29,349.46 520.2,365.46C520.17,371.38 518.89,372.03 513.77,369.13C498.9,360.71 498.91,360.71 498.9,343.65C498.88,328.81 498.92,313.98 498.81,299.15C498.66,279.74 486.18,267.28 466.77,267.26C410.94,267.23 355.11,267.23 299.27,267.32C279.54,267.35 267.32,279.36 267.23,299.05C267.05,340.71 267.04,382.38 267.09,424.04C267.11,441.62 277.67,453.85 295.43,456.58C310.83,458.95 307.84,458.98 304.51,471.32C303.3,475.82 302.05,480.31 300.83,484.81C300.35,486.56 299.66,488.32 300.92,490.33C304.48,490.2 307.24,487.87 310.31,486.46C314.99,484.3 319.61,481.95 324.04,479.31C328.78,476.49 333.17,476.59 338.23,478.73C355.38,485.99 373.44,488.84 391.95,487.72C430.98,485.37 461.99,468.13 484.6,436.22C489.79,428.9 493.71,420.74 496.43,412.08C497.17,409.7 496.94,408 494.74,406.52C489.6,403.07 487.33,398.05 487.7,391.96C487.91,388.37 486.58,386.13 483.49,384.24C461.58,370.79 438.6,360.13 412.77,356.87C403.65,355.71 394.49,355.67 385.35,356.73C376.09,357.8 372.64,358.02 369.74,347.74C368.12,341.98 365.71,336.47 362.24,331.47C356.28,322.9 346.68,319.02 337.45,321.63C328.92,324.05 321.83,333.47 321.32,343.14C320.63,356 327.03,371.92 346.66,374.88C350.07,375.39 352.59,376.98 353.16,380.74C353.7,384.21 352.02,386.53 349.33,388.25C347.4,389.48 345.13,389.39 343,389.01C325.7,385.88 313.84,376.01 308.73,359.24C303.68,342.67 306.62,327.49 319.94,315.42C336.41,300.5 361.24,303.86 373.4,322.51C376.14,326.7 378.7,331.06 380.19,335.83C381.41,339.73 383.56,341.03 387.54,340.77C406.5,339.53 425.15,341.26 443.29,347.18C469.21,355.64 492.63,368.82 514.47,384.97C521.5,390.18 521.02,397.62 519.75,405.01C515.1,432.25 501.28,454.4 481.02,472.62C460.48,491.09 436.54,502.92 409.2,507.52C385.77,511.46 362.77,509.7 340.18,502.3C336.39,501.06 332.58,498.31 327.97,501.16z"/>
+                <path d="M414.19,335.38C405.75,335.93 397.65,334.86 389.54,335.84C387,336.15 385.78,334.06 384.8,332.07C380.73,323.83 376.21,315.95 368.77,310.17C366.48,308.38 367.23,307 369.43,305.62C379.53,299.3 389.62,299.22 399.19,306.49C408.52,313.58 414.08,323.09 414.19,335.38z"/>
+                <path d="M417.09,390.21C410.66,388.78 407.34,384.6 408.1,379.44C408.81,374.6 413.31,370.91 418.31,371.05C423.12,371.19 426.94,375.02 427.27,380C427.63,385.61 424.18,389.22 417.09,390.21z"/>
+                <path d="M430.83,418.71C429.47,419.23 428.59,420.25 427.03,419.59C426.81,417.6 428.52,416.83 429.77,416.07C441.62,408.88 453.85,402.56 467.79,400.42C469.45,400.16 471.08,399.82 472.69,400.53C474.42,401.28 475.23,402.66 475.09,404.49C474.92,406.75 473.27,407.6 471.34,407.79C465.71,408.35 460.12,409.05 454.59,410.3C446.44,412.13 438.57,414.68 430.83,418.71z"/>
+                <path d="M448.63,432.62C455.17,424.82 461.54,417.3 470.21,412.35C473.17,410.66 477.33,407.48 479.7,412.18C482.09,416.9 476.91,417.67 473.97,418.99C464.9,423.07 457.39,429.35 449.85,435.63C448.67,436.61 447.95,438.42 445.79,438.04C445.62,435.72 447.39,434.49 448.63,432.62z"/>
+            </svg>
+            <span class="sidebar-brand-text">Ratspeak</span>
+        </div>
+        <div class="sidebar-divider"></div>
+        <a class="nav-item active" data-view="dashboard" href="#dashboard" title="Home">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+            <span class="nav-label">Home</span>
+        </a>
+        <a class="nav-item" data-view="message" href="#message" title="Messages">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <span class="nav-label">Messages</span>
+            <span class="nav-unread-dot" id="nav-unread-dot" style="display:none;"></span>
+        </a>
+        <a class="nav-item" data-view="contacts" href="#contacts" title="Contacts">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            <span class="nav-label">Contacts</span>
+        </a>
+        <a class="nav-item" data-view="games" href="#games" title="Games">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11h4M8 9v4"/><line x1="15" y1="12" x2="15.01" y2="12"/><line x1="18" y1="10" x2="18.01" y2="10"/><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"/></svg>
+            <span class="nav-label">Games</span>
+            <span class="nav-unread-dot games-unread-dot" id="nav-games-unread" style="display:none;"></span>
+        </a>
+        <a class="nav-item" data-view="peers" href="#peers" title="Peers">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            <span class="nav-label">Peers</span>
+        </a>
+        <a class="nav-item" data-view="network" href="#network" title="Network">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="6" height="6" rx="1"/><rect x="16" y="2" width="6" height="6" rx="1"/><rect x="9" y="16" width="6" height="6" rx="1"/><path d="M5 8v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><line x1="12" y1="13" x2="12" y2="16"/></svg>
+            <span class="nav-label">Network</span>
+        </a>
+        <a class="nav-item" data-view="settings" href="#settings" title="Settings">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            <span class="nav-label">Settings</span>
+        </a>
+        <div class="sidebar-identity sidebar-identity--profile" id="sidebar-identity" title="Open Identity settings" role="button" tabindex="0">
+            <span class="sidebar-identity-icon" id="sidebar-identity-icon"></span>
+            <div class="sidebar-identity-meta">
+                <div class="sidebar-identity-name" id="sidebar-identity-name"></div>
+                <div class="sidebar-identity-hash" id="sidebar-identity-hash"></div>
+            </div>
+            <svg class="header-identity-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="sidebar-footer">
+            <button class="sidebar-collapse-btn" id="sidebar-collapse-btn" title="Collapse sidebar" aria-label="Toggle sidebar">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/></svg>
+            </button>
+        </div>
+    </nav>
+
+    <nav class="bottom-bar" id="bottom-bar" role="navigation" aria-label="Main navigation">
+        <a class="bottom-bar-item active" data-view="peers" role="button" tabindex="0" aria-label="Peers">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            <span>Peers</span>
+        </a>
+        <a class="bottom-bar-item" data-view="message" role="button" tabindex="0" aria-label="Messages">
+            <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <span>Messages</span>
+            <span class="bottom-bar-badge" id="bb-unread" style="display:none;" aria-hidden="true"></span>
+        </a>
+        <a class="bottom-bar-item" data-view="contacts" role="button" tabindex="0" aria-label="Contacts">
+            <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            <span>Contacts</span>
+        </a>
+        <a class="bottom-bar-item bottom-bar-hamburger" id="bottom-bar-hamburger" role="button" tabindex="0" aria-label="More options">
+            <svg viewBox="0 0 24 24"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>
+            <span>More</span>
+            <span class="bottom-bar-badge" id="bb-more-unread" style="display:none;" aria-hidden="true"></span>
+        </a>
+    </nav>
+
+    <div class="bottom-sheet-overlay bottom-sheet-overlay--mobile-only" id="bottom-sheet-overlay"></div>
+    <div class="bottom-sheet bottom-sheet--mobile-only" id="bottom-sheet">
+        <div class="bottom-sheet-handle"></div>
+        <div class="bottom-sheet-items">
+            <a class="bottom-sheet-item" data-view="games">
+                <svg viewBox="0 0 24 24"><path d="M6 11h4M8 9v4"/><line x1="15" y1="12" x2="15.01" y2="12"/><line x1="18" y1="10" x2="18.01" y2="10"/><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"/></svg>
+                Games
+                <span class="bottom-sheet-badge" id="bs-games-unread" style="display:none;"></span>
+            </a>
+            <a class="bottom-sheet-item" data-view="network">
+                <svg viewBox="0 0 24 24"><rect x="2" y="2" width="6" height="6" rx="1"/><rect x="16" y="2" width="6" height="6" rx="1"/><rect x="9" y="16" width="6" height="6" rx="1"/><path d="M5 8v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><line x1="12" y1="13" x2="12" y2="16"/></svg>
+                Network
+            </a>
+            <div class="bottom-sheet-divider"></div>
+            <a class="bottom-sheet-item" data-view="settings">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                Settings
+            </a>
+        </div>
+    </div>
+
+    <div class="bottom-sheet-overlay bottom-sheet-overlay--mobile-only" id="conn-detail-sheet-overlay"></div>
+    <div class="bottom-sheet bottom-sheet--mobile-only conn-detail-sheet" id="conn-detail-sheet">
+        <div class="bottom-sheet-handle"></div>
+        <div id="conn-detail-sheet-content"></div>
+    </div>
+
+    <div class="bottom-sheet-overlay bottom-sheet-overlay--mobile-only" id="conn-sort-sheet-overlay"></div>
+    <div class="bottom-sheet bottom-sheet--mobile-only" id="conn-sort-sheet">
+        <div class="bottom-sheet-handle"></div>
+        <div class="bottom-sheet-title">Sort Peers</div>
+        <div class="bottom-sheet-items">
+            <div class="conn-sort-option bottom-sheet-item active" data-sort="name">Name</div>
+            <div class="conn-sort-option bottom-sheet-item" data-sort="status">Status</div>
+            <div class="conn-sort-option bottom-sheet-item" data-sort="hops">Hops</div>
+            <div class="conn-sort-option bottom-sheet-item" data-sort="last_seen">Last Seen</div>
+        </div>
+    </div>
+
+    <div class="bottom-sheet-overlay bottom-sheet-overlay--mobile-only" id="iface-action-overlay"></div>
+    <div class="bottom-sheet bottom-sheet--mobile-only" id="iface-action-sheet">
+        <div class="bottom-sheet-handle"></div>
+        <div class="bottom-sheet-title" id="iface-action-title"></div>
+        <div class="bottom-sheet-items" id="iface-action-items"></div>
+    </div>
+
+    <div class="bottom-sheet-overlay bottom-sheet-overlay--mobile-only" id="fab-contact-picker-overlay"></div>
+    <div class="bottom-sheet bottom-sheet--mobile-only fab-contact-picker-sheet" id="fab-contact-picker-sheet">
+        <div class="bottom-sheet-handle"></div>
+        <div class="fab-contact-picker-header">
+            <span class="fab-contact-picker-title">Start Conversation</span>
+        </div>
+        <div class="fab-contact-picker-list" id="fab-contact-picker-list"></div>
+    </div>
+
+    <div class="main-content" role="main">
+
+        <div class="view" id="view-setup">
+            <div class="setup-container">
+                <div class="setup-card">
+                    <div class="setup-icon">
+                        <svg viewBox="243 243 282 282" fill="var(--accent)" width="48" height="48">
+                            <path d="M327.97,501.16C314.61,508.03 301.57,514.72 288.56,521.48C283.91,523.91 279.2,524.61 275.05,520.98C271.05,517.49 271.26,512.87 272.63,508.05C275.23,498.93 277.46,489.7 280.08,480.58C281.03,477.27 280.4,475.51 277.14,473.92C255.84,463.53 245.61,446.29 245.66,422.66C245.75,381.16 245.55,339.66 245.75,298.16C245.86,275.62 256.63,259.57 276.93,249.98C283.68,246.79 291.07,246.01 298.4,246C355.74,245.88 413.07,245.83 470.4,245.95C495.22,246.01 516.64,265.69 519.52,290.03C520.6,299.2 520.12,308.32 520.21,317.46C520.37,333.46 520.29,349.46 520.2,365.46C520.17,371.38 518.89,372.03 513.77,369.13C498.9,360.71 498.91,360.71 498.9,343.65C498.88,328.81 498.92,313.98 498.81,299.15C498.66,279.74 486.18,267.28 466.77,267.26C410.94,267.23 355.11,267.23 299.27,267.32C279.54,267.35 267.32,279.36 267.23,299.05C267.05,340.71 267.04,382.38 267.09,424.04C267.11,441.62 277.67,453.85 295.43,456.58C310.83,458.95 307.84,458.98 304.51,471.32C303.3,475.82 302.05,480.31 300.83,484.81C300.35,486.56 299.66,488.32 300.92,490.33C304.48,490.2 307.24,487.87 310.31,486.46C314.99,484.3 319.61,481.95 324.04,479.31C328.78,476.49 333.17,476.59 338.23,478.73C355.38,485.99 373.44,488.84 391.95,487.72C430.98,485.37 461.99,468.13 484.6,436.22C489.79,428.9 493.71,420.74 496.43,412.08C497.17,409.7 496.94,408 494.74,406.52C489.6,403.07 487.33,398.05 487.7,391.96C487.91,388.37 486.58,386.13 483.49,384.24C461.58,370.79 438.6,360.13 412.77,356.87C403.65,355.71 394.49,355.67 385.35,356.73C376.09,357.8 372.64,358.02 369.74,347.74C368.12,341.98 365.71,336.47 362.24,331.47C356.28,322.9 346.68,319.02 337.45,321.63C328.92,324.05 321.83,333.47 321.32,343.14C320.63,356 327.03,371.92 346.66,374.88C350.07,375.39 352.59,376.98 353.16,380.74C353.7,384.21 352.02,386.53 349.33,388.25C347.4,389.48 345.13,389.39 343,389.01C325.7,385.88 313.84,376.01 308.73,359.24C303.68,342.67 306.62,327.49 319.94,315.42C336.41,300.5 361.24,303.86 373.4,322.51C376.14,326.7 378.7,331.06 380.19,335.83C381.41,339.73 383.56,341.03 387.54,340.77C406.5,339.53 425.15,341.26 443.29,347.18C469.21,355.64 492.63,368.82 514.47,384.97C521.5,390.18 521.02,397.62 519.75,405.01C515.1,432.25 501.28,454.4 481.02,472.62C460.48,491.09 436.54,502.92 409.2,507.52C385.77,511.46 362.77,509.7 340.18,502.3C336.39,501.06 332.58,498.31 327.97,501.16z"/>
+                            <path d="M414.19,335.38C405.75,335.93 397.65,334.86 389.54,335.84C387,336.15 385.78,334.06 384.8,332.07C380.73,323.83 376.21,315.95 368.77,310.17C366.48,308.38 367.23,307 369.43,305.62C379.53,299.3 389.62,299.22 399.19,306.49C408.52,313.58 414.08,323.09 414.19,335.38z"/>
+                            <path d="M417.09,390.21C410.66,388.78 407.34,384.6 408.1,379.44C408.81,374.6 413.31,370.91 418.31,371.05C423.12,371.19 426.94,375.02 427.27,380C427.63,385.61 424.18,389.22 417.09,390.21z"/>
+                            <path d="M430.83,418.71C429.47,419.23 428.59,420.25 427.03,419.59C426.81,417.6 428.52,416.83 429.77,416.07C441.62,408.88 453.85,402.56 467.79,400.42C469.45,400.16 471.08,399.82 472.69,400.53C474.42,401.28 475.23,402.66 475.09,404.49C474.92,406.75 473.27,407.6 471.34,407.79C465.71,408.35 460.12,409.05 454.59,410.3C446.44,412.13 438.57,414.68 430.83,418.71z"/>
+                            <path d="M448.63,432.62C455.17,424.82 461.54,417.3 470.21,412.35C473.17,410.66 477.33,407.48 479.7,412.18C482.09,416.9 476.91,417.67 473.97,418.99C464.9,423.07 457.39,429.35 449.85,435.63C448.67,436.61 447.95,438.42 445.79,438.04C445.62,435.72 447.39,434.49 448.63,432.62z"/>
+                        </svg>
+                    </div>
+                    <h2 class="setup-title">Ratspeak</h2>
+                    <p class="setup-subtitle">New networks, new freedoms</p>
+                    <div class="setup-progress-dots" id="setup-progress-dots">
+                        <span class="setup-dot active"></span>
+                        <span class="setup-dot"></span>
+                        <span class="setup-dot"></span>
+                    </div>
+                    <div class="setup-steps">
+                        <div class="setup-step" id="setup-step-1">
+                            <div class="setup-divider"></div>
+                            <p>Let's get started by generating your cryptographic key and unique identity to use in the network.</p>
+                            <button class="nr-btn nr-btn-lg w-full" id="setup-generate-btn">Create Identity</button>
+                        </div>
+                        <div class="setup-step" id="setup-step-generating" style="display:none;">
+                            <div class="setup-crypto-anim">
+                                <div class="crypto-lock-icon" id="crypto-lock-icon">
+                                    <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="var(--accent)" stroke-width="1.5">
+                                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                                        <path id="lock-shackle" d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                                    </svg>
+                                </div>
+                                <div class="crypto-hex-stream" id="crypto-hex-stream"></div>
+                                <div class="setup-progress-steps">
+                                    <div class="progress-step active" id="prog-step-1">
+                                        <span class="progress-dot"></span>
+                                        <span class="progress-label">Generating Ed25519 keypair...</span>
+                                    </div>
+                                    <div class="progress-step" id="prog-step-2">
+                                        <span class="progress-dot"></span>
+                                        <span class="progress-label">Deriving encryption keys...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="setup-step" id="setup-step-2" style="display:none;">
+                            <div class="modal-field">
+                                <label>Your Identity <span class="help-icon tooltip-trigger" tabindex="0" role="button" aria-label="What is this?" data-tooltip="This is your LXMF identity, it's the address others use to message you."><svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor" aria-hidden="true"><circle cx="8" cy="3.5" r="1.5"/><rect x="6.5" y="6.5" width="3" height="7" rx="1"/></svg></span></label>
+                                <div class="setup-hash-row">
+                                    <span class="modal-value mono text-select-all" id="setup-lxmf-hash">&mdash;</span>
+                                    <button class="setup-copy-btn" id="setup-copy-btn" title="Copy">
+                                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="modal-field" style="margin-top:10px;">
+                                <label>Display Name</label>
+                                <input type="text" id="setup-display-name" class="modal-input" placeholder="Optional" maxlength="32" autocorrect="off" autocapitalize="none" spellcheck="false">
+                                <span class="text-hint" style="display:block;">This will be visible to everyone.</span>
+                            </div>
+                            <button class="nr-btn nr-btn-lg w-full" id="setup-finish-btn">Connect</button>
+                        </div>
+                        <div class="setup-step" id="setup-step-connecting" style="display:none;">
+                            <div class="setup-connecting-anim">
+                                <div id="setup-connecting-spinner">
+                                    <div class="setup-connecting-logo">
+                                        <svg viewBox="243 243 282 282" fill="var(--accent)">
+                                            <path d="M327.97,501.16C314.61,508.03 301.57,514.72 288.56,521.48C283.91,523.91 279.2,524.61 275.05,520.98C271.05,517.49 271.26,512.87 272.63,508.05C275.23,498.93 277.46,489.7 280.08,480.58C281.03,477.27 280.4,475.51 277.14,473.92C255.84,463.53 245.61,446.29 245.66,422.66C245.75,381.16 245.55,339.66 245.75,298.16C245.86,275.62 256.63,259.57 276.93,249.98C283.68,246.79 291.07,246.01 298.4,246C355.74,245.88 413.07,245.83 470.4,245.95C495.22,246.01 516.64,265.69 519.52,290.03C520.6,299.2 520.12,308.32 520.21,317.46C520.37,333.46 520.29,349.46 520.2,365.46C520.17,371.38 518.89,372.03 513.77,369.13C498.9,360.71 498.91,360.71 498.9,343.65C498.88,328.81 498.92,313.98 498.81,299.15C498.66,279.74 486.18,267.28 466.77,267.26C410.94,267.23 355.11,267.23 299.27,267.32C279.54,267.35 267.32,279.36 267.23,299.05C267.05,340.71 267.04,382.38 267.09,424.04C267.11,441.62 277.67,453.85 295.43,456.58C310.83,458.95 307.84,458.98 304.51,471.32C303.3,475.82 302.05,480.31 300.83,484.81C300.35,486.56 299.66,488.32 300.92,490.33C304.48,490.2 307.24,487.87 310.31,486.46C314.99,484.3 319.61,481.95 324.04,479.31C328.78,476.49 333.17,476.59 338.23,478.73C355.38,485.99 373.44,488.84 391.95,487.72C430.98,485.37 461.99,468.13 484.6,436.22C489.79,428.9 493.71,420.74 496.43,412.08C497.17,409.7 496.94,408 494.74,406.52C489.6,403.07 487.33,398.05 487.7,391.96C487.91,388.37 486.58,386.13 483.49,384.24C461.58,370.79 438.6,360.13 412.77,356.87C403.65,355.71 394.49,355.67 385.35,356.73C376.09,357.8 372.64,358.02 369.74,347.74C368.12,341.98 365.71,336.47 362.24,331.47C356.28,322.9 346.68,319.02 337.45,321.63C328.92,324.05 321.83,333.47 321.32,343.14C320.63,356 327.03,371.92 346.66,374.88C350.07,375.39 352.59,376.98 353.16,380.74C353.7,384.21 352.02,386.53 349.33,388.25C347.4,389.48 345.13,389.39 343,389.01C325.7,385.88 313.84,376.01 308.73,359.24C303.68,342.67 306.62,327.49 319.94,315.42C336.41,300.5 361.24,303.86 373.4,322.51C376.14,326.7 378.7,331.06 380.19,335.83C381.41,339.73 383.56,341.03 387.54,340.77C406.5,339.53 425.15,341.26 443.29,347.18C469.21,355.64 492.63,368.82 514.47,384.97C521.5,390.18 521.02,397.62 519.75,405.01C515.1,432.25 501.28,454.4 481.02,472.62C460.48,491.09 436.54,502.92 409.2,507.52C385.77,511.46 362.77,509.7 340.18,502.3C336.39,501.06 332.58,498.31 327.97,501.16z"/>
+                                            <path d="M414.19,335.38C405.75,335.93 397.65,334.86 389.54,335.84C387,336.15 385.78,334.06 384.8,332.07C380.73,323.83 376.21,315.95 368.77,310.17C366.48,308.38 367.23,307 369.43,305.62C379.53,299.3 389.62,299.22 399.19,306.49C408.52,313.58 414.08,323.09 414.19,335.38z"/>
+                                            <path d="M417.09,390.21C410.66,388.78 407.34,384.6 408.1,379.44C408.81,374.6 413.31,370.91 418.31,371.05C423.12,371.19 426.94,375.02 427.27,380C427.63,385.61 424.18,389.22 417.09,390.21z"/>
+                                            <path d="M430.83,418.71C429.47,419.23 428.59,420.25 427.03,419.59C426.81,417.6 428.52,416.83 429.77,416.07C441.62,408.88 453.85,402.56 467.79,400.42C469.45,400.16 471.08,399.82 472.69,400.53C474.42,401.28 475.23,402.66 475.09,404.49C474.92,406.75 473.27,407.6 471.34,407.79C465.71,408.35 460.12,409.05 454.59,410.3C446.44,412.13 438.57,414.68 430.83,418.71z"/>
+                                            <path d="M448.63,432.62C455.17,424.82 461.54,417.3 470.21,412.35C473.17,410.66 477.33,407.48 479.7,412.18C482.09,416.9 476.91,417.67 473.97,418.99C464.9,423.07 457.39,429.35 449.85,435.63C448.67,436.61 447.95,438.42 445.79,438.04C445.62,435.72 447.39,434.49 448.63,432.62z"/>
+                                        </svg>
+                                    </div>
+                                </div>
+                                <h3 class="setup-connecting-title" id="setup-connecting-title">Entering the tunnels<span class="ellipsis-dots"><span>.</span><span>.</span><span>.</span></span></h3>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="view" id="view-dashboard">
+            <div class="dashboard-page">
+                <div class="dashboard-page-inner">
+                    <div class="dashboard-action-row">
+                        <button class="dashboard-action-btn" id="dash-new-message" title="New Message">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                            <span>New Message</span>
+                        </button>
+                        <button class="dashboard-action-btn" id="dash-add-connection" title="Add Connection">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10"/><path d="M12 2a15 15 0 0 0-4 10 15 15 0 0 0 4 10"/></svg>
+                            <span>Add Connection</span>
+                        </button>
+                        <button class="dashboard-action-btn" id="dash-announce" title="Announce">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.4"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.4"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg>
+                            <span>Announce</span>
+                        </button>
+                    </div>
+
+                    <div class="panel" id="panel-dashboard-messages">
+                        <div class="panel-header">
+                            Recent Messages
+                            <div class="panel-header-actions">
+                                <button class="panel-header-btn" id="dash-view-all-messages" title="View all messages">
+                                    <span class="text-xs text-accent">View all</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="panel-body p-0">
+                            <div id="dashboard-recent-messages">
+                                <div class="empty-state p-12">
+                                    <span class="empty-state-primary">No messages yet</span>
+                                    <span class="empty-state-hint">Send your first encrypted message</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="panel" id="panel-dashboard-contacts">
+                        <div class="panel-header">
+                            Contacts
+                            <div class="panel-header-actions">
+                                <button class="panel-header-btn" id="dashboard-contacts-add-btn" title="Add contact">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="panel-body p-0">
+                            <div class="contacts-list-scroll" id="dashboard-contacts-list">
+                                <div class="empty-state p-10">
+                                    <span class="empty-state-primary">No contacts yet</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="panel" id="panel-dashboard-peers">
+                        <div class="panel-header">
+                            <div class="dashboard-peers-header-info">
+                                Recent Peers
+                            </div>
+                            <div class="panel-header-actions">
+                                <button class="panel-header-btn" id="dash-view-network" title="View network">
+                                    <span class="text-xs text-accent">View all &rarr;</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="panel-body dashboard-peers-scroll p-0">
+                            <div id="dashboard-peers-list">
+                                <div class="dashboard-peers-empty">Discovering peers...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="view" id="view-message">
+            <div id="lxmf-mode-panel" class="lxmf-container" style="display:flex;">
+                <div class="lxmf-layout">
+                    <div class="lxmf-sidebar">
+                        <div class="msg-profile-strip" id="msg-profile-strip">
+                            <div class="msg-profile-avatar" id="msg-profile-avatar"></div>
+                            <div class="msg-profile-info">
+                                <span class="msg-profile-name" id="msg-profile-name">Me</span>
+                                <span class="msg-profile-hash" id="lxmf-own-hash" title="Click to copy your address">&mdash;</span>
+                            </div>
+                            <button class="msg-compose-btn" id="lxmf-send-message-btn" title="New conversation" aria-label="New conversation">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                            </button>
+                        </div>
+                        <input type="text" id="msg-search-input" class="nr-input-sm msg-search" placeholder="Search..." aria-label="Search" autocorrect="off" autocapitalize="none" spellcheck="false">
+                        <div id="msg-search-results" style="display:none;"></div>
+                        <div id="lxmf-conversations-list">
+                            <div class="empty-state">
+                                <svg class="empty-state-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                                <span class="empty-state-primary">No conversations yet</span>
+                                <span class="empty-state-hint">Tap the compose button to start messaging</span>
+                            </div>
+                        </div>
+                        <div class="fab-speed-dial" id="lxmf-fab-dial">
+                            <div class="fab-dial-actions" id="fab-dial-actions">
+                                <div class="fab-dial-item" id="fab-dial-contacts">
+                                    <span class="fab-dial-label">Contacts</span>
+                                    <button class="fab-dial-btn" aria-label="Pick from contacts">
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                                    </button>
+                                </div>
+                                <div class="fab-dial-item" id="fab-dial-new">
+                                    <span class="fab-dial-label">New</span>
+                                    <button class="fab-dial-btn" aria-label="New conversation">
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                                    </button>
+                                </div>
+                            </div>
+                            <button class="view-fab" id="lxmf-send-fab" title="New conversation" aria-expanded="false">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="lxmf-chat" id="lxmf-chat-area">
+                        <div class="lxmf-chat-header" id="lxmf-chat-header" style="display:none;">
+                            <button class="mobile-back-btn" id="lxmf-back-btn" aria-label="Back to conversations">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                            </button>
+                            <div class="lxmf-chat-header-avatar" id="lxmf-contact-avatar"></div>
+                            <div class="lxmf-chat-header-info">
+                                <span class="lxmf-chat-header-name" id="lxmf-chat-header-name"></span>
+                                <span class="lxmf-chat-header-status" id="lxmf-chat-header-status"></span>
+                            </div>
+                            <button class="game-challenge-btn" id="game-challenge-btn" title="Challenge to a game" style="display:none;">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                            </button>
+                            <button class="chat-header-menu-btn" id="chat-header-menu-btn" title="More options" aria-label="More options">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="5" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="19" r="1" fill="currentColor"/></svg>
+                            </button>
+                        </div>
+                        <div class="lxmf-messages" id="lxmf-messages">
+                            <div class="lxmf-empty">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.15;"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                                <span class="empty-state-primary">Your messages</span>
+                                <span class="empty-state-hint">Select a conversation or start a new one</span>
+                            </div>
+                        </div>
+                        <div id="lxmf-pending-file" class="file-transfer-info" style="display:none;"></div>
+                        <div id="lxmf-reply-preview" class="reply-preview-bar" style="display:none;">
+                            <div class="reply-preview-content">
+                                <span class="reply-preview-sender"></span>
+                                <span class="reply-preview-text"></span>
+                            </div>
+                            <button class="reply-preview-close" aria-label="Cancel reply">&times;</button>
+                        </div>
+                        <div class="lxmf-compose" id="lxmf-compose-bar" style="display:none;">
+                            <input type="file" id="lxmf-file-input" style="display:none;">
+                            <input type="file" id="lxmf-photos-input" accept="image/*,video/*" style="display:none;">
+                            <input type="file" id="lxmf-camera-input" accept="image/*" capture="environment" style="display:none;">
+                            <button class="lxmf-compose-attach-btn" id="attach-file-btn" title="Attach" aria-label="Attach emoji or file">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                            </button>
+                            <textarea id="lxmf-input" class="nr-input" placeholder="Message..." aria-label="Message input" rows="1" title="Enter to send, Shift+Enter for new line"></textarea>
+                            <span class="lxmf-char-count" id="lxmf-char-count" aria-live="polite" style="display:none;"></span>
+                            <button class="lxmf-send-btn" id="send-msg-btn" aria-label="Send message">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="view" id="view-games">
+            <div class="games-layout">
+                <div class="games-sidebar">
+                    <div class="games-sidebar-header">
+                        <h2 class="games-sidebar-title">Games</h2>
+                        <button class="nr-btn nr-btn-sm games-new-btn" id="games-new-btn">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+                                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                            </svg>
+                            New
+                        </button>
+                    </div>
+                    <div class="games-sidebar-tabs">
+                        <button class="games-tab active" data-filter="all">All</button>
+                        <button class="games-tab" data-filter="active">Active</button>
+                        <button class="games-tab" data-filter="pending">Pending</button>
+                        <button class="games-tab" data-filter="completed">Completed</button>
+                    </div>
+                    <div class="games-session-list" id="games-session-list">
+                        <div class="games-empty-sidebar">No games yet</div>
+                    </div>
+                </div>
+
+                <div class="games-detail" id="games-detail">
+                    <div class="empty-state">
+                        <svg class="empty-state-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M8 12h2M12 12h2M8 8h.01M12 16h.01"/></svg>
+                        <span class="empty-state-primary">Select a game to play</span>
+                        <span class="empty-state-hint">or start a new game with a contact</span>
+                    </div>
+                </div>
+            </div>
+            <button class="view-fab" id="games-fab-btn" title="New Game">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                    <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+            </button>
+        </div>
+
+        <div class="view" id="view-peers">
+            <div class="peers-layout">
+                <div class="peers-content">
+                    <div class="peers-list-panel">
+                        <div class="peers-toolbar">
+                            <input type="text" id="peers-search" class="conn-search-input" placeholder="Search..." autocorrect="off" autocapitalize="none" spellcheck="false">
+                            <div class="conn-filter-pills" id="peers-filter-pills">
+                                <button class="conn-filter active" data-filter="all">All</button>
+                                <button class="conn-filter" data-filter="reachable">Recent</button>
+                                <button class="conn-filter" data-filter="stale">Seen today</button>
+                                <button class="conn-filter" data-filter="offline">Older</button>
+                            </div>
+                            <div class="toolbar-dropdown peers-sort-dropdown">
+                                <button class="toolbar-dropdown-btn" id="peers-sort-btn" type="button">
+                                    <span>Sort by</span>
+                                    <span class="dropdown-caret">&#9662;</span>
+                                </button>
+                                <div class="toolbar-dropdown-menu" id="peers-sort-menu">
+                                    <button class="toolbar-dropdown-item active" data-sort="name">Alphabetical</button>
+                                    <button class="toolbar-dropdown-item" data-sort="hops">Hops</button>
+                                    <button class="toolbar-dropdown-item" data-sort="last_seen">Last Seen</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="peers-list-scroll" id="peers-list-scroll">
+                            <div class="peers-list-body" id="peers-list-body"></div>
+                        </div>
+                    </div>
+                    <div class="peers-detail-panel" id="peers-detail-panel">
+                        <div class="peers-detail-empty" id="peers-detail-empty">
+                            <svg class="empty-state-svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                            <span class="text-sm text-muted-color">Select a peer to view details</span>
+                        </div>
+                        <div class="peers-detail-content" id="peers-detail-content" style="display:none;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="view" id="view-contacts">
+            <div class="contacts-standalone">
+                <div class="contacts-standalone-header">
+                    <div class="contacts-standalone-title">
+                        <h2>Contacts</h2>
+                        <span id="contacts-count">0 contacts</span>
+                    </div>
+                    <button class="nr-btn nr-btn-sm contacts-add-btn" id="contacts-add-btn" title="Add contact" aria-label="Add contact">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+                        <span>Add Contact</span>
+                    </button>
+                </div>
+                <div class="contacts-standalone-toolbar">
+                    <input type="text" id="contacts-search" class="conn-search-input msg-search" placeholder="Search..." autocorrect="off" autocapitalize="none" spellcheck="false">
+                </div>
+                <div class="contacts-list-scroll" id="contacts-standalone-list">
+                    <div class="empty-state">
+                        <svg class="empty-state-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                        <span class="empty-state-primary">No contacts yet</span>
+                        <span class="empty-state-hint">Add a contact from Peers, or tap +</span>
+                    </div>
+                </div>
+            </div>
+            <button class="view-fab" id="contacts-add-fab" title="Add contact" aria-label="Add contact">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+            </button>
+        </div>
+
+        <div class="view" id="view-network">
+            <div class="network-layout">
+                <div class="network-pulse" id="network-pulse">
+                    <div class="pulse-identity" id="pulse-identity">
+                        <div class="loading-state"><span class="loading-spinner"></span></div>
+                    </div>
+                    <div class="pulse-throughput">
+                        <span class="pulse-throughput-item" title="Total uploaded">
+                            <span class="pulse-throughput-arrow" aria-hidden="true">&uarr;</span>
+                            <span class="pulse-throughput-value" id="net-stat-tx">0 B</span>
+                        </span>
+                        <span class="pulse-throughput-item" title="Total downloaded">
+                            <span class="pulse-throughput-arrow" aria-hidden="true">&darr;</span>
+                            <span class="pulse-throughput-value" id="net-stat-rx">0 B</span>
+                        </span>
+                    </div>
+                    <div class="pulse-actions">
+                        <button class="pulse-announce-btn" id="network-announce-btn">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l18-8-8 18-2-8-8-2z"/></svg>
+                            <span>Announce</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="network-subtabs" id="network-subtabs">
+                    <button class="network-subtab-btn active" data-subtab="connections">Connections</button>
+                    <button class="network-subtab-btn" data-subtab="activity">Activity</button>
+                </div>
+
+                <div class="network-main">
+                    <div class="network-connections">
+                        <div class="conn-section conn-section-tcp collapsed" data-iface-type="tcp">
+                            <div class="conn-section-header" role="button" tabindex="0" aria-expanded="false">
+                                <div class="conn-section-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10"/><path d="M12 2a15 15 0 0 0-4 10 15 15 0 0 0 4 10"/></svg></div>
+                                <span class="conn-section-label">Internet/TCP</span>
+                                <span class="conn-section-count" id="conn-count-tcp">0</span>
+                                <button class="nr-btn nr-btn-sm conn-section-action" id="conn-add-tcp">+</button>
+                                <svg class="conn-section-chevron" viewBox="0 0 24 24" width="16" height="16"><polyline points="6 9 12 15 18 9"/></svg>
+                            </div>
+                            <div class="conn-section-body" id="conn-body-tcp"></div>
+                        </div>
+                        <div class="conn-section conn-section-ble collapsed" data-iface-type="ble">
+                            <div class="conn-section-header" role="button" tabindex="0" aria-expanded="false">
+                                <div class="conn-section-icon"><svg viewBox="0 0 24 24"><path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/></svg></div>
+                                <span class="conn-section-label">Bluetooth Peer</span>
+                                <span class="conn-section-count" id="conn-count-ble">0</span>
+                                <button class="nr-btn nr-btn-sm conn-section-action" id="conn-toggle-ble">+</button>
+                                <svg class="conn-section-chevron" viewBox="0 0 24 24" width="16" height="16"><polyline points="6 9 12 15 18 9"/></svg>
+                            </div>
+                            <div class="conn-section-body" id="conn-body-ble"></div>
+                        </div>
+                        <div class="conn-section conn-section-local collapsed" data-iface-type="local">
+                            <div class="conn-section-header" role="button" tabindex="0" aria-expanded="false">
+                                <div class="conn-section-icon"><svg viewBox="0 0 24 24"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg></div>
+                                <span class="conn-section-label">Local Network</span>
+                                <span class="conn-section-count" id="conn-count-local">0</span>
+                                <button class="nr-btn nr-btn-sm conn-section-action" id="conn-toggle-local">+</button>
+                                <svg class="conn-section-chevron" viewBox="0 0 24 24" width="16" height="16"><polyline points="6 9 12 15 18 9"/></svg>
+                            </div>
+                            <div class="conn-section-body" id="conn-body-local"></div>
+                        </div>
+                        <div class="conn-section conn-section-lora collapsed" data-iface-type="lora">
+                            <div class="conn-section-header" role="button" tabindex="0" aria-expanded="false">
+                                <div class="conn-section-icon"><svg viewBox="0 0 24 24"><path d="M12 20v-14"/><path d="M12 6l-3 3"/><path d="M12 6l3 3"/><path d="M6 14a6 6 0 0 0 0-6"/><path d="M18 14a6 6 0 0 1 0-6"/><path d="M3 16a10 10 0 0 0 0-10"/><path d="M21 16a10 10 0 0 1 0-10"/></svg></div>
+                                <span class="conn-section-label">Radio</span>
+                                <span class="conn-section-count" id="conn-count-lora">0</span>
+                                <button class="nr-btn nr-btn-sm conn-section-action" id="conn-add-lora">+</button>
+                                <svg class="conn-section-chevron" viewBox="0 0 24 24" width="16" height="16"><polyline points="6 9 12 15 18 9"/></svg>
+                            </div>
+                            <div class="conn-section-body" id="conn-body-lora"></div>
+                        </div>
+                        <div class="conn-section conn-section-host collapsed" data-iface-type="host">
+                            <div class="conn-section-header" role="button" tabindex="0" aria-expanded="false">
+                                <div class="conn-section-icon"><svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><circle cx="6" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="6" cy="18" r="1" fill="currentColor" stroke="none"/></svg></div>
+                                <span class="conn-section-label">Host</span>
+                                <span class="conn-section-count" id="conn-count-host">0</span>
+                                <button class="nr-btn nr-btn-sm conn-section-action" id="conn-add-host">+</button>
+                                <svg class="conn-section-chevron" viewBox="0 0 24 24" width="16" height="16"><polyline points="6 9 12 15 18 9"/></svg>
+                            </div>
+                            <div class="conn-section-body" id="conn-body-host"></div>
+                        </div>
+                    </div>
+
+                    <div class="network-activity" id="network-activity">
+                        <div class="system-drops-card" id="system-drops-card" style="display:none;">
+                            <div class="system-drops-header" role="button" tabindex="0" aria-expanded="false">
+                                <svg class="system-drops-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <circle cx="12" cy="12" r="10"/>
+                                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                                </svg>
+                                <span class="system-drops-title">System drops</span>
+                                <span class="system-drops-summary" id="system-drops-summary">0</span>
+                                <svg class="system-drops-chevron" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </div>
+                            <div class="system-drops-body" id="system-drops-body" hidden>
+                                <div class="system-drops-list" id="system-drops-list"></div>
+                                <div class="system-drops-footer">
+                                    <button class="nr-btn nr-btn-xs" id="system-drops-clear-btn">Clear system drops</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="activity-header">
+                            <span class="activity-title">Network Activity</span>
+                            <div class="activity-controls">
+                                <button class="nr-btn nr-btn-xs" id="activity-clear-btn" style="display:none;">Clear</button>
+                            </div>
+                        </div>
+
+                        <div class="activity-privacy-gate" id="activity-privacy-gate">
+                            <svg class="activity-privacy-icon" viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5">
+                                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                            </svg>
+                            <span class="activity-privacy-label">Privacy mode is active</span>
+                            <span class="activity-privacy-desc">No activity is being collected or saved. Enable for this session to see network events in real time.</span>
+                            <button class="nr-btn nr-btn-sm" id="activity-enable-btn">Enable For This Session</button>
+                        </div>
+
+                        <div class="activity-active" id="activity-active" style="display:none;">
+                            <div class="activity-toolbar">
+                                <div class="activity-level-select" id="activity-level-select">
+                                    <button class="activity-level-btn" data-level="essential">Essential</button>
+                                    <button class="activity-level-btn active" data-level="standard">Standard</button>
+                                    <button class="activity-level-btn" data-level="detailed">Detailed</button>
+                                </div>
+                                <label class="prop-toggle activity-toggle">
+                                    <input type="checkbox" id="activity-enabled-toggle" checked>
+                                    <span class="prop-slider"></span>
+                                </label>
+                            </div>
+                            <div class="activity-filters" id="activity-filters"></div>
+                            <div class="activity-feed" id="activity-feed">
+                                <div class="activity-empty">Listening for network events...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bottom-sheet-overlay" id="identity-modal-overlay"></div>
+        <div class="bottom-sheet" id="identity-modal" role="dialog" aria-labelledby="identity-modal-title">
+            <div class="bottom-sheet-handle"></div>
+            <div class="bottom-sheet-header">
+                <div class="bottom-sheet-title" id="identity-modal-title">Identity</div>
+                <button class="bottom-sheet-close" id="identity-modal-close" aria-label="Close">&times;</button>
+            </div>
+            <div class="bottom-sheet-body">
+                <div id="identity-modal-body"></div>
+                <div class="u-flex gap-4 mt-6">
+                    <button class="nr-btn flex-1" id="identity-modal-confirm">Create</button>
+                    <button class="nr-btn nr-btn-ghost flex-1" id="identity-modal-cancel">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="view" id="view-settings">
+            <div class="settings-page">
+                <div class="settings-page-inner">
+                    <div class="panel" id="panel-settings-profile">
+                        <div class="panel-header">
+                            Profile
+                            <div class="panel-header-actions">
+                                <button class="panel-header-btn" id="identity-add-btn" title="Create new identity">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                </button>
+                                <button class="panel-header-btn panel-header-btn-danger" id="identity-delete-btn" title="Delete active identity">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="panel-body">
+                            <div id="identity-active-card">
+                                <div class="loading-state"><span class="loading-spinner"></span>Loading...</div>
+                            </div>
+                            <div class="divider-flush"></div>
+                            <div id="identity-list">
+                                <div class="loading-state p-6"><span class="loading-spinner"></span>Loading...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="panel" id="panel-settings-appearance">
+                        <div class="panel-header">Appearance</div>
+                        <div class="panel-body">
+                            <div class="settings-row">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Theme</span>
+                                    <span class="settings-row-desc">Choose light, dark, or match your system</span>
+                                </div>
+                                <div class="theme-toggle" id="theme-toggle">
+                                    <button class="theme-toggle-btn" data-theme="light" aria-label="Light theme">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                                    </button>
+                                    <button class="theme-toggle-btn" data-theme="auto" aria-label="System theme">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                                    </button>
+                                    <button class="theme-toggle-btn" data-theme="dark" aria-label="Dark theme">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="panel" id="panel-settings-network">
+                        <div class="panel-header">Network</div>
+                        <div class="panel-body">
+                            <div class="settings-row">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Transport Mode</span>
+                                    <span class="settings-row-desc">Relay packets for other nodes on the network</span>
+                                </div>
+                                <button class="selector-badge" id="transport-mode-select">OFF</button>
+                            </div>
+                            <div class="settings-row">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Auto-Announce</span>
+                                    <span class="settings-row-desc">Periodically announce your presence on the network</span>
+                                </div>
+                                <button class="selector-badge" id="auto-announce-select">30 min</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="panel" id="panel-settings-notifications" style="display:none;">
+                        <div class="panel-header">Notifications</div>
+                        <div class="panel-body">
+                            <div class="settings-row" style="border-bottom:none;">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Desktop Notifications</span>
+                                    <span class="settings-row-desc">Show a system notification when a new message arrives while Ratspeak is in the background</span>
+                                </div>
+                                <label class="prop-toggle">
+                                    <input type="checkbox" id="desktop-notifications-toggle" checked>
+                                    <span class="prop-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="panel" id="panel-settings-offline-inbox">
+                        <div class="panel-header">
+                            Offline Inbox
+                            <span class="panel-header-dot" id="settings-relay-dot"></span>
+                        </div>
+                        <div class="panel-body">
+                            <div class="settings-row" style="border-bottom:none;">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Relay Node</span>
+                                    <span class="settings-row-desc">Store messages on a relay when you're offline</span>
+                                </div>
+                                <span id="settings-relay-status" class="settings-relay-badge">Not connected</span>
+                            </div>
+                            <div id="settings-propagation-status"></div>
+                        </div>
+                    </div>
+
+                    <div class="panel" id="panel-settings-blocked">
+                        <div class="panel-header">Blocked Users</div>
+                        <div class="panel-body">
+                            <div class="settings-row" style="border-bottom:none;">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Block List</span>
+                                    <span class="settings-row-desc">Manage blocked users</span>
+                                </div>
+                                <button class="selector-badge" id="settings-blocked-count">0 blocked</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="panel" id="panel-settings-system">
+                        <div class="panel-header">System</div>
+                        <div class="panel-body system-panel-body">
+                            <div class="system-subsection">
+                                <div class="system-subsection-header">
+                                    <span class="system-subsection-title">Caches</span>
+                                    <span class="system-subsection-desc">Safe to clear at any time. Data re-populates automatically.</span>
+                                </div>
+                                <div class="system-action-grid">
+                                    <button class="system-action-btn" id="settings-clear-paths">
+                                        <span class="system-action-label">Clear Paths</span>
+                                        <span class="system-action-hint">Cached network routes</span>
+                                    </button>
+                                    <button class="system-action-btn" id="settings-clear-announces">
+                                        <span class="system-action-label">Clear Announces</span>
+                                        <span class="system-action-hint">Announce history</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="system-subsection system-subsection--destructive">
+                                <div class="system-subsection-header">
+                                    <span class="system-subsection-title">Delete Data</span>
+                                    <span class="system-subsection-desc">Permanently removes content. Cannot be undone.</span>
+                                </div>
+                                <div class="system-action-grid">
+                                    <button class="system-action-btn system-action-btn--danger" id="settings-clear-messages">
+                                        <span class="system-action-label">Delete Messages</span>
+                                        <span class="system-action-hint">All conversation history</span>
+                                    </button>
+                                    <button class="system-action-btn system-action-btn--danger" id="settings-clear-contacts">
+                                        <span class="system-action-label">Delete Contacts</span>
+                                        <span class="system-action-hint">All saved contacts</span>
+                                    </button>
+                                    <button class="system-action-btn system-action-btn--danger system-action-btn--danger-high" id="settings-reset-database">
+                                        <span class="system-action-label">Delete All Data</span>
+                                        <span class="system-action-hint">Messages and contacts</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="system-subsection system-subsection--nuclear">
+                                <div class="system-subsection-header">
+                                    <span class="system-subsection-title">Factory Reset</span>
+                                    <span class="system-subsection-desc">Destroys all identities, contacts, messages, and settings. Resets to first-run state.</span>
+                                </div>
+                                <button class="danger-btn danger-btn--nuclear" id="settings-factory-reset">Reset Everything</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <input type="file" id="identity-file-input" accept=".key,.identity,.bin" style="display:none;">
+        </div>
+
+    </div>
+</div>
+
+<div class="bottom-sheet-overlay" id="node-modal-overlay"></div>
+<div class="bottom-sheet" id="node-modal" role="dialog" aria-labelledby="modal-title">
+    <div class="bottom-sheet-handle"></div>
+    <div class="bottom-sheet-header">
+        <div class="bottom-sheet-title" id="modal-title">Hub Info</div>
+        <button class="bottom-sheet-close" id="modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="bottom-sheet-body">
+        <div class="modal-field">
+            <label>Name</label>
+            <input type="text" id="modal-name" class="modal-input" maxlength="24" placeholder="My Hub" autocorrect="off" autocapitalize="none" spellcheck="false">
+        </div>
+        <div class="modal-field">
+            <label>Transport Mode</label>
+            <button class="selector-badge" id="modal-transport-select">AUTO</button>
+        </div>
+        <div class="modal-field" id="modal-lora-section">
+            <label>LoRa Interfaces</label>
+            <div id="modal-lora-list"><span class="inline-hint">None configured.</span></div>
+        </div>
+        <div class="modal-field" id="modal-auto-section">
+            <label>Local Network (WiFi/LAN)</label>
+            <div id="modal-auto-list"><span class="inline-hint">Not enabled.</span></div>
+        </div>
+        <div class="modal-field" id="modal-tcp-client-section">
+            <label>TCP Connections</label>
+            <div id="modal-tcp-client-list"><span class="inline-hint">None configured.</span></div>
+        </div>
+        <div class="modal-field" id="modal-tcp-server-section">
+            <label>TCP Servers</label>
+            <div id="modal-tcp-server-list"><span class="inline-hint">None configured.</span></div>
+        </div>
+        <div class="modal-field" id="modal-backbone-client-section">
+            <label>Backbone Connections</label>
+            <div id="modal-backbone-client-list"><span class="inline-hint">None configured.</span></div>
+        </div>
+        <div class="modal-field" id="modal-backbone-server-section">
+            <label>Backbone Servers</label>
+            <div id="modal-backbone-server-list"><span class="inline-hint">None configured.</span></div>
+        </div>
+        <div class="modal-field">
+            <label>Dest Hash</label>
+            <span class="modal-value mono" id="modal-hash">&mdash;</span>
+        </div>
+        <div class="modal-op-status" id="modal-op-status" style="display:none;"></div>
+    </div>
+</div>
+
+<div class="bottom-sheet-overlay" id="connect-modal-overlay"></div>
+<div class="bottom-sheet" id="connect-modal">
+    <div class="bottom-sheet-handle"></div>
+    <div class="bottom-sheet-header">
+        <div class="bottom-sheet-title">Connect to Network</div>
+        <button class="bottom-sheet-close" id="connect-modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="bottom-sheet-body">
+        <div class="modal-field">
+            <label>Quick Connect</label>
+            <div class="quick-connect-options" id="quick-connect-list">
+                <div id="qc-empty" class="inline-hint" style="padding:8px 0;">No saved connections. Connect to a node below to save it here.</div>
+            </div>
+            <span class="inline-hint-sm mt-3" style="display:block;">Enter an address below to connect</span>
+        </div>
+        <div class="modal-field">
+            <label>Host</label>
+            <input type="text" id="connect-host" class="modal-input" placeholder="e.g. rns.ratspeak.org" autocorrect="off" autocapitalize="none" spellcheck="false">
+        </div>
+        <div class="modal-field">
+            <label>Port</label>
+            <input type="number" id="connect-port" class="modal-input" placeholder="4242" min="1" max="65535" autocorrect="off" autocapitalize="none" spellcheck="false">
+        </div>
+        <div class="modal-field">
+            <label>Name (optional)</label>
+            <input type="text" id="connect-name" class="modal-input" placeholder="Ratspeak Hub" maxlength="32" autocorrect="off" autocapitalize="none" spellcheck="false">
+        </div>
+        <label class="rs-dialog-checkbox-wrap mt-4" id="connect-backbone-row" style="display:none;">
+            <input type="checkbox" id="connect-use-backbone" class="rs-dialog-checkbox">
+            <span class="rs-dialog-checkbox-label">Experimental: Use Backbone</span>
+        </label>
+        <button class="nr-btn w-full mt-4" id="connect-submit-btn">Connect</button>
+    </div>
+</div>
+
+<div class="bottom-sheet-overlay" id="host-modal-overlay"></div>
+<div class="bottom-sheet" id="host-modal">
+    <div class="bottom-sheet-handle"></div>
+    <div class="bottom-sheet-header">
+        <div class="bottom-sheet-title">Host Network</div>
+        <button class="bottom-sheet-close" id="host-modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="bottom-sheet-body">
+        <p class="inline-hint" style="margin:0 0 10px;">Accept incoming TCP connections from other Reticulum nodes.</p>
+        <div class="modal-field">
+            <label>Listen Port</label>
+            <input type="number" id="host-port" class="modal-input" placeholder="4242" min="1" max="65535" autocorrect="off" autocapitalize="none" spellcheck="false">
+        </div>
+        <div class="modal-field">
+            <label>Bind Address</label>
+            <input type="text" id="host-listen-ip" class="modal-input" placeholder="0.0.0.0" autocorrect="off" autocapitalize="none" spellcheck="false">
+        </div>
+        <div class="modal-field">
+            <label>Name (optional)</label>
+            <input type="text" id="host-name" class="modal-input" placeholder="My Server" maxlength="32" autocorrect="off" autocapitalize="none" spellcheck="false">
+        </div>
+        <p class="inline-hint-sm mt-3" style="margin-bottom:0;">Your firewall or router may need to allow this port.</p>
+        <button class="nr-btn w-full mt-4" id="host-submit-btn">Start Hosting</button>
+    </div>
+</div>
+
+<div class="bottom-sheet-overlay" id="backbone-host-modal-overlay"></div>
+<div class="bottom-sheet" id="backbone-host-modal">
+    <div class="bottom-sheet-handle"></div>
+    <div class="bottom-sheet-header">
+        <div class="bottom-sheet-title">Host Backbone Server</div>
+        <button class="bottom-sheet-close" id="backbone-host-modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="bottom-sheet-body">
+        <p class="inline-hint" style="margin:0 0 10px;">Accept Backbone connections from other transport nodes.</p>
+        <div class="modal-field">
+            <label>Listen Port</label>
+            <input type="number" id="backbone-host-port" class="modal-input" placeholder="4242" min="1" max="65535" autocorrect="off" autocapitalize="none" spellcheck="false">
+        </div>
+        <div class="modal-field">
+            <label>Bind Address</label>
+            <input type="text" id="backbone-host-listen-ip" class="modal-input" placeholder="0.0.0.0" autocorrect="off" autocapitalize="none" spellcheck="false">
+        </div>
+        <div class="modal-field">
+            <label>Name (optional)</label>
+            <input type="text" id="backbone-host-name" class="modal-input" placeholder="Backbone Server" maxlength="32" autocorrect="off" autocapitalize="none" spellcheck="false">
+        </div>
+        <p class="inline-hint-sm mt-3" style="margin-bottom:0;">Use this for stable desktop or server nodes, not mobile networks.</p>
+        <button class="nr-btn w-full mt-4" id="backbone-host-submit-btn">Start Hosting</button>
+    </div>
+</div>
+
+<div class="bottom-sheet-overlay" id="rnode-modal-overlay"></div>
+<div class="bottom-sheet" id="rnode-modal">
+    <div class="bottom-sheet-handle"></div>
+    <div class="bottom-sheet-header">
+        <div class="bottom-sheet-title">Add LoRa Device</div>
+        <button class="bottom-sheet-close" id="rnode-modal-close" aria-label="Close dialog">&times;</button>
+    </div>
+    <div class="bottom-sheet-body">
+
+            <div id="rnode-step-1">
+                <div class="rnode-conn-toggle">
+                    <button type="button" id="rnode-toggle-ble" class="active" title="Connect via Bluetooth Low Energy">Bluetooth<span class="toggle-hint" id="rnode-ble-hint"></span></button>
+                    <button type="button" id="rnode-toggle-serial" title="Connect via USB cable">USB / Serial</button>
+                    <button type="button" id="rnode-toggle-android-usb" style="display:none" title="Connect via USB-OTG">USB</button>
+                </div>
+
+                <div id="rnode-ble-section" style="margin-top:12px;">
+                    <div id="rnode-ble-ready">
+                        <div class="rnode-pairing-tip">Tip: enable pairing mode on your RNode (hold the left button) before scanning, and keep it active while pairing.</div>
+                        <div class="ble-device-list" id="ble-device-list">
+                            <div class="ble-scan-placeholder">Click "Scan" to find nearby RNode devices.</div>
+                        </div>
+                        <button class="nr-btn w-full mt-3" id="ble-scan-btn">Start Scan</button>
+                        <div id="rnode-handoff-hint-ble" class="rnode-handoff-hint" style="display:none">Connecting will disconnect your active USB LoRa radio.</div>
+                    </div>
+                </div>
+
+                <div id="rnode-serial-section" style="display:none;margin-top:12px;">
+                    <div class="u-flex gap-2">
+                        <select id="rnode-port" class="nr-select flex-1">
+                            <option value="">Select device...</option>
+                        </select>
+                        <button class="nr-btn nr-btn-xs" id="rnode-refresh-btn" aria-label="Refresh serial ports" title="Refresh ports">&#x21bb;</button>
+                    </div>
+                </div>
+
+                <div id="rnode-android-usb-section" style="display:none;margin-top:12px;">
+                    <div class="ble-device-list" id="android-usb-device-list">
+                        <div class="ble-scan-placeholder">Plug in your RNode via a USB-C OTG cable, then tap "Refresh".</div>
+                    </div>
+                    <button class="nr-btn w-full mt-3" id="android-usb-refresh-btn">Refresh</button>
+                    <div id="rnode-handoff-hint-usb" class="rnode-handoff-hint" style="display:none">Connecting will disconnect your active Bluetooth LoRa radio.</div>
+                </div>
+
+                <button class="nr-btn w-full mt-7" id="rnode-next-btn" disabled>Next</button>
+            </div>
+
+            <div id="rnode-step-2" style="display:none;">
+                <div class="rnode-device-summary" id="rnode-device-summary"></div>
+
+                <div class="modal-field">
+                    <label>Name</label>
+                    <input type="text" id="rnode-iface-name" class="modal-input" placeholder="My LoRa Radio" maxlength="32" autocorrect="off" autocapitalize="none" spellcheck="false">
+                </div>
+                <div class="modal-field">
+                    <label>Region</label>
+                    <select id="rnode-region" class="nr-select"></select>
+                </div>
+                <div class="modal-field">
+                    <label>Preset</label>
+                    <select id="rnode-preset" class="nr-select"></select>
+                </div>
+
+                <div class="u-flex gap-4 mt-7">
+                    <button type="button" class="nr-btn nr-btn-ghost" id="rnode-back-btn">Back</button>
+                    <button class="nr-btn flex-1" id="rnode-submit-btn">Add Radio</button>
+                </div>
+            </div>
+
+    </div>
+</div>
+
+
+<div id="toast-container" role="status" aria-live="polite"></div>
+
+<!-- Synchronous load order matters: state/constants/setup/nav before any caller
+     of their module-level functions; tauri_events.js last (wires everything above).
+     Reordering breaks fresh boots silently. -->
+<script src="/static/js/state.js"></script>
+<script src="/static/js/constants.js"></script>
+<script src="/static/js/no_pinch.js"></script>
+<script src="/static/js/setup.js"></script>
+<script src="/static/js/nav.js"></script>
+<script src="/static/js/gestures.js"></script>
+<script src="/static/js/view_stack.js"></script>
+<div class="img-actions" id="imgActions">
+    <button class="img-actions__item" id="imgCopy">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+        Copy
+    </button>
+    <button class="img-actions__item" id="imgDownload">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download
+    </button>
+</div>
+
+<script src="/static/js/peers_cache.js"></script>
+<script src="/static/js/connections.js"></script>
+<script src="/static/js/peers.js"></script>
+<script src="/static/js/toasts.js"></script>
+<script src="/static/js/dialogs.js"></script>
+<script src="/static/js/action_popover.js"></script>
+<script src="/static/js/events.js"></script>
+<script src="/static/js/activity.js"></script>
+<script src="/static/js/health.js"></script>
+<script src="/static/js/modals.js"></script>
+<script src="/static/js/emoji_data.js"></script>
+<script src="/static/js/emoji_picker.js"></script>
+<script src="/static/js/lxmf.js"></script>
+<script src="/static/js/propagation.js"></script>
+<script src="/static/js/settings.js"></script>
+<script src="/static/js/identity.js"></script>
+<script src="/static/js/confetti.js"></script>
+<script src="/static/js/games_tab.js"></script>
+<script src="/static/js/tauri_events.js"></script>
+<script src="/static/js/init_dom_handlers.js"></script>
+</body>
+</html>

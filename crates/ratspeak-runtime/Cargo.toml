@@ -1,0 +1,63 @@
+[package]
+name = "ratspeak-runtime"
+description = "Ratspeak runtime: RNS + LXMF + LRGP wiring, AppState, async loops"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+serial = ["dep:serialport", "rns-interface/serial", "rns-runtime/serial"]
+ble = ["dep:btleplug", "rns-interface/ble", "rns-runtime/ble"]
+# Background-throttle gate for mobile builds.
+mobile-throttle = ["rns-transport/mobile-throttle", "rns-interface/mobile-throttle"]
+
+[dependencies]
+ratspeak-core = { workspace = true }
+ratspeak-db = { workspace = true }
+
+# Direct rusqlite use (params! macros, custom queries) inside runtime.
+rusqlite = { workspace = true }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+
+# Reticulum + LXMF + LRGP
+rns-crypto = { workspace = true }
+rns-wire = { workspace = true }
+rns-identity = { workspace = true }
+rns-transport = { workspace = true }
+rns-link = { workspace = true }
+rns-protocol = { workspace = true }
+rns-interface = { workspace = true }
+rns-runtime = { workspace = true }
+lxmf-core = { workspace = true }
+lrgp = { workspace = true }
+
+# Async + serialization
+tokio = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rmpv = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Utilities
+indexmap = "2"
+hex = { workspace = true }
+sha2 = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+mime_guess = "2"
+base64 = "0.22"
+glob = "0.3"
+futures = "0.3"
+dirs = "6"
+
+# Optional interface backends
+serialport = { workspace = true, optional = true }
+btleplug = { workspace = true, optional = true }
+
+# iOS-only: CoreBluetooth authorization probe in platform_ios.rs
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"

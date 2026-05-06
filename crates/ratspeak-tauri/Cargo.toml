@@ -1,0 +1,76 @@
+[package]
+name = "ratspeak-tauri"
+description = "Ratspeak Tauri IPC surface — #[tauri::command] handlers + AppHandle event emitter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["serial"]
+# Re-exported through ratspeak-runtime so user-visible flag names don't change.
+serial = ["ratspeak-runtime/serial", "dep:serialport", "rns-interface/serial", "rns-runtime/serial"]
+ble = ["ratspeak-runtime/ble", "dep:btleplug", "rns-interface/ble", "rns-runtime/ble"]
+mobile-throttle = ["ratspeak-runtime/mobile-throttle", "rns-transport/mobile-throttle", "rns-interface/mobile-throttle"]
+
+[dependencies]
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+
+# Tauri IPC — #[tauri::command], AppHandle::emit, generate_handler!. The main
+# entry points (WebView, bundling) live in the sibling `src-tauri/` crate; this
+# dep is here because commands and event emitters are implemented alongside
+# the business logic they run.
+tauri = { version = "2" }
+tauri-plugin-notification = "2"
+
+# Async runtime
+tokio = { workspace = true }
+bytes = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Internal crates
+ratspeak-core = { workspace = true }
+ratspeak-db = { workspace = true }
+ratspeak-runtime = { workspace = true }
+rns-crypto = { workspace = true }
+rns-runtime = { workspace = true }
+rns-identity = { workspace = true }
+rns-transport = { workspace = true }
+rns-wire = { workspace = true }
+rns-protocol = { workspace = true }
+rns-interface = { workspace = true }
+lxmf-core = { workspace = true }
+lrgp = { workspace = true }
+
+# MessagePack value type (for LRGP envelope bridging)
+rmpv = { workspace = true }
+
+# Utilities
+indexmap = "2"
+tracing = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+mime_guess = "2"
+base64 = "0.22"
+glob = "0.3"
+serialport = { workspace = true, optional = true }
+btleplug = { workspace = true, optional = true }
+futures = "0.3"
+dirs = "6"
+tracing-subscriber = { workspace = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# Reading CBManager.authorization without instantiating CBCentralManager
+# (which would trigger the iOS Bluetooth permission prompt). objc2 raw
+# msg_send! is enough here — no need for a full Core Bluetooth binding crate.
+objc2 = "0.6"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,131 @@
+// Floating menu anchored to a trigger element (desktop counterpart to mobile FAB).
+
+(function() {
+    var _activePopover = null;
+
+    function close() {
+        if (!_activePopover) return;
+        var p = _activePopover;
+        _activePopover = null;
+        p.popover.classList.remove('open');
+        document.removeEventListener('keydown', p.onKey, true);
+        window.removeEventListener('resize', p.onReflow);
+        window.removeEventListener('scroll', p.onReflow, true);
+        setTimeout(function() {
+            if (p.scrim.parentNode) p.scrim.remove();
+            if (p.popover.parentNode) p.popover.remove();
+        }, 130);
+    }
+
+    function position(popover, trigger) {
+        var r = trigger.getBoundingClientRect();
+        var pw = popover.offsetWidth;
+        var ph = popover.offsetHeight;
+        var vw = window.innerWidth;
+        var vh = window.innerHeight;
+        var margin = 8;
+
+        var top = r.top - ph - margin;
+        var origin = 'bottom left';
+
+        if (top < margin) {
+            top = r.bottom + margin;
+            origin = 'top left';
+        }
+
+        var left = r.left + (r.width / 2) - 24;
+        if (left + pw > vw - margin) {
+            left = vw - pw - margin;
+            origin = origin.replace('left', 'right');
+        }
+        if (left < margin) left = margin;
+        if (top + ph > vh - margin) top = vh - ph - margin;
+
+        popover.style.top = top + 'px';
+        popover.style.left = left + 'px';
+        popover.style.setProperty('--popover-origin', origin);
+    }
+
+    // items: [{ label, icon: '<svg>', onSelect: function, disabled?, danger? }]
+    window.actionPopover = function(trigger, items) {
+        if (!trigger || !items || !items.length) return;
+        if (_activePopover && _activePopover.trigger === trigger) {
+            close();
+            return;
+        }
+        close();
+
+        var scrim = document.createElement('div');
+        scrim.className = 'action-popover-scrim';
+        scrim.addEventListener('click', close);
+        scrim.addEventListener('contextmenu', function(e) { e.preventDefault(); close(); });
+
+        var popover = document.createElement('div');
+        popover.className = 'action-popover';
+        popover.setAttribute('role', 'menu');
+
+        items.forEach(function(item) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'action-popover-item' + (item.danger ? ' action-popover-item--danger' : '');
+            btn.setAttribute('role', 'menuitem');
+
+            var icon = document.createElement('span');
+            icon.className = 'action-popover-item-icon';
+            icon.innerHTML = item.icon || '';
+
+            var label = document.createElement('span');
+            label.className = 'action-popover-item-label';
+            label.textContent = item.label;
+
+            btn.appendChild(icon);
+            btn.appendChild(label);
+
+            if (item.disabled) {
+                btn.disabled = true;
+                btn.classList.add('disabled');
+            } else {
+                btn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    close();
+                    if (typeof item.onSelect === 'function') {
+                        setTimeout(item.onSelect, 0);
+                    }
+                });
+            }
+
+            popover.appendChild(btn);
+        });
+
+        document.body.appendChild(scrim);
+        document.body.appendChild(popover);
+
+        function onKey(e) {
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                close();
+            }
+        }
+        function onReflow() { if (_activePopover) position(popover, trigger); }
+
+        _activePopover = {
+            trigger: trigger,
+            popover: popover,
+            scrim: scrim,
+            onKey: onKey,
+            onReflow: onReflow
+        };
+
+        document.addEventListener('keydown', onKey, true);
+        window.addEventListener('resize', onReflow);
+        window.addEventListener('scroll', onReflow, true);
+
+        position(popover, trigger);
+        requestAnimationFrame(function() { popover.classList.add('open'); });
+
+        var first = popover.querySelector('.action-popover-item');
+        if (first && !window.matchMedia('(hover: none)').matches) first.focus();
+    };
+
+    window.closeActionPopover = close;
+})();

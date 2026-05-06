@@ -1,0 +1,60 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicholasgasior/tauri-apps/tauri-v2/crates/tauri-cli/schema.json",
+  "productName": "Ratspeak",
+  "version": "1.0.0",
+  "identifier": "org.ratspeak.desktop",
+  "build": {
+    "frontendDist": "../dashboard"
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/lib/udev/rules.d/99-ratspeak.rules": "resources/linux/99-ratspeak.rules"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/lib/udev/rules.d/99-ratspeak.rules": "resources/linux/99-ratspeak.rules"
+        }
+      }
+    },
+    "macOS": {
+      "dmg": {
+        "background": "resources/macos/dmg-background.png",
+        "windowPosition": {
+          "x": 200,
+          "y": 120
+        },
+        "windowSize": {
+          "width": 920,
+          "height": 500
+        },
+        "appPosition": {
+          "x": 260,
+          "y": 246
+        },
+        "applicationFolderPosition": {
+          "x": 660,
+          "y": 246
+        }
+      }
+    }
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+    }
+  }
+}

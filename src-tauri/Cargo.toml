@@ -1,0 +1,55 @@
+[package]
+name = "ratspeak"
+version = "1.0.0"
+description = "Ratspeak — Reticulum mesh network dashboard"
+authors = ["Ratspeak Contributors"]
+license = "AGPL-3.0-or-later"
+edition = "2021"
+
+[lib]
+name = "ratspeak_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-notification = "2"
+url = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["full"] }
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+ratspeak-tauri = { path = "../crates/ratspeak-tauri", features = ["ble"] }
+rfd = "0.15"
+tracing-appender = "0.2"
+dirs = "5"
+tauri-plugin-single-instance = "2"
+
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+ratspeak-tauri = { path = "../crates/ratspeak-tauri", default-features = false, features = ["ble", "mobile-throttle"] }
+tauri-plugin-haptics = "2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.19"
+btleplug = "0.11"
+rns-interface = { path = "../../rsReticulum/crates/rns-interface", features = ["ble", "mobile-throttle"] }
+tracing-android = "0.2"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+objc2-ui-kit = { version = "0.3", features = ["UIScrollView", "UIView", "UIResponder"] }
+block2 = "0.6"
+tracing-oslog = "0.3"
+
+[profile.dev]
+strip = "debuginfo"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"

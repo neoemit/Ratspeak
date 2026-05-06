@@ -1,0 +1,598 @@
+// Gesture primitives: attachSwipe, attachLongPress, attachDragDismiss,
+// attachPullToRefresh, attachRipple. Thresholds from RS.gestures.* (constants.js);
+// haptics route through nav.js::haptic(). Pinch-zoom blocking is in no_pinch.js.
+
+var RS = window.RS || {};
+RS.gestures = RS.gestures || {};
+
+(function() {
+    var G = RS.gestures;
+
+    // Names map to iOS feedback generators (UIImpactFeedback / UINotificationFeedback).
+    function _hapticByName(name) {
+        if (!name) return;
+        var ms = G.HAPTIC_DURATION_MAP[name];
+        if (typeof ms === 'number' && typeof haptic === 'function') haptic(ms);
+    }
+    G._hapticByName = _hapticByName;
+
+    function _prefersReducedMotionNow() {
+        return window.matchMedia &&
+               window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    }
+
+    // attachRipple — pointerdown ripple over a delegated selector list.
+    G.attachRipple = function(rootEl, opts) {
+        opts = opts || {};
+        var root = rootEl || document;
+        var selectors = opts.selectors || G.RIPPLE_SELECTORS;
+        var hapticOnTap = (opts.hapticOnTap === undefined) ? 'light' : opts.hapticOnTap;
+
+        if (!isMobile()) return function() {};
+
+        function _spawnRipple(event, element) {
+            if (!element || _prefersReducedMotionNow()) return;
+            var rect = element.getBoundingClientRect();
+            var size = Math.max(rect.width, rect.height) * 2;
+            var px = (event.clientX || (event.touches && event.touches[0] && event.touches[0].clientX) || (rect.left + rect.width / 2));
+            var py = (event.clientY || (event.touches && event.touches[0] && event.touches[0].clientY) || (rect.top + rect.height / 2));
+            var x = px - rect.left - size / 2;
+            var y = py - rect.top - size / 2;
+
+            var ripple = document.createElement('span');
+            ripple.className = 'ripple';
+            ripple.style.width = ripple.style.height = size + 'px';
+            ripple.style.left = x + 'px';
+            ripple.style.top = y + 'px';
+
+            element.classList.add('ripple-host');
+            element.appendChild(ripple);
+
+            ripple.addEventListener('animationend', function() { ripple.remove(); });
+            // Backstop in case animationend never fires (e.g. visibility loss).
+            setTimeout(function() { if (ripple.parentNode) ripple.remove(); }, 500);
+        }
+
+        function _onPointerDown(e) {
+            var target = e.target;
+            for (var i = 0; i < selectors.length; i++) {
+                var el = target.closest && target.closest(selectors[i]);
+                if (el) {
+                    _spawnRipple(e, el);
+                    if (hapticOnTap) _hapticByName(hapticOnTap);
+                    break;
+                }
+            }
+        }
+
+        root.addEventListener('pointerdown', _onPointerDown, { passive: true });
+
+        return function detach() {
+            root.removeEventListener('pointerdown', _onPointerDown);
+        };
+    };
+
+    // attachLongPress — duration-based hold with drift cancel + staged haptics.
+    G.attachLongPress = function(el, opts) {
+        opts = opts || {};
+        var duration = opts.duration || G.LONG_PRESS_BOTTOM_BAR_MS;
+        var delayMs = opts.delayMs || 0;
+        var moveCancelPx = opts.moveCancelPx || G.LONG_PRESS_MOVE_CANCEL_PX;
+        var moveCancelSq = moveCancelPx * moveCancelPx;
+        var excludeZone = opts.excludeZone || null;
+        var hapticStages = (opts.hapticStages || []).slice();
+        var onStart = opts.onStart || function() {};
+        var onProgress = opts.onProgress || function() {};
+        var onFire = opts.onFire || function() {};
+        var onCancel = opts.onCancel || function() {};
+
+        var raf = null;
+        var startT = 0;
+        var fired = false;
+        var startTouch = null;
+        var moves = 0;
+        var firedStages = [];
+
+        function _loop(now) {
+            if (!startT) return;
+            var elapsed = now - startT;
+            var progress = Math.min(elapsed / duration, 1);
+
+            if (elapsed >= delayMs) {
+                onProgress(progress, startTouch);
+                for (var i = 0; i < hapticStages.length; i++) {
+                    var stage = hapticStages[i];
+                    if (!firedStages[i] && progress >= stage.at) {
+                        firedStages[i] = true;
+                        _hapticByName(stage.level);
+                    }
+                }
+            }
+
+            if (progress >= 1 && !fired) {
+                fired = true;
+                try { onFire(startTouch); } finally { _reset(false); }
+                return;
+            }
+
+            raf = requestAnimationFrame(_loop);
+        }
+
+        function _reset(notifyCancel) {
+            if (raf) { cancelAnimationFrame(raf); raf = null; }
+            var hadStart = !!startT;
+            startT = 0;
+            firedStages = [];
+            if (hadStart && !fired && notifyCancel) onCancel();
+        }
+
+        function _onTouchStart(e) {
+            fired = false;
+            moves = 0;
+            startTouch = e.touches[0];
+            if (!startTouch) return;
+
+            if (excludeZone && excludeZone(startTouch)) {
+                startT = 0;
+                startTouch = null;
+                return;
+            }
+
+            startT = performance.now();
+            onStart(e);
+            raf = requestAnimationFrame(_loop);
+        }
+
+        function _onTouchEnd() {
+            if (!fired) _reset(true);
+        }
+
+        function _onTouchMove(e) {
+            if (fired || !startT) return;
+            var t = e.touches[0];
+            if (!t || !startTouch) return;
+            var dx = t.clientX - startTouch.clientX;
+            var dy = t.clientY - startTouch.clientY;
+            moves++;
+
+            // Early upward flick = system home gesture claiming the touch.
+            if (moves <= 3 && dy < -8 && Math.abs(dy) > Math.abs(dx)) {
+                _reset(true);
+                return;
+            }
+            if (dx * dx + dy * dy > moveCancelSq) _reset(true);
+        }
+
+        function _onTouchCancel() { _reset(true); }
+        function _onVisibilityChange() { if (document.hidden) _reset(true); }
+
+        el.addEventListener('touchstart', _onTouchStart, { passive: true });
+        el.addEventListener('touchend', _onTouchEnd);
+        el.addEventListener('touchmove', _onTouchMove);
+        el.addEventListener('touchcancel', _onTouchCancel);
+        document.addEventListener('visibilitychange', _onVisibilityChange);
+
+        return function detach() {
+            _reset(false);
+            el.removeEventListener('touchstart', _onTouchStart);
+            el.removeEventListener('touchend', _onTouchEnd);
+            el.removeEventListener('touchmove', _onTouchMove);
+            el.removeEventListener('touchcancel', _onTouchCancel);
+            document.removeEventListener('visibilitychange', _onVisibilityChange);
+        };
+    };
+
+    // attachSwipe — directional recognizer with optional edge gating,
+    // dwell pre-condition, distance + velocity thresholds.
+    G.attachSwipe = function(el, opts) {
+        opts = opts || {};
+        var direction = opts.direction || 'horizontal';
+        var distanceThreshold = opts.distanceThreshold || G.SWIPE_DISTANCE_PX;
+        var velocityThreshold = opts.velocityThreshold || G.SWIPE_VELOCITY_PX_MS;
+        var skipIf = opts.skipIf || null;
+        // edgeZone: only touches in the leading-edge strip are recognized.
+        var edgeZone = opts.edgeZone || 0;
+        // edgeMargin: inverse — touches inside the margin are rejected.
+        var edgeMargin = opts.edgeMargin || 0;
+        // dwellMs: must remain still inside edgeZone for dwellMs before arming.
+        var dwellMs = opts.dwellMs || 0;
+        var DWELL_MOVE_TOLERANCE = 6;
+        var delegated = opts.delegated || null;
+        var hapticAt = opts.hapticAt || {};
+        var onProgress = opts.onProgress || function() {};
+        var onCommit = opts.onCommit || function() {};
+        var onCancel = opts.onCancel || function() {};
+
+        var startX = 0, startY = 0, startT = 0, tracking = false, gestureTarget = null;
+        var dwellTimer = null, dwellArmed = false;
+
+        function _passesEdgeGate(touch) {
+            if (edgeZone > 0) {
+                if (direction === 'right') return touch.clientX <= edgeZone;
+                if (direction === 'left')  return touch.clientX >= window.innerWidth - edgeZone;
+                if (direction === 'up')    return touch.clientY >= window.innerHeight - edgeZone;
+                if (direction === 'down')  return touch.clientY <= edgeZone;
+                // 'horizontal' accepts either edge.
+                return touch.clientX <= edgeZone ||
+                       touch.clientX >= window.innerWidth - edgeZone;
+            }
+            if (edgeMargin > 0) {
+                if (direction === 'horizontal' || direction === 'left' || direction === 'right') {
+                    return touch.clientX >= edgeMargin &&
+                           touch.clientX <= window.innerWidth - edgeMargin;
+                }
+                return touch.clientY >= edgeMargin &&
+                       touch.clientY <= window.innerHeight - edgeMargin;
+            }
+            return true;
+        }
+
+        function _clearDwell() {
+            if (dwellTimer) { clearTimeout(dwellTimer); dwellTimer = null; }
+        }
+
+        function _onTouchStart(e) {
+            if (skipIf && skipIf(e)) return;
+            var t = e.touches[0];
+            if (!t) return;
+            if (!_passesEdgeGate(t)) return;
+            // matched element is passed to onCommit so consumer knows the target.
+            if (delegated) {
+                gestureTarget = e.target.closest && e.target.closest(delegated);
+                if (!gestureTarget) return;
+            } else {
+                gestureTarget = e.target;
+            }
+            startX = t.clientX;
+            startY = t.clientY;
+            startT = performance.now();
+            tracking = true;
+            if (dwellMs > 0) {
+                dwellArmed = false;
+                _clearDwell();
+                dwellTimer = setTimeout(function() {
+                    dwellArmed = true;
+                    if (hapticAt.dwellHit) _hapticByName(hapticAt.dwellHit);
+                }, dwellMs);
+            } else {
+                dwellArmed = true;
+            }
+        }
+
+        function _onTouchMove(e) {
+            if (!tracking) return;
+            var t = e.touches[0];
+            if (!t) return;
+            var dx = t.clientX - startX;
+            var dy = t.clientY - startY;
+            // Movement beyond DWELL_MOVE_TOLERANCE before dwell fires aborts.
+            if (dwellMs > 0 && !dwellArmed) {
+                if (Math.abs(dx) > DWELL_MOVE_TOLERANCE ||
+                    Math.abs(dy) > DWELL_MOVE_TOLERANCE) {
+                    tracking = false;
+                    _clearDwell();
+                    onCancel(dx, dy);
+                }
+                return;
+            }
+            // Axis-lock: perpendicular drift > parallel = user is scrolling, abort.
+            var horizontal = (direction === 'left' || direction === 'right' || direction === 'horizontal');
+            if (horizontal && Math.abs(dy) > Math.abs(dx)) {
+                tracking = false;
+                onCancel(dx, dy, gestureTarget);
+                return;
+            }
+            if (!horizontal && Math.abs(dx) > Math.abs(dy)) {
+                tracking = false;
+                onCancel(dx, dy, gestureTarget);
+                return;
+            }
+            var progress = _signedProgress(direction, dx, dy) / distanceThreshold;
+            onProgress(dx, dy, Math.max(0, Math.min(1, progress)), gestureTarget);
+        }
+
+        function _onTouchEnd(e) {
+            if (!tracking) return;
+            tracking = false;
+            _clearDwell();
+            var t = (e.changedTouches && e.changedTouches[0]) || null;
+            var dx = t ? t.clientX - startX : 0;
+            var dy = t ? t.clientY - startY : 0;
+            var elapsed = Math.max(1, performance.now() - startT);
+            var distance = _signedProgress(direction, dx, dy);
+            var velocity = distance / elapsed;
+            if (dwellMs > 0 && !dwellArmed) {
+                onCancel(dx, dy);
+                return;
+            }
+            if (distance >= distanceThreshold || velocity >= velocityThreshold) {
+                if (hapticAt.commit) _hapticByName(hapticAt.commit);
+                onCommit(gestureTarget, dx, dy, velocity);
+            } else {
+                if (hapticAt.cancel) _hapticByName(hapticAt.cancel);
+                onCancel(dx, dy, gestureTarget);
+            }
+        }
+
+        function _onTouchCancel() {
+            if (!tracking) return;
+            tracking = false;
+            _clearDwell();
+            onCancel(0, 0);
+        }
+
+        // Negative/off-axis travel reads as zero.
+        function _signedProgress(dir, dx, dy) {
+            if (dir === 'left')       return Math.max(0, -dx);
+            if (dir === 'right')      return Math.max(0,  dx);
+            if (dir === 'up')         return Math.max(0, -dy);
+            if (dir === 'down')       return Math.max(0,  dy);
+            if (dir === 'horizontal') return Math.abs(dx);
+            return 0;
+        }
+
+        el.addEventListener('touchstart', _onTouchStart, { passive: true });
+        el.addEventListener('touchmove', _onTouchMove, { passive: true });
+        el.addEventListener('touchend', _onTouchEnd);
+        el.addEventListener('touchcancel', _onTouchCancel);
+
+        return function detach() {
+            tracking = false;
+            el.removeEventListener('touchstart', _onTouchStart);
+            el.removeEventListener('touchmove', _onTouchMove);
+            el.removeEventListener('touchend', _onTouchEnd);
+            el.removeEventListener('touchcancel', _onTouchCancel);
+        };
+    };
+
+    // Shared drag-dismiss behavior for sheets and modals. Keeps threshold,
+    // rubber-band, scroll-blocking, and haptic behavior in one place.
+    G.attachDragDismiss = function(el, opts) {
+        opts = opts || {};
+        var axis = opts.axis || 'y';
+        var handle = el;
+        if (opts.handleSelector) {
+            var queried = el.querySelector(opts.handleSelector);
+            if (queried) {
+                handle = queried;
+                // touch-action:none on the handle only — body stays scrollable.
+                handle.style.touchAction = 'none';
+            }
+        }
+        var threshold = opts.dismissThreshold || G.DRAG_DISMISS_THRESHOLD_PX;
+        var opacityDenom = G.DRAG_DISMISS_OPACITY_DENOM_PX;
+        var blockIfScrolled = (opts.blockIfScrolled !== false);
+        var hapticAt = opts.hapticAt || {};
+        var rubberBand = !!opts.rubberBand;
+        var rubberBandFactor = G.PULL_TO_REFRESH_RUBBER_BAND_FACTOR;
+        var parallaxOverlay = opts.parallaxOverlay || null;
+        var skipIf = opts.skipIf || null;
+        var snapPoints = opts.snapPoints || [0, 1];
+        if (snapPoints.length > 2) {
+            window.RS.diag('warn', '[gestures] attachDragDismiss: multi-snap snapPoints not yet implemented; treating as binary [0, 1]', snapPoints);
+        }
+
+        var onProgress = opts.onProgress || function() {};
+        var onCommit = opts.onCommit || function() {};
+        var onCancel = opts.onCancel || function() {};
+
+        var startX = 0, startY = 0, currentDelta = 0, dragging = false, startT = 0;
+
+        function _readDelta(t) {
+            if (axis === 'y') return t.clientY - startY;
+            return t.clientX - startX;
+        }
+
+        function _shouldBlock() {
+            return blockIfScrolled && el.scrollTop > 0;
+        }
+
+        function _applyDrag(delta) {
+            // Drag-dismiss only commits in positive direction; negative rubber-bands.
+            var visual = delta;
+            if (delta < 0) visual = rubberBand ? delta / rubberBandFactor : 0;
+            var transform = (axis === 'y')
+                ? 'translateY(' + visual + 'px)'
+                : 'translateX(' + visual + 'px)';
+            el.style.transform = transform;
+            var op = Math.max(0.5, 1 - Math.max(0, delta) / opacityDenom);
+            el.style.opacity = String(op);
+            if (parallaxOverlay) parallaxOverlay.style.opacity = String(op);
+            onProgress(delta, Math.max(0, Math.min(1, delta / threshold)));
+        }
+
+        function _onTouchStart(e) {
+            if (skipIf && skipIf(e)) return;
+            if (_shouldBlock()) return;
+            var t = e.touches[0];
+            if (!t) return;
+            startX = t.clientX;
+            startY = t.clientY;
+            startT = performance.now();
+            currentDelta = 0;
+            dragging = true;
+            el.style.transition = 'none';
+        }
+
+        function _onTouchMove(e) {
+            if (!dragging) return;
+            var t = e.touches[0];
+            if (!t) return;
+            currentDelta = _readDelta(t);
+            _applyDrag(currentDelta);
+        }
+
+        function _onTouchEnd() {
+            if (!dragging) return;
+            dragging = false;
+            var elapsed = Math.max(1, performance.now() - startT);
+            var velocity = currentDelta / elapsed;
+            el.style.transition = '';
+            if (currentDelta > threshold) {
+                if (hapticAt.commit) _hapticByName(hapticAt.commit);
+                onCommit(currentDelta, velocity);
+                // Clear inline styles AFTER onCommit — clearing before causes a
+                // 1-frame snap-back; never clearing leaves residual transform
+                // on the next open.
+                el.style.transform = '';
+                el.style.opacity = '';
+                if (parallaxOverlay) parallaxOverlay.style.opacity = '';
+            } else {
+                if (hapticAt.snap) _hapticByName(hapticAt.snap);
+                el.style.transform = '';
+                el.style.opacity = '';
+                if (parallaxOverlay) parallaxOverlay.style.opacity = '';
+                onCancel(currentDelta, velocity);
+            }
+        }
+
+        function _onTouchCancel() {
+            if (!dragging) return;
+            dragging = false;
+            el.style.transition = '';
+            el.style.transform = '';
+            el.style.opacity = '';
+            if (parallaxOverlay) parallaxOverlay.style.opacity = '';
+            onCancel(currentDelta, 0);
+        }
+
+        handle.addEventListener('touchstart', _onTouchStart, { passive: true });
+        handle.addEventListener('touchmove', _onTouchMove, { passive: true });
+        handle.addEventListener('touchend', _onTouchEnd);
+        handle.addEventListener('touchcancel', _onTouchCancel);
+
+        return {
+            detach: function() {
+                handle.removeEventListener('touchstart', _onTouchStart);
+                handle.removeEventListener('touchmove', _onTouchMove);
+                handle.removeEventListener('touchend', _onTouchEnd);
+                handle.removeEventListener('touchcancel', _onTouchCancel);
+            },
+            snapTo: function(point) {
+                if (point === 0) {
+                    el.style.transform = '';
+                    el.style.opacity = '';
+                    if (parallaxOverlay) parallaxOverlay.style.opacity = '';
+                } else if (point === 1) {
+                    onCommit(threshold + 1);
+                }
+            },
+            close: function() { onCommit(threshold + 1); }
+        };
+    };
+
+    // attachPullToRefresh — async onRefresh hook (sync or Promise).
+    // Idempotent via `el._ptrAttached`.
+    G.attachPullToRefresh = function(el, opts) {
+        opts = opts || {};
+        if (!isMobile()) return function() {};
+        if (!el || el._ptrAttached) return function() {};
+
+        var refreshDistance = opts.refreshDistance || G.PULL_TO_REFRESH_DISTANCE_PX;
+        var rubberBandFactor = opts.rubberBandFactor || G.PULL_TO_REFRESH_RUBBER_BAND_FACTOR;
+        var minRefreshMs = opts.minRefreshMs || G.PULL_TO_REFRESH_MIN_MS;
+        var successMs = opts.successMs || G.PULL_TO_REFRESH_SUCCESS_MS;
+        var hapticAt = opts.hapticAt || {};
+        var onRefresh = opts.onRefresh || function() {};
+        var skipIf = opts.skipIf || null;
+
+        var indicator = document.createElement('div');
+        indicator.className = 'ptr-indicator';
+        indicator.innerHTML =
+            '<div class="ptr-arrow"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="7 13 12 18 17 13"/><line x1="12" y1="2" x2="12" y2="18"/></svg></div>' +
+            '<div class="ptr-spinner"></div>' +
+            '<div class="ptr-check"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 10 18 20 6"/></svg></div>';
+        el.style.position = el.style.position || 'relative';
+        el.appendChild(indicator);
+        var arrowSvg = indicator.querySelector('.ptr-arrow svg');
+
+        var startY = 0, pulling = false, refreshing = false;
+
+        function _onTouchStart(e) {
+            if (skipIf && skipIf(e)) return;
+            if (refreshing) return;
+            if (el.scrollTop > 0) return;
+            startY = e.touches[0].clientY;
+            pulling = true;
+        }
+
+        function _onTouchMove(e) {
+            if (!pulling || refreshing) return;
+            var dy = e.touches[0].clientY - startY;
+            if (dy < 0) { pulling = false; indicator.classList.remove('dragging'); return; }
+            // Past 10px, preventDefault so the page doesn't scroll out from under us.
+            if (dy > 10) e.preventDefault();
+            var damped = dy > refreshDistance
+                ? refreshDistance + (dy - refreshDistance) / rubberBandFactor
+                : dy;
+            indicator.style.top = (damped - 40) + 'px';
+            indicator.classList.add('dragging');
+            var progress = Math.min(dy / refreshDistance, 1);
+            arrowSvg.style.transform = 'rotate(' + (progress * 180) + 'deg)';
+        }
+
+        function _settleRefreshState() {
+            indicator.classList.remove('refreshing');
+            indicator.classList.add('success');
+            if (hapticAt.success) _hapticByName(hapticAt.success);
+            setTimeout(function() {
+                indicator.classList.remove('success');
+                indicator.style.top = '-40px';
+                setTimeout(function() {
+                    refreshing = false;
+                    indicator.style.top = '';
+                }, 350);
+            }, successMs);
+        }
+
+        function _onTouchEnd() {
+            if (!pulling) return;
+            pulling = false;
+            indicator.classList.remove('dragging');
+
+            var currentTop = parseFloat(indicator.style.top) || -40;
+            if (currentTop >= refreshDistance - 40) {
+                refreshing = true;
+                indicator.classList.add('pulling');
+                indicator.style.top = '12px';
+                if (hapticAt.trigger) _hapticByName(hapticAt.trigger);
+
+                setTimeout(function() {
+                    indicator.classList.remove('pulling');
+                    indicator.classList.add('refreshing');
+                    arrowSvg.style.transform = '';
+                }, 50);
+
+                // Wait for refresh promise + minimum-visible-duration.
+                var refreshStarted = performance.now();
+                var refreshResult;
+                try { refreshResult = onRefresh(); } catch (_) {}
+                var refreshDone = (refreshResult && typeof refreshResult.then === 'function')
+                    ? refreshResult.catch(function() {})
+                    : Promise.resolve();
+                refreshDone.then(function() {
+                    var elapsed = performance.now() - refreshStarted;
+                    var remaining = Math.max(0, minRefreshMs - elapsed);
+                    setTimeout(_settleRefreshState, remaining);
+                });
+            } else {
+                indicator.style.top = '-40px';
+                arrowSvg.style.transform = '';
+                setTimeout(function() { indicator.style.top = ''; }, 350);
+            }
+        }
+
+        el.addEventListener('touchstart', _onTouchStart, { passive: true });
+        el.addEventListener('touchmove', _onTouchMove, { passive: false });
+        el.addEventListener('touchend', _onTouchEnd, { passive: true });
+        el._ptrAttached = true;
+
+        return function detach() {
+            el.removeEventListener('touchstart', _onTouchStart);
+            el.removeEventListener('touchmove', _onTouchMove);
+            el.removeEventListener('touchend', _onTouchEnd);
+            if (indicator.parentNode) indicator.parentNode.removeChild(indicator);
+            el._ptrAttached = false;
+        };
+    };
+})();

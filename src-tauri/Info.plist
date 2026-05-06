@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Ratspeak uses Bluetooth to connect to RNode LoRa radios and Ratlow mesh devices for off-grid communication.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>Ratspeak uses Bluetooth to connect to RNode LoRa radios and Ratlow mesh devices for off-grid communication.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Required when you enable a TCP, Local, or Bluetooth Peer interface in Network settings so Ratspeak can reach other nodes on your local network.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Ratspeak accesses your camera so you can take photos or videos to send in a message.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Ratspeak accesses your photo library so you can attach existing photos or videos to a message.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Ratspeak uses your microphone when recording videos to send in a message.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+		<string>bluetooth-peripheral</string>
+	</array>
+</dict>
+</plist>

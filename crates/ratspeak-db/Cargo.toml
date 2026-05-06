@@ -1,0 +1,23 @@
+[package]
+name = "ratspeak-db"
+description = "Ratspeak SQLite layer — schema, migrations, queries"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ratspeak-core = { workspace = true }
+lrgp = { workspace = true }
+
+rusqlite = { workspace = true }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+
+# spawn_db moves the blocking work off the async runtime — tokio dep is intentional.
+tokio = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+hex = { workspace = true }

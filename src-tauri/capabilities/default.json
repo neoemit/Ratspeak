@@ -1,0 +1,28 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for the main window",
+  "windows": ["main"],
+  "local": true,
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:*",
+      "http://localhost:*"
+    ]
+  },
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-focus",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-set-title",
+    "core:window:allow-set-size",
+    "core:window:allow-set-min-size",
+    "core:window:allow-center",
+    "core:webview:default",
+    "core:app:default",
+    "notification:allow-notify",
+    "notification:allow-request-permission",
+    "notification:allow-is-permission-granted"
+  ]
+}

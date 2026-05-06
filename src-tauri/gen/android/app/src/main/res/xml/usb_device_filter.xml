@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  USB-OTG device filter for Ratspeak.
+  Lists USB serial chipsets used by RNode hardware. When any of these is
+  plugged in via USB-C OTG, Android raises ACTION_USB_DEVICE_ATTACHED and
+  the user can choose to open Ratspeak with the device.
+
+  VID list is kept in sync with main/rsReticulum/crates/rns-interface/src/android_usb.rs::KNOWN_VIDS.
+-->
+<resources>
+    <!-- FTDI -->
+    <usb-device vendor-id="1027" />        <!-- 0x0403 -->
+    <!-- Silicon Labs CP210x -->
+    <usb-device vendor-id="4292" />        <!-- 0x10C4 -->
+    <!-- WCH CH340 / CH341 -->
+    <usb-device vendor-id="6790" />        <!-- 0x1A86 -->
+    <!-- CDC-ACM (Netchip) -->
+    <usb-device vendor-id="1317" />        <!-- 0x0525 -->
+    <!-- Raspberry Pi Pico / RP2040 -->
+    <usb-device vendor-id="11914" />       <!-- 0x2E8A -->
+    <!-- Espressif ESP32-S3 -->
+    <usb-device vendor-id="12346" />       <!-- 0x303A -->
+    <!-- Adafruit -->
+    <usb-device vendor-id="9114" />        <!-- 0x239A -->
+    <!-- Nordic Semiconductor NRF52840 -->
+    <usb-device vendor-id="6421" />        <!-- 0x1915 -->
+</resources>

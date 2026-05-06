@@ -1,0 +1,963 @@
+package org.ratspeak.android
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
+import android.bluetooth.le.BluetoothLeScanner
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.ParcelUuid
+import android.webkit.JavascriptInterface
+import android.webkit.WebView
+import androidx.activity.enableEdgeToEdge
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import org.json.JSONArray
+import org.json.JSONObject
+
+class MainActivity : TauriActivity() {
+    companion object {
+        private const val BLE_PERMISSION_REQUEST_CODE = 1001
+        private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1002
+        private const val USB_PERMISSION_ACTION = "org.ratspeak.android.USB_PERMISSION"
+        // Standard Bluetooth MAC-48 address format: 6 hex octets separated
+        // by colons. Used to guard the BLE connect bridge methods before we
+        // hand the string to BluetoothAdapter.getRemoteDevice, which throws
+        // IllegalArgumentException on malformed input.
+        private val BLE_MAC_RE = Regex("^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+    }
+    private var webViewRef: WebView? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private var bleGatt: RatspeakBleGatt? = null
+    private var pendingTop = 0
+    private var pendingBottom = 0
+    private var pendingNavigate: String? = null
+    private var usbPermissionReceiver: BroadcastReceiver? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var lastNetworkType: String = ""
+    @Volatile private var serviceMulticastEnabled = false
+
+    override fun onWebViewCreate(webView: WebView) {
+        super.onWebViewCreate(webView)
+        // Allow the loading page (served over https://tauri.localhost/) to fetch
+        // the embedded HTTP backend at http://127.0.0.1:<port>. Without this,
+        // Android WebView blocks the request as mixed content (default on API 21+).
+        webView.settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        webViewRef = webView
+        // Expose BLE permission bridge to JavaScript
+        webView.addJavascriptInterface(BlePermissionBridge(), "RatspeakAndroid")
+        // Inject any insets that arrived before WebView was ready
+        injectInsets()
+        // Re-inject periodically to survive page navigation (loading -> dashboard)
+        var count = 0
+        handler.postDelayed(object : Runnable {
+            override fun run() {
+                if (count < 5) {
+                    injectInsets()
+                    count++
+                    handler.postDelayed(this, 2000)
+                }
+            }
+        }, 2000)
+        // Start polling for theme changes from the WebView
+        startThemePolling()
+        // Handle pending navigation from notification tap
+        pendingNavigate?.let { target ->
+            pendingNavigate = null
+            // Delay to let the page fully load
+            handler.postDelayed({
+                navigateToView(target)
+            }, 3000)
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
+        super.onCreate(savedInstanceState)
+
+        // Check for notification navigation intent
+        handleNavigateIntent(intent)
+
+        // Match splash background to OS theme preference
+        val isDarkMode = (resources.configuration.uiMode and
+            android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+        val bgColor = if (isDarkMode) "#18171a" else "#FAF7F3"
+        window.decorView.setBackgroundColor(android.graphics.Color.parseColor(bgColor))
+
+        // Both bars transparent — WebView CSS renders the safe areas
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        window.isNavigationBarContrastEnforced = false
+
+        // Set initial bar icon appearance based on OS theme
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !isDarkMode
+            isAppearanceLightNavigationBars = !isDarkMode
+        }
+
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+
+            // No native top/bottom padding — CSS handles safe areas
+            // Only IME keyboard pushes content up
+            view.setPadding(bars.left, 0, bars.right, if (ime.bottom > 0) ime.bottom else 0)
+
+            // Convert physical pixels to CSS pixels (dp)
+            val density = view.resources.displayMetrics.density
+            pendingTop = Math.round(bars.top / density)
+            pendingBottom = Math.round(bars.bottom / density)
+            injectInsets()
+
+            insets
+        }
+
+        // Start foreground service
+        val serviceIntent = Intent(this, RatspeakService::class.java)
+        startForegroundService(serviceIntent)
+
+        // Android 13+ gates notifications behind a runtime permission. Without
+        // it, NotificationManager.notify() silently drops — including message
+        // notifications emitted by the Rust/Tauri notification backend. Request it at
+        // startup, once, so the prompt lands before the first inbound message.
+        // BLE permissions are requested on-demand via the JS bridge and use a
+        // different request code, so the two dialogs don't overlap.
+        requestNotificationPermissionIfNeeded()
+
+        registerNetworkCallback()
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val perm = Manifest.permission.POST_NOTIFICATIONS
+        if (ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED) return
+        ActivityCompat.requestPermissions(this, arrayOf(perm), NOTIFICATION_PERMISSION_REQUEST_CODE)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleNavigateIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        postLifecycleState(true)
+        // ACTION_REFRESH clears per-sender notifications in RatspeakService
+        // and kicks the poll loop so lastKnownUnread is current before the
+        // user reads messages to zero.
+        refreshServicePoll()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // Signal background state to Rust backend (fallback for JS visibilitychange)
+        postLifecycleState(false)
+        refreshServicePoll()
+    }
+
+    private fun refreshServicePoll() {
+        try {
+            val intent = Intent(this, RatspeakService::class.java).apply {
+                action = RatspeakService.ACTION_REFRESH
+            }
+            startService(intent)
+        } catch (_: Exception) {
+            // Service not running yet (first onCreate hasn't finished) — safe
+            // to skip; the service will do its first poll as soon as it's up.
+        }
+    }
+
+    override fun onDestroy() {
+        // The foreground service (RatspeakService) owns mesh lifetime, but the BLE
+        // GATT handle lives on this Activity. If the Activity is destroyed, close
+        // the GATT link cleanly so we don't leak a stale BluetoothGatt into the
+        // OS stack.
+        try { bleGatt?.disconnect() } catch (_: Exception) {}
+        bleGatt = null
+        usbPermissionReceiver?.let {
+            try { unregisterReceiver(it) } catch (_: Exception) {}
+        }
+        usbPermissionReceiver = null
+        networkCallback?.let {
+            try {
+                getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it)
+            } catch (_: Exception) {}
+        }
+        networkCallback = null
+        super.onDestroy()
+    }
+
+    /**
+     * Register a default-network callback so the Rust core re-evaluates Auto
+     * transport mode whenever the OS reports a network change (wifi↔cellular
+     * handoff, gain/loss). We invoke `network_type_changed` via the Tauri
+     * IPC bridge — ConnectivityManager fires on the actual network transition
+     * rather than the WebView's lagging navigator.connection proxy.
+     *
+     * The iOS side mirrors this with NWPathMonitor in src-tauri/src/lib.rs.
+     */
+    private fun registerNetworkCallback() {
+        if (networkCallback != null) return
+        val cm = try {
+            getSystemService(ConnectivityManager::class.java)
+        } catch (_: Exception) { null } ?: return
+
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                emitIfChanged(cm.getNetworkCapabilities(network))
+            }
+
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                emitIfChanged(caps)
+            }
+
+            override fun onLost(network: Network) {
+                emitIfChanged(null)
+            }
+
+            private fun emitIfChanged(caps: NetworkCapabilities?) {
+                val type = classifyTransport(caps)
+                if (type == lastNetworkType) return
+                lastNetworkType = type
+                updateServiceMulticastLock(type == "wifi")
+                injectNetworkTypeChange(type)
+            }
+        }
+        try {
+            cm.registerDefaultNetworkCallback(cb)
+            networkCallback = cb
+        } catch (_: Exception) {}
+    }
+
+    private fun classifyTransport(caps: NetworkCapabilities?): String {
+        if (caps == null) return "none"
+        return when {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+            else -> "unknown"
+        }
+    }
+
+    private fun updateServiceMulticastLock(enable: Boolean) {
+        if (serviceMulticastEnabled == enable) return
+        serviceMulticastEnabled = enable
+        try {
+            val intent = Intent(this, RatspeakService::class.java).apply {
+                action = if (enable) {
+                    RatspeakService.ACTION_ENABLE_MULTICAST
+                } else {
+                    RatspeakService.ACTION_DISABLE_MULTICAST
+                }
+            }
+            startService(intent)
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Route the path-change through Tauri IPC so the Rust core's
+     * `network_type_changed` command can re-evaluate Auto transport mode.
+     * `typeof RS !== 'undefined'` guards the early-boot window before
+     * state.js has defined the IPC wrapper.
+     */
+    private fun injectNetworkTypeChange(networkType: String) {
+        webViewRef?.post {
+            webViewRef?.evaluateJavascript(
+                "if (typeof RS !== 'undefined' && RS.invoke) { " +
+                    "RS.invoke('network_type_changed', { args: { network_type: '$networkType' } }).catch(function(){}); }",
+                null
+            )
+        }
+    }
+
+    /** Route the foreground/background transition through Tauri IPC — the core's
+     *  `api_set_foreground` command handles everything else. WebView JS is the
+     *  one-line bridge from native Activity callbacks to the Tauri runtime.
+     */
+    private fun postLifecycleState(foreground: Boolean) {
+        webViewRef?.post {
+            webViewRef?.evaluateJavascript(
+                "if (typeof RS !== 'undefined' && RS.invoke) { " +
+                    "RS.invoke('api_set_foreground', { args: { foreground: $foreground } }).catch(function(){}); }",
+                null
+            )
+        }
+    }
+
+    private fun handleNavigateIntent(intent: Intent?) {
+        val target = intent?.getStringExtra("navigate_to") ?: return
+        val destHash = intent.getStringExtra("dest_hash")
+        val payload = if (!destHash.isNullOrEmpty()) "$target|$destHash" else target
+        if (webViewRef != null) {
+            navigateToView(payload)
+        } else {
+            pendingNavigate = payload
+        }
+    }
+
+    private fun navigateToView(payload: String) {
+        val parts = payload.split("|", limit = 2)
+        val view = parts[0]
+        val destHash = parts.getOrNull(1) ?: ""
+        // Encode each argument as a JSON string literal so a stray quote (or
+        // any character that would escape the surrounding JS string) can't
+        // break the injection. `JSONObject.quote` returns a double-quoted
+        // JSON string including the surrounding `"`, which is a valid JS
+        // expression on its own.
+        val viewJs = org.json.JSONObject.quote(view)
+        val js = buildString {
+            append("if(typeof switchView==='function')switchView(").append(viewJs).append(");")
+            if (destHash.isNotEmpty()) {
+                val destJs = org.json.JSONObject.quote(destHash)
+                append("setTimeout(function(){if(typeof openConversationWith==='function')openConversationWith(")
+                append(destJs)
+                append(");},150);")
+            }
+        }
+        webViewRef?.evaluateJavascript(js, null)
+    }
+
+    private fun injectInsets() {
+        webViewRef?.evaluateJavascript(
+            "document.documentElement.style.setProperty('--sat','${pendingTop}px');" +
+            "document.documentElement.style.setProperty('--sab','${pendingBottom}px');",
+            null
+        )
+    }
+
+    /**
+     * Poll the WebView's data-theme attribute and update system bar icon colors.
+     * Runs every 3s for 30s after page load to catch theme changes during init,
+     * then stops. User-initiated theme changes after that are cosmetic-only for
+     * the status bar until next app restart.
+     */
+    private fun startThemePolling() {
+        var pollCount = 0
+        val maxPolls = 10
+        handler.postDelayed(object : Runnable {
+            override fun run() {
+                if (pollCount >= maxPolls) return
+                pollCount++
+                webViewRef?.evaluateJavascript(
+                    "(function(){return document.documentElement.getAttribute('data-theme')||''})()"
+                ) { value ->
+                    // evaluateJavascript returns JSON-quoted string e.g. "\"dark\""
+                    val theme = value?.trim()?.removeSurrounding("\"") ?: ""
+                    if (theme == "light" || theme == "dark") {
+                        val isLight = theme == "light"
+                        handler.post {
+                            WindowCompat.getInsetsController(window, window.decorView).apply {
+                                isAppearanceLightStatusBars = isLight
+                                isAppearanceLightNavigationBars = isLight
+                            }
+                        }
+                    }
+                }
+                handler.postDelayed(this, 3000)
+            }
+        }, 3000)
+    }
+
+    // ---- BLE permission helpers ----
+
+    private fun getBlePermissions(): Array<String> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_ADVERTISE
+            )
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
+    private fun hasBlePermissions(): Boolean {
+        return getBlePermissions().all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == BLE_PERMISSION_REQUEST_CODE) {
+            val granted = grantResults.isNotEmpty() && grantResults.all {
+                it == PackageManager.PERMISSION_GRANTED
+            }
+            // Notify the WebView of the permission result
+            handler.post {
+                webViewRef?.evaluateJavascript(
+                    "if(typeof window._onBlePermissionResult==='function')window._onBlePermissionResult($granted);",
+                    null
+                )
+            }
+        } else if (requestCode == NOTIFICATION_PERMISSION_REQUEST_CODE) {
+            // No action required — RatspeakService polls notifyManager directly
+            // and will silently fail until the user re-grants via system
+            // settings. Future work: expose a settings toggle and re-prompt
+            // through shouldShowRequestPermissionRationale().
+        }
+    }
+
+    // ---- Native BLE scanner (modern BluetoothManager API) ----
+
+    private var bleScanner: BluetoothLeScanner? = null
+    private var bleScanCallback: ScanCallback? = null
+
+    // Nordic UART Service UUID — shared with RatspeakBleGatt + Rust side (see BleUuids.kt).
+    private val NUS_SERVICE_UUID = BleUuids.NUS_SERVICE_PARCEL
+
+    // Bluetooth Peer service UUIDs (Ratspeak primary + Columba compat). Used as
+    // scan filters when JS calls scanForBlePeers(). Kept here, not in BleUuids,
+    // because the static UUID strings already live in RatspeakBlePeerClient.
+    private val RATSPEAK_PEER_SERVICE_UUID =
+        ParcelUuid(RatspeakBlePeerClient.RATSPEAK_SERVICE)
+    private val COLUMBA_PEER_SERVICE_UUID =
+        ParcelUuid(RatspeakBlePeerClient.COLUMBA_SERVICE)
+
+    @SuppressLint("MissingPermission")
+    private fun startNativeBleScan(timeoutMs: Long = 5000) {
+        val bluetoothManager = getSystemService(BluetoothManager::class.java)
+        if (bluetoothManager == null) {
+            sendBleScanResult(error = "Bluetooth service not available on this device")
+            return
+        }
+
+        val adapter = bluetoothManager.adapter
+        if (adapter == null) {
+            sendBleScanResult(error = "No Bluetooth adapter found")
+            return
+        }
+
+        if (!adapter.isEnabled) {
+            sendBleScanResult(error = "Bluetooth is turned off. Enable it in system settings.")
+            return
+        }
+
+        val scanner = adapter.bluetoothLeScanner
+        if (scanner == null) {
+            sendBleScanResult(error = "Bluetooth scanner unavailable. Try toggling Bluetooth off and on.")
+            return
+        }
+
+        bleScanner = scanner
+        val foundDevices = mutableMapOf<String, ScanResult>() // keyed by address to deduplicate
+
+        val callback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                val address = result.device.address ?: return
+                // Keep the result with the strongest RSSI
+                val existing = foundDevices[address]
+                if (existing == null || (result.rssi > existing.rssi)) {
+                    foundDevices[address] = result
+                }
+            }
+
+            override fun onScanFailed(errorCode: Int) {
+                val msg = when (errorCode) {
+                    SCAN_FAILED_ALREADY_STARTED -> "Scan already in progress"
+                    SCAN_FAILED_APPLICATION_REGISTRATION_FAILED -> "BLE app registration failed"
+                    SCAN_FAILED_FEATURE_UNSUPPORTED -> "BLE scan not supported on this device"
+                    SCAN_FAILED_INTERNAL_ERROR -> "Internal BLE error"
+                    else -> "Scan failed (error $errorCode)"
+                }
+                sendBleScanResult(error = msg)
+            }
+        }
+
+        bleScanCallback = callback
+
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+            .build()
+
+        scanner.startScan(null, settings, callback)
+
+        // Stop after timeout and report results
+        handler.postDelayed({
+            try { scanner.stopScan(callback) } catch (_: Exception) {}
+            bleScanCallback = null
+            bleScanner = null
+
+            val devices = JSONArray()
+            for ((address, result) in foundDevices) {
+                val name = result.device.name ?: result.scanRecord?.deviceName ?: ""
+                if (name.isEmpty()) continue // Skip unnamed devices
+
+                val serviceUuids = result.scanRecord?.serviceUuids ?: emptyList()
+                // Require NUS service UUID *and* "RNode" name prefix so generic
+                // Nordic-UART devices (Bangle.js, Adafruit demos, hobby boards)
+                // don't pollute the picker. Name fallback still covers scan-response
+                // quirks where service UUIDs are missing from the initial advert.
+                val hasNus = serviceUuids.contains(NUS_SERVICE_UUID)
+                val nameMatch = name.startsWith("RNode")
+                val isRnode = (hasNus && nameMatch) || (serviceUuids.isEmpty() && nameMatch)
+                if (!isRnode) continue
+
+                val device = JSONObject().apply {
+                    put("name", name)
+                    put("address", address)
+                    put("rssi", result.rssi)
+                    put("device_type", "rnode")
+                    put("bonded", result.device.bondState == BluetoothDevice.BOND_BONDED)
+                }
+                devices.put(device)
+            }
+
+            sendBleScanResult(devices = devices)
+        }, timeoutMs)
+    }
+
+    private fun sendBleScanResult(devices: JSONArray? = null, error: String? = null) {
+        val json = JSONObject().apply {
+            put("devices", devices ?: JSONArray())
+            if (error != null) put("error", error)
+        }
+        handler.post {
+            webViewRef?.evaluateJavascript(
+                "if(typeof window._onNativeBleScanResult==='function')window._onNativeBleScanResult(${json});",
+                null
+            )
+        }
+    }
+
+    /**
+     * Scan for Bluetooth Peer devices advertising the Ratspeak or Columba
+     * service UUID. Distinct from [startNativeBleScan] which targets RNode
+     * (NUS service); the two scans never overlap because they filter on
+     * disjoint service UUIDs. Results delivered via window._onBlePeerScanResult.
+     */
+    @SuppressLint("MissingPermission")
+    private fun startPeerBleScan(timeoutMs: Long = 5000) {
+        val bm = getSystemService(BluetoothManager::class.java)
+        if (bm == null) { sendPeerScanResult(error = "Bluetooth service unavailable"); return }
+        val adapter = bm.adapter
+        if (adapter == null) { sendPeerScanResult(error = "No Bluetooth adapter"); return }
+        if (!adapter.isEnabled) { sendPeerScanResult(error = "Bluetooth is turned off"); return }
+        val scanner = adapter.bluetoothLeScanner
+        if (scanner == null) { sendPeerScanResult(error = "Bluetooth scanner unavailable"); return }
+
+        val foundDevices = mutableMapOf<String, Pair<ScanResult, String>>() // address -> (result, protocol)
+
+        val callback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                val address = result.device.address ?: return
+                val uuids = result.scanRecord?.serviceUuids ?: emptyList()
+                val proto = when {
+                    uuids.contains(RATSPEAK_PEER_SERVICE_UUID) -> "ratspeak"
+                    uuids.contains(COLUMBA_PEER_SERVICE_UUID) -> "columba"
+                    else -> return
+                }
+                val existing = foundDevices[address]
+                // Prefer Ratspeak over Columba if both are advertised by one device.
+                if (existing == null || result.rssi > existing.first.rssi ||
+                    (existing.second == "columba" && proto == "ratspeak")) {
+                    foundDevices[address] = result to proto
+                }
+            }
+            override fun onScanFailed(errorCode: Int) {
+                sendPeerScanResult(error = "Peer scan failed (error $errorCode)")
+            }
+        }
+
+        // Filter on both service UUIDs so the OS does the work in firmware
+        // — much friendlier on battery than scanning blind and filtering
+        // in software.
+        val filters = listOf(
+            android.bluetooth.le.ScanFilter.Builder().setServiceUuid(RATSPEAK_PEER_SERVICE_UUID).build(),
+            android.bluetooth.le.ScanFilter.Builder().setServiceUuid(COLUMBA_PEER_SERVICE_UUID).build()
+        )
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+            .build()
+        scanner.startScan(filters, settings, callback)
+
+        handler.postDelayed({
+            try { scanner.stopScan(callback) } catch (_: Exception) {}
+            val devices = JSONArray()
+            for ((address, pair) in foundDevices) {
+                val (result, proto) = pair
+                val name = result.device.name ?: result.scanRecord?.deviceName ?: "Ratspeak peer"
+                devices.put(JSONObject().apply {
+                    put("name", name)
+                    put("address", address)
+                    put("rssi", result.rssi)
+                    put("protocol", proto)
+                })
+            }
+            sendPeerScanResult(devices = devices)
+        }, timeoutMs)
+    }
+
+    private fun sendPeerScanResult(devices: JSONArray? = null, error: String? = null) {
+        val json = JSONObject().apply {
+            put("devices", devices ?: JSONArray())
+            if (error != null) put("error", error)
+        }
+        handler.post {
+            webViewRef?.evaluateJavascript(
+                "if(typeof window._onBlePeerScanResult==='function')window._onBlePeerScanResult(${json});",
+                null
+            )
+        }
+    }
+
+    /**
+     * JavaScript interface exposed to the WebView as window.RatspeakAndroid.
+     * Provides BLE permission requests and native BLE scanning using modern
+     * BluetoothManager API (works on Android 13–16+).
+     */
+    inner class BlePermissionBridge {
+        @JavascriptInterface
+        fun requestBlePermissions() {
+            if (hasBlePermissions()) {
+                // Already granted — notify immediately
+                handler.post {
+                    webViewRef?.evaluateJavascript(
+                        "if(typeof window._onBlePermissionResult==='function')window._onBlePermissionResult(true);",
+                        null
+                    )
+                }
+                return
+            }
+            handler.post {
+                ActivityCompat.requestPermissions(
+                    this@MainActivity,
+                    getBlePermissions(),
+                    BLE_PERMISSION_REQUEST_CODE
+                )
+            }
+        }
+
+        @JavascriptInterface
+        fun hasBlePermissions(): Boolean {
+            return this@MainActivity.hasBlePermissions()
+        }
+
+        /**
+         * Start a native BLE scan. Results are delivered via window._onNativeBleScanResult(data).
+         * This uses BluetoothManager (modern API), not the deprecated getDefaultAdapter().
+         */
+        @JavascriptInterface
+        fun scanBleDevices(timeoutMs: Long) {
+            if (!this@MainActivity.hasBlePermissions()) {
+                sendBleScanResult(error = "Bluetooth permissions not granted")
+                return
+            }
+            handler.post {
+                startNativeBleScan(timeoutMs)
+            }
+        }
+
+        /**
+         * Connect to a BLE device and start the TCP bridge.
+         * Result delivered via window._onBleConnectResult(json).
+         * On success, json.port contains the local TCP port for Rust to connect to.
+         */
+        @JavascriptInterface
+        fun connectBleDevice(address: String, localPort: Int) {
+            if (!BLE_MAC_RE.matches(address)) {
+                // Bail before touching BluetoothAdapter.getRemoteDevice, which
+                // would throw IllegalArgumentException buried in Logcat. A
+                // structured early error makes the frontend able to show a
+                // meaningful toast.
+                val errJson = JSONObject()
+                    .put("success", false)
+                    .put("port", localPort)
+                    .put("error", "Invalid BLE address format (expected XX:XX:XX:XX:XX:XX)")
+                handler.post {
+                    webViewRef?.evaluateJavascript(
+                        "if(typeof window._onBleConnectResult==='function')window._onBleConnectResult($errJson);",
+                        null
+                    )
+                }
+                return
+            }
+            Thread({
+                // Disconnect any existing connection
+                bleGatt?.disconnect()
+                val gatt = RatspeakBleGatt(this@MainActivity)
+                bleGatt = gatt
+                // Let the bridge push phase updates to JS during the multi-step connect.
+                gatt.attachWebView(webViewRef)
+
+                val error = gatt.connect(address, localPort)
+                val result = JSONObject().apply {
+                    put("success", error == null)
+                    put("port", localPort)
+                    if (error != null) put("error", error)
+                }
+                handler.post {
+                    webViewRef?.evaluateJavascript(
+                        "if(typeof window._onBleConnectResult==='function')window._onBleConnectResult($result);",
+                        null
+                    )
+                }
+
+                // If connection succeeded, start forwarding (blocks until disconnected)
+                if (error == null) {
+                    gatt.startForwarding()
+                }
+            }, "ble-gatt-connect").start()
+        }
+
+        /**
+         * Disconnect the active BLE GATT connection and tear down the TCP bridge.
+         */
+        @JavascriptInterface
+        fun disconnectBleDevice() {
+            Thread({
+                bleGatt?.disconnect()
+                bleGatt = null
+            }, "ble-gatt-disconnect").start()
+        }
+
+        // ---- Bluetooth Peer bridge (Bitchat-style symmetric peering) ----
+        //
+        // These mirror the RNode flow but: (1) filter on Ratspeak/Columba
+        // service UUIDs, (2) skip bonding, (3) wire data through Rust JNI
+        // instead of a TCP bridge. The actual GATT lifecycle lives in
+        // RatspeakBlePeerClient; the Rust runtime owns the connection
+        // policy and per-peer state.
+
+        /**
+         * Open the Bluetooth Peer GATT server and start advertising. Returns
+         * synchronously via the JS bridge — startup is fast (< 200 ms).
+         * The Rust [android_peripheral::start_advertising] path also calls
+         * into RatspeakBleServer / openGattServer; this JS bridge is for
+         * cases where the peer mode is toggled directly from the WebView
+         * (e.g., the Network → Bluetooth modal) without going through the
+         * Rust runtime spawn path first.
+         */
+        @JavascriptInterface
+        fun startBlePeerMode(identityHashHex: String): Boolean {
+            if (!this@MainActivity.hasBlePermissions()) return false
+            val id = try { hexToBytes(identityHashHex) } catch (_: Throwable) { return false }
+            if (id.size != 16) return false
+            return RatspeakBleServer.openGattServer(this@MainActivity, id)
+        }
+
+        /**
+         * Stop Bluetooth Peer mode (close the GATT server). Idempotent.
+         */
+        @JavascriptInterface
+        fun stopBlePeerMode() {
+            RatspeakBleServer.closeGattServer()
+        }
+
+        /**
+         * Scan for nearby Ratspeak / Columba peers. Results delivered via
+         * window._onBlePeerScanResult(json) where json.devices is an array
+         * of {name, address, rssi, protocol}.
+         */
+        @JavascriptInterface
+        fun scanForBlePeers(timeoutMs: Long) {
+            if (!this@MainActivity.hasBlePermissions()) {
+                sendPeerScanResult(error = "Bluetooth permissions not granted")
+                return
+            }
+            handler.post { startPeerBleScan(timeoutMs) }
+        }
+
+        /**
+         * Connect to a peer at `address` as Central. On success, the peer's
+         * TX notifications are wired to Rust via JNI; identity flows in
+         * later via the first signed Reticulum announce (Bitchat-style).
+         * Result delivered via
+         * window._onBlePeerConnectResult({address, success, error?}).
+         */
+        @JavascriptInterface
+        fun connectToBlePeer(address: String) {
+            if (!BLE_MAC_RE.matches(address)) {
+                val errJson = JSONObject()
+                    .put("address", address)
+                    .put("success", false)
+                    .put("error", "Invalid BLE address format (expected XX:XX:XX:XX:XX:XX)")
+                handler.post {
+                    webViewRef?.evaluateJavascript(
+                        "if(typeof window._onBlePeerConnectResult==='function')window._onBlePeerConnectResult($errJson);",
+                        null
+                    )
+                }
+                return
+            }
+            Thread({
+                val client = RatspeakBlePeerClient(this@MainActivity)
+                val ok = client.connect(address)
+                val result = JSONObject().apply {
+                    put("address", address)
+                    put("success", ok)
+                    if (!ok) put("error", "Connect failed (see Logcat)")
+                }
+                handler.post {
+                    webViewRef?.evaluateJavascript(
+                        "if(typeof window._onBlePeerConnectResult==='function')window._onBlePeerConnectResult($result);",
+                        null
+                    )
+                }
+            }, "ble-peer-connect").start()
+        }
+
+        /**
+         * Disconnect a specific peer by address. Idempotent — safe to call
+         * for an address with no live client.
+         */
+        @JavascriptInterface
+        fun disconnectBlePeer(address: String) {
+            Thread({
+                RatspeakBlePeerClient.disconnect(address)
+            }, "ble-peer-disconnect").start()
+        }
+
+        private fun hexToBytes(hex: String): ByteArray {
+            val clean = hex.removePrefix("0x").lowercase()
+            require(clean.length % 2 == 0)
+            return ByteArray(clean.length / 2) { i ->
+                val hi = Character.digit(clean[i * 2], 16)
+                val lo = Character.digit(clean[i * 2 + 1], 16)
+                require(hi >= 0 && lo >= 0)
+                ((hi shl 4) or lo).toByte()
+            }
+        }
+
+        private fun bytesToHex(b: ByteArray): String {
+            val sb = StringBuilder(b.size * 2)
+            for (byte in b) sb.append("%02x".format(byte.toInt() and 0xFF))
+            return sb.toString()
+        }
+
+        // ---- USB-OTG permission bridge ----
+        //
+        // USB permissions on Android are per-app + per-device and must be
+        // requested via PendingIntent+BroadcastReceiver on the Activity.
+        // Rust-side JNI cannot do this itself. The flow is:
+        //   1. JS calls hasUsbPermission(deviceName) — synchronous probe.
+        //   2. If false, JS calls requestUsbPermission(deviceName).
+        //   3. The system shows a permission dialog.
+        //   4. We broadcast the result back via window._onUsbPermissionResult.
+        //   5. JS then posts /api/android/usb/connect to the Rust backend,
+        //      which claims the device via JNI (see android_usb.rs).
+
+        @JavascriptInterface
+        fun hasUsbPermission(deviceName: String): Boolean {
+            val um = getSystemService(Context.USB_SERVICE) as? UsbManager ?: return false
+            val device = um.deviceList[deviceName] ?: return false
+            return um.hasPermission(device)
+        }
+
+        @JavascriptInterface
+        fun requestUsbPermission(deviceName: String) {
+            handler.post {
+                val um = getSystemService(Context.USB_SERVICE) as? UsbManager
+                if (um == null) {
+                    dispatchUsbResult(deviceName, false, "USB service unavailable")
+                    return@post
+                }
+                val device = um.deviceList[deviceName]
+                if (device == null) {
+                    dispatchUsbResult(deviceName, false, "Device not found: $deviceName")
+                    return@post
+                }
+                if (um.hasPermission(device)) {
+                    dispatchUsbResult(deviceName, true, null)
+                    return@post
+                }
+
+                // Register a one-shot receiver if we don't already have one.
+                if (usbPermissionReceiver == null) {
+                    val receiver = object : BroadcastReceiver() {
+                        override fun onReceive(ctx: Context, intent: Intent) {
+                            if (intent.action != USB_PERMISSION_ACTION) return
+                            val d: UsbDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                            }
+                            val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                            val name = d?.deviceName ?: ""
+                            dispatchUsbResult(name, granted, null)
+                        }
+                    }
+                    val filter = IntentFilter(USB_PERMISSION_ACTION)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                    } else {
+                        registerReceiver(receiver, filter)
+                    }
+                    usbPermissionReceiver = receiver
+                }
+
+                val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                val permIntent = Intent(USB_PERMISSION_ACTION).setPackage(packageName)
+                val pending = PendingIntent.getBroadcast(this@MainActivity, 0, permIntent, pendingFlags)
+                um.requestPermission(device, pending)
+            }
+        }
+
+        @JavascriptInterface
+        fun listUsbDevices(): String {
+            // Mirror android_usb::enumerate_usb_devices, but expose to JS
+            // directly so the modal can show a device list without a round
+            // trip through the Rust backend.
+            val um = getSystemService(Context.USB_SERVICE) as? UsbManager
+                ?: return "[]"
+            val arr = JSONArray()
+            for ((name, dev) in um.deviceList) {
+                val obj = JSONObject().apply {
+                    put("device_name", name)
+                    put("vid", dev.vendorId)
+                    put("pid", dev.productId)
+                    put("manufacturer", dev.manufacturerName ?: "")
+                    put("product", dev.productName ?: "")
+                    put("has_permission", um.hasPermission(dev))
+                }
+                arr.put(obj)
+            }
+            return arr.toString()
+        }
+    }
+
+    /** Post a USB permission result to the WebView. */
+    private fun dispatchUsbResult(deviceName: String, granted: Boolean, error: String?) {
+        val json = JSONObject().apply {
+            put("device_name", deviceName)
+            put("granted", granted)
+            if (error != null) put("error", error)
+        }
+        handler.post {
+            webViewRef?.evaluateJavascript(
+                "if(typeof window._onUsbPermissionResult==='function')window._onUsbPermissionResult($json);",
+                null
+            )
+        }
+    }
+}

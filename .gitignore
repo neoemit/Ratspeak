@@ -1,0 +1,51 @@
+# Build artifacts
+/target/
+src-tauri/target/
+
+# Local release staging output
+/dist/
+/checksums-*.txt
+/dashboard/static/style.css
+
+# Local developer helpers
+/dev.sh
+/dev.ps1
+/run-dev.ps1
+/start.sh
+/stop.sh
+
+# Maintainer-only scripts are local by default. CI still needs release helpers.
+/scripts/*
+!/scripts/release/
+!/scripts/release/assert-no-tauri-dev-url.sh
+!/scripts/release/setup-android-signing.sh
+
+# Generated Tauri metadata and local icon source manifests
+/src-tauri/gen/schemas/
+/src-tauri/icon-manifest.json
+
+# Runtime data
+.ratspeak/
+*.db
+*.key
+
+# Signing material
+*.p12
+*.mobileprovision
+*.provisionprofile
+*.jks
+*.keystore
+src-tauri/gen/android/keystore.properties
+src-tauri/gen/android/upload-keystore.jks
+scripts/windows/*.cer
+scripts/windows/*.pfx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

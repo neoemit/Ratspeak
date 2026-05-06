@@ -1,0 +1,3309 @@
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite::{Connection, params};
+use tokio::task::JoinError;
+
+pub type DbPool = Pool<SqliteConnectionManager>;
+
+const SCHEMA_VERSION: i64 = 27;
+
+const POOL_MAX_SIZE: u32 = 32;
+
+/// Run sync `db::*` work on the blocking pool. Wrap multi-statement critical
+/// sections in a single call so they share one `Connection`.
+pub async fn spawn_db<F, R>(pool: DbPool, f: F) -> Result<R, JoinError>
+where
+    F: FnOnce(DbPool) -> R + Send + 'static,
+    R: Send + 'static,
+{
+    tokio::task::spawn_blocking(move || f(pool)).await
+}
+
+fn now_ts() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+
+pub fn init_pool(data_dir: &Path) -> Result<DbPool, Box<dyn std::error::Error + Send + Sync>> {
+    let ratspeak_dir = data_dir.join(".ratspeak");
+    std::fs::create_dir_all(&ratspeak_dir)?;
+
+    // Legacy name migrations from earlier product names.
+    let db_path = ratspeak_dir.join("ratspeak.db");
+    for old_name in &["netresist.db", "meshglobe.db"] {
+        let old_path = ratspeak_dir.join(old_name);
+        if old_path.exists() && !db_path.exists() {
+            std::fs::rename(&old_path, &db_path)?;
+        }
+    }
+
+    for old_dir in &[".netresist", ".meshglobe"] {
+        let old = data_dir.join(old_dir);
+        if old.is_dir() && !ratspeak_dir.exists() {
+            std::fs::rename(&old, &ratspeak_dir)?;
+        }
+    }
+
+    let manager = SqliteConnectionManager::file(&db_path).with_init(|conn| {
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+                 PRAGMA foreign_keys=ON;
+                 PRAGMA busy_timeout=30000;
+                 PRAGMA synchronous=NORMAL;",
+        )
+    });
+    let pool = Pool::builder().max_size(POOL_MAX_SIZE).build(manager)?;
+
+    tracing::info!("Database pool initialized at {}", db_path.display());
+    Ok(pool)
+}
+
+pub fn init_schema(pool: &DbPool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let conn = pool.get()?;
+
+    let has_schema: bool = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_version'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? > 0;
+
+    if has_schema {
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
+
+        if version < SCHEMA_VERSION {
+            run_migrations(&conn, version)?;
+        }
+    }
+
+    conn.execute_batch(SCHEMA_SQL)?;
+
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))?;
+    if count == 0 {
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            params![SCHEMA_VERSION],
+        )?;
+    }
+
+    tracing::info!("Database schema initialized (version {SCHEMA_VERSION})");
+    Ok(())
+}
+
+const SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS identities (
+    hash TEXT PRIMARY KEY,
+    lxmf_hash TEXT,
+    nickname TEXT DEFAULT '',
+    display_name TEXT DEFAULT '',
+    created_at REAL NOT NULL,
+    last_used REAL,
+    is_active INTEGER DEFAULT 0,
+    propagation_node TEXT DEFAULT '',
+    propagation_enabled INTEGER DEFAULT 0,
+    propagation_mode TEXT NOT NULL DEFAULT 'auto',
+    propagation_auto_favor_static INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS contacts (
+    dest_hash TEXT NOT NULL,
+    identity_id TEXT DEFAULT '',
+    display_name TEXT,
+    identity_pubkey TEXT,
+    first_seen REAL,
+    last_seen REAL,
+    trust TEXT DEFAULT 'pending',
+    notes TEXT DEFAULT '',
+    UNIQUE(dest_hash, identity_id)
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    content TEXT DEFAULT '',
+    title TEXT DEFAULT '',
+    timestamp REAL NOT NULL,
+    state TEXT DEFAULT 'unknown',
+    direction TEXT DEFAULT 'outbound',
+    rtt_ms REAL,
+    hops INTEGER,
+    path TEXT,
+    identity_id TEXT DEFAULT '',
+    attachment_name TEXT DEFAULT '',
+    attachment_stored_name TEXT DEFAULT '',
+    image_name TEXT DEFAULT '',
+    image_stored_name TEXT DEFAULT '',
+    reply_to_id TEXT DEFAULT '',
+    reply_to_preview TEXT DEFAULT '',
+    game_id TEXT DEFAULT '',
+    game_action TEXT DEFAULT '',
+    game_move_san TEXT DEFAULT '',
+    delivery_method TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_dest ON messages(destination);
+CREATE INDEX IF NOT EXISTS idx_messages_source ON messages(source);
+CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_identity ON messages(identity_id);
+CREATE INDEX IF NOT EXISTS idx_messages_identity_ts ON messages(identity_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(identity_id, direction, state, source);
+CREATE INDEX IF NOT EXISTS idx_contacts_dest_identity ON contacts(dest_hash, identity_id);
+CREATE INDEX IF NOT EXISTS idx_messages_identity_state ON messages(identity_id, state);
+CREATE INDEX IF NOT EXISTS idx_messages_source_identity ON messages(source, identity_id, timestamp ASC);
+CREATE INDEX IF NOT EXISTS idx_messages_dest_identity ON messages(destination, identity_id, timestamp ASC);
+
+CREATE TABLE IF NOT EXISTS hidden_conversations (
+    dest_hash TEXT NOT NULL,
+    identity_id TEXT NOT NULL DEFAULT '',
+    hidden_at REAL,
+    PRIMARY KEY (dest_hash, identity_id)
+);
+
+CREATE TABLE IF NOT EXISTS blocked_contacts (
+    dest_hash TEXT NOT NULL,
+    identity_id TEXT NOT NULL DEFAULT '',
+    display_name TEXT DEFAULT '',
+    blocked_at REAL,
+    PRIMARY KEY (dest_hash, identity_id)
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS connection_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    name TEXT DEFAULT '',
+    last_used REAL NOT NULL,
+    times_used INTEGER DEFAULT 1,
+    UNIQUE(host, port)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    content, title, id UNINDEXED, identity_id UNINDEXED,
+    content='messages', content_rowid='rowid'
+);
+
+CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts(rowid, content, title, id, identity_id)
+    VALUES (new.rowid, new.content, new.title, new.id, new.identity_id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content, title, id, identity_id)
+    VALUES ('delete', old.rowid, old.content, old.title, old.id, old.identity_id);
+END;
+
+DROP TRIGGER IF EXISTS messages_au;
+
+CREATE TRIGGER messages_au AFTER UPDATE OF content, title ON messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content, title, id, identity_id)
+    VALUES ('delete', old.rowid, old.content, old.title, old.id, old.identity_id);
+    INSERT INTO messages_fts(rowid, content, title, id, identity_id)
+    VALUES (new.rowid, new.content, new.title, new.id, new.identity_id);
+END;
+
+CREATE TABLE IF NOT EXISTS reactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    emoji TEXT NOT NULL,
+    timestamp REAL NOT NULL,
+    identity_id TEXT DEFAULT '',
+    UNIQUE(message_id, sender, emoji, identity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reactions_msg ON reactions(message_id);
+
+CREATE TABLE IF NOT EXISTS games (
+    game_id TEXT NOT NULL,
+    game TEXT NOT NULL,
+    contact_hash TEXT NOT NULL,
+    identity_id TEXT DEFAULT '',
+    challenger TEXT NOT NULL,
+    state TEXT DEFAULT '',
+    status TEXT DEFAULT 'pending',
+    winner TEXT DEFAULT '',
+    turn TEXT DEFAULT '',
+    first_turn TEXT DEFAULT '',
+    move_count INTEGER DEFAULT 0,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (game_id, identity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_games_contact ON games(contact_hash, identity_id);
+CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);
+
+CREATE TABLE IF NOT EXISTS app_sessions (
+    session_id    TEXT NOT NULL,
+    identity_id   TEXT NOT NULL DEFAULT '',
+    app_id        TEXT NOT NULL,
+    app_version   INTEGER NOT NULL DEFAULT 1,
+    contact_hash  TEXT NOT NULL,
+    initiator     TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'pending',
+    metadata      TEXT NOT NULL DEFAULT '{}',
+    unread        INTEGER NOT NULL DEFAULT 0,
+    created_at    REAL NOT NULL DEFAULT 0,
+    updated_at    REAL NOT NULL DEFAULT 0,
+    last_action_at REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (session_id, identity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_sessions_contact ON app_sessions(contact_hash, identity_id);
+CREATE INDEX IF NOT EXISTS idx_app_sessions_status ON app_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_app_sessions_app ON app_sessions(app_id);
+
+CREATE TABLE IF NOT EXISTS app_actions (
+    session_id    TEXT NOT NULL,
+    identity_id   TEXT NOT NULL DEFAULT '',
+    action_num    INTEGER NOT NULL,
+    command       TEXT NOT NULL,
+    payload_json  TEXT NOT NULL DEFAULT '{}',
+    sender        TEXT NOT NULL,
+    timestamp     REAL NOT NULL DEFAULT 0,
+    -- Packed LRGP envelope, populated for outbound actions so the manual
+    -- "Resend last move" path can re-transmit without re-dispatching.
+    envelope_mp   BLOB,
+    UNIQUE (session_id, identity_id, action_num)
+);
+
+-- Sidecar to the on-disk known_identities binary file; avoids per-announce
+-- full-file rewrites. Display-name precedence: `contacts.display_name` over
+-- `identity_activity.display_name`.
+CREATE TABLE IF NOT EXISTS identity_activity (
+    dest_hash      TEXT PRIMARY KEY,
+    last_seen      REAL NOT NULL,
+    first_seen     REAL NOT NULL,
+    announce_count INTEGER NOT NULL DEFAULT 1,
+    display_name   TEXT NOT NULL DEFAULT '',
+    last_interface TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_identity_activity_last_seen ON identity_activity(last_seen);
+
+CREATE INDEX IF NOT EXISTS idx_contacts_identity ON contacts(identity_id);
+CREATE INDEX IF NOT EXISTS idx_contacts_identity_name ON contacts(identity_id, display_name);
+CREATE INDEX IF NOT EXISTS idx_blocked_identity ON blocked_contacts(identity_id);
+CREATE INDEX IF NOT EXISTS idx_identities_active ON identities(is_active) WHERE is_active = 1;
+"#;
+
+fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::Error> {
+    if from_version < 2 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS connection_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                name TEXT DEFAULT '',
+                last_used REAL NOT NULL,
+                times_used INTEGER DEFAULT 1,
+                UNIQUE(host, port)
+            );
+            UPDATE schema_version SET version = 2;",
+        )?;
+        tracing::info!("Migrated to schema version 2 (connection_history)");
+    }
+
+    if from_version < 3 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS identities (
+                hash TEXT PRIMARY KEY,
+                lxmf_hash TEXT,
+                nickname TEXT DEFAULT '',
+                display_name TEXT DEFAULT '',
+                created_at REAL NOT NULL,
+                last_used REAL,
+                is_active INTEGER DEFAULT 0,
+                propagation_node TEXT DEFAULT '',
+                propagation_enabled INTEGER DEFAULT 0
+            );",
+        )?;
+
+        let has_identity_id = {
+            let mut stmt = conn.prepare("PRAGMA table_info(contacts)")?;
+            let cols: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            cols.iter().any(|c| c == "identity_id")
+        };
+
+        if !has_identity_id {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS contacts_new (
+                    dest_hash TEXT NOT NULL,
+                    identity_id TEXT DEFAULT '',
+                    display_name TEXT,
+                    identity_pubkey TEXT,
+                    first_seen REAL,
+                    last_seen REAL,
+                    trust TEXT DEFAULT 'pending',
+                    notes TEXT DEFAULT '',
+                    UNIQUE(dest_hash, identity_id)
+                );
+                INSERT OR IGNORE INTO contacts_new
+                    (dest_hash, identity_id, display_name, identity_pubkey, first_seen, last_seen, trust, notes)
+                SELECT dest_hash, '', display_name, identity_pubkey, first_seen, last_seen, trust, notes
+                FROM contacts;
+                DROP TABLE contacts;
+                ALTER TABLE contacts_new RENAME TO contacts;"
+            )?;
+        }
+
+        let has_msg_identity = {
+            let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
+            let cols: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            cols.iter().any(|c| c == "identity_id")
+        };
+        if !has_msg_identity {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN identity_id TEXT DEFAULT ''")?;
+        }
+
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_messages_identity ON messages(identity_id);
+             UPDATE schema_version SET version = 3;",
+        )?;
+        tracing::info!("Migrated to schema version 3 (identities)");
+    }
+
+    if from_version < 4 {
+        let msg_cols = get_column_names(conn, "messages")?;
+        for col in &[
+            "attachment_name",
+            "attachment_stored_name",
+            "image_name",
+            "image_stored_name",
+        ] {
+            if !msg_cols.iter().any(|c| c == col) {
+                conn.execute_batch(&format!(
+                    "ALTER TABLE messages ADD COLUMN {col} TEXT DEFAULT ''"
+                ))?;
+            }
+        }
+        conn.execute_batch("UPDATE schema_version SET version = 4;")?;
+        tracing::info!("Migrated to schema version 4 (attachment columns)");
+    }
+
+    if from_version < 5 {
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                content, title, id UNINDEXED, identity_id UNINDEXED,
+                content='messages', content_rowid='rowid'
+            );
+            CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, content, title, id, identity_id)
+                VALUES (new.rowid, new.content, new.title, new.id, new.identity_id);
+            END;
+            CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+                INSERT INTO messages_fts(messages_fts, rowid, content, title, id, identity_id)
+                VALUES ('delete', old.rowid, old.content, old.title, old.id, old.identity_id);
+            END;
+            CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF content, title ON messages BEGIN
+                INSERT INTO messages_fts(messages_fts, rowid, content, title, id, identity_id)
+                VALUES ('delete', old.rowid, old.content, old.title, old.id, old.identity_id);
+                INSERT INTO messages_fts(rowid, content, title, id, identity_id)
+                VALUES (new.rowid, new.content, new.title, new.id, new.identity_id);
+            END;
+            INSERT INTO messages_fts(messages_fts) VALUES('rebuild');
+            UPDATE schema_version SET version = 5;"
+        )?;
+        tracing::info!("Migrated to schema version 5 (FTS5)");
+    }
+
+    if from_version < 6 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS reactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                emoji TEXT NOT NULL,
+                timestamp REAL NOT NULL,
+                identity_id TEXT DEFAULT '',
+                UNIQUE(message_id, sender, emoji, identity_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_reactions_msg ON reactions(message_id);",
+        )?;
+        let msg_cols = get_column_names(conn, "messages")?;
+        if !msg_cols.iter().any(|c| c == "reply_to_id") {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN reply_to_id TEXT DEFAULT ''")?;
+        }
+        if !msg_cols.iter().any(|c| c == "reply_to_preview") {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN reply_to_preview TEXT DEFAULT ''")?;
+        }
+        conn.execute_batch("UPDATE schema_version SET version = 6;")?;
+        tracing::info!("Migrated to schema version 6 (reactions, reply-to)");
+    }
+
+    if from_version < 7 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS games (
+                game_id TEXT PRIMARY KEY,
+                game TEXT NOT NULL,
+                contact_hash TEXT NOT NULL,
+                identity_id TEXT DEFAULT '',
+                challenger TEXT NOT NULL,
+                state TEXT DEFAULT '',
+                status TEXT DEFAULT 'pending',
+                winner TEXT DEFAULT '',
+                turn TEXT DEFAULT '',
+                first_turn TEXT DEFAULT 'challenger',
+                move_count INTEGER DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_games_contact ON games(contact_hash, identity_id);
+            CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);",
+        )?;
+        let msg_cols = get_column_names(conn, "messages")?;
+        if !msg_cols.iter().any(|c| c == "game_id") {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN game_id TEXT DEFAULT ''")?;
+        }
+        conn.execute_batch("UPDATE schema_version SET version = 7;")?;
+        tracing::info!("Migrated to schema version 7 (games)");
+    }
+
+    if from_version < 8 {
+        let game_cols = get_column_names(conn, "games")?;
+        if !game_cols.iter().any(|c| c == "first_turn") {
+            conn.execute_batch(
+                "ALTER TABLE games ADD COLUMN first_turn TEXT DEFAULT 'challenger'",
+            )?;
+        }
+        conn.execute_batch("UPDATE schema_version SET version = 8;")?;
+        tracing::info!("Migrated to schema version 8 (first_turn)");
+    }
+
+    if from_version < 9 {
+        let mut stmt = conn.prepare(
+            "SELECT game_id, identity_id, challenger, contact_hash, turn, first_turn, winner FROM games"
+        )?;
+        let rows: Vec<(String, String, String, String, String, String, String)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2).unwrap_or_default(),
+                    row.get::<_, String>(3).unwrap_or_default(),
+                    row.get::<_, String>(4).unwrap_or_default(),
+                    row.get::<_, String>(5).unwrap_or_default(),
+                    row.get::<_, String>(6).unwrap_or_default(),
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for (gid, iid, ch, co, turn, first_turn, winner) in rows {
+            let new_turn = match turn.as_str() {
+                "challenger" => &ch,
+                "opponent" => &co,
+                _ => &turn,
+            };
+            let new_first = match first_turn.as_str() {
+                "challenger" => &ch,
+                "opponent" => &co,
+                _ => &first_turn,
+            };
+            let new_winner = match winner.as_str() {
+                "challenger" => &ch,
+                "opponent" => &co,
+                _ => &winner,
+            };
+            conn.execute(
+                "UPDATE games SET turn = ?1, first_turn = ?2, winner = ?3 WHERE game_id = ?4 AND identity_id = ?5",
+                params![new_turn, new_first, new_winner, gid, iid],
+            )?;
+        }
+        conn.execute_batch("UPDATE schema_version SET version = 9;")?;
+        tracing::info!("Migrated to schema version 9 (role→hash)");
+    }
+
+    if from_version < 10 {
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS games;
+            CREATE TABLE IF NOT EXISTS games (
+                game_id TEXT NOT NULL,
+                game TEXT NOT NULL,
+                contact_hash TEXT NOT NULL,
+                identity_id TEXT DEFAULT '',
+                challenger TEXT NOT NULL,
+                state TEXT DEFAULT '',
+                status TEXT DEFAULT 'pending',
+                winner TEXT DEFAULT '',
+                turn TEXT DEFAULT '',
+                first_turn TEXT DEFAULT '',
+                move_count INTEGER DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (game_id, identity_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_games_contact ON games(contact_hash, identity_id);
+            CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);
+            UPDATE schema_version SET version = 10;",
+        )?;
+        tracing::info!("Migrated to schema version 10 (games composite PK)");
+    }
+
+    if from_version < 11 {
+        let msg_cols = get_column_names(conn, "messages")?;
+        if !msg_cols.iter().any(|c| c == "game_action") {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN game_action TEXT DEFAULT ''")?;
+        }
+        if !msg_cols.iter().any(|c| c == "game_move_san") {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN game_move_san TEXT DEFAULT ''")?;
+        }
+        conn.execute_batch("UPDATE schema_version SET version = 11;")?;
+        tracing::info!("Migrated to schema version 11 (game_action columns)");
+    }
+
+    if from_version < 12 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS app_sessions (
+                session_id    TEXT NOT NULL,
+                identity_id   TEXT NOT NULL DEFAULT '',
+                app_id        TEXT NOT NULL,
+                app_version   INTEGER NOT NULL DEFAULT 1,
+                contact_hash  TEXT NOT NULL,
+                initiator     TEXT NOT NULL DEFAULT '',
+                status        TEXT NOT NULL DEFAULT 'pending',
+                metadata      TEXT NOT NULL DEFAULT '{}',
+                unread        INTEGER NOT NULL DEFAULT 0,
+                created_at    REAL NOT NULL DEFAULT 0,
+                updated_at    REAL NOT NULL DEFAULT 0,
+                last_action_at REAL NOT NULL DEFAULT 0,
+                PRIMARY KEY (session_id, identity_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_app_sessions_contact ON app_sessions(contact_hash, identity_id);
+            CREATE INDEX IF NOT EXISTS idx_app_sessions_status ON app_sessions(status);
+            CREATE INDEX IF NOT EXISTS idx_app_sessions_app ON app_sessions(app_id);
+            CREATE TABLE IF NOT EXISTS app_actions (
+                session_id    TEXT NOT NULL,
+                identity_id   TEXT NOT NULL DEFAULT '',
+                action_num    INTEGER NOT NULL,
+                command       TEXT NOT NULL,
+                payload_json  TEXT NOT NULL DEFAULT '{}',
+                sender        TEXT NOT NULL,
+                timestamp     REAL NOT NULL DEFAULT 0,
+                UNIQUE (session_id, identity_id, action_num)
+            );
+            UPDATE schema_version SET version = 12;"
+        )?;
+        tracing::info!("Migrated to schema version 12 (LRGP tables)");
+    }
+
+    if from_version < 13 {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_contacts_dest_identity ON contacts(dest_hash, identity_id);
+            CREATE INDEX IF NOT EXISTS idx_messages_identity_state ON messages(identity_id, state);
+            UPDATE schema_version SET version = 13;"
+        )?;
+        tracing::info!("Migrated to schema version 13 (additional indexes)");
+    }
+
+    if from_version < 14 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS blocked_contacts (
+                dest_hash TEXT NOT NULL,
+                identity_id TEXT NOT NULL DEFAULT '',
+                display_name TEXT DEFAULT '',
+                blocked_at REAL,
+                PRIMARY KEY (dest_hash, identity_id)
+            );
+            UPDATE schema_version SET version = 14;",
+        )?;
+        tracing::info!("Migrated to schema version 14 (blocked_contacts)");
+    }
+
+    if from_version < 15 {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_messages_source_identity ON messages(source, identity_id, timestamp ASC);
+             CREATE INDEX IF NOT EXISTS idx_messages_dest_identity ON messages(destination, identity_id, timestamp ASC);
+             UPDATE schema_version SET version = 15;"
+        )?;
+        tracing::info!("Migrated to schema version 15 (conversation query indexes)");
+    }
+
+    if from_version < 16 {
+        // Backfill last_seen/first_seen from messages table.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS identity_activity (
+                 dest_hash      TEXT PRIMARY KEY,
+                 last_seen      REAL NOT NULL,
+                 first_seen     REAL NOT NULL,
+                 announce_count INTEGER NOT NULL DEFAULT 1
+             );
+             CREATE INDEX IF NOT EXISTS idx_identity_activity_last_seen ON identity_activity(last_seen);
+
+             CREATE INDEX IF NOT EXISTS idx_contacts_identity ON contacts(identity_id);
+             CREATE INDEX IF NOT EXISTS idx_contacts_identity_name ON contacts(identity_id, display_name);
+             CREATE INDEX IF NOT EXISTS idx_blocked_identity ON blocked_contacts(identity_id);
+             CREATE INDEX IF NOT EXISTS idx_identities_active ON identities(is_active) WHERE is_active = 1;
+
+             INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count)
+             SELECT source, MAX(timestamp), MIN(timestamp), 0
+             FROM messages
+             WHERE source != ''
+             GROUP BY source
+             ON CONFLICT(dest_hash) DO UPDATE SET
+                 last_seen  = MAX(excluded.last_seen,  last_seen),
+                 first_seen = MIN(excluded.first_seen, first_seen);
+
+             INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count)
+             SELECT destination, MAX(timestamp), MIN(timestamp), 0
+             FROM messages
+             WHERE destination != ''
+             GROUP BY destination
+             ON CONFLICT(dest_hash) DO UPDATE SET
+                 last_seen  = MAX(excluded.last_seen,  last_seen),
+                 first_seen = MIN(excluded.first_seen, first_seen);
+
+             UPDATE schema_version SET version = 16;"
+        )?;
+        tracing::info!("Migrated to schema version 16 (identity_activity + scaling indexes)");
+    }
+
+    if from_version < 17 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS lrgp_pending_sends (
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id           TEXT NOT NULL,
+                identity_id          TEXT NOT NULL,
+                contact_hash         TEXT NOT NULL,
+                app_id               TEXT NOT NULL,
+                command              TEXT NOT NULL,
+                envelope_mp          BLOB NOT NULL,
+                envelope_hash        TEXT NOT NULL,
+                fallback_text        TEXT NOT NULL,
+                session_snapshot_json TEXT,
+                first_attempt_at     REAL NOT NULL,
+                last_attempt_at      REAL NOT NULL,
+                attempt_count        INTEGER NOT NULL DEFAULT 0,
+                last_transport_tried TEXT,
+                msg_id               TEXT,
+                UNIQUE (session_id, identity_id, command, envelope_hash)
+            );
+            CREATE INDEX IF NOT EXISTS idx_lrgp_pending_session
+                ON lrgp_pending_sends(session_id, identity_id);
+            UPDATE schema_version SET version = 17;",
+        )?;
+        tracing::info!("Migrated to schema version 17 (lrgp_pending_sends)");
+    }
+
+    if from_version < 18 {
+        // Self-heal: empty session_id rows orphan the frontend `_allSessions` map.
+        let sessions_removed =
+            conn.execute("DELETE FROM app_sessions WHERE session_id = ''", [])?;
+        let actions_removed = conn.execute("DELETE FROM app_actions WHERE session_id = ''", [])?;
+        conn.execute_batch("UPDATE schema_version SET version = 18;")?;
+        tracing::info!(
+            "Migrated to schema version 18 (pruned {sessions_removed} empty-SID sessions, \
+             {actions_removed} empty-SID actions)"
+        );
+    }
+
+    if from_version < 19 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS identity_interface_activity (
+                dest_hash      TEXT NOT NULL,
+                interface_name TEXT NOT NULL,
+                last_seen      REAL NOT NULL,
+                first_seen     REAL NOT NULL,
+                PRIMARY KEY (dest_hash, interface_name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_iia_interface
+                ON identity_interface_activity(interface_name);
+            UPDATE schema_version SET version = 19;",
+        )?;
+        tracing::info!(
+            "Migrated to schema version 19 (identity_interface_activity for per-interface peer tracking)"
+        );
+    }
+
+    if from_version < 20 {
+        // Unify peers on identity_activity; drop identity_interface_activity.
+        let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+        if !cols.iter().any(|c| c == "display_name") {
+            conn.execute_batch(
+                "ALTER TABLE identity_activity
+                    ADD COLUMN display_name TEXT NOT NULL DEFAULT '';",
+            )?;
+        }
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_iia_interface;
+             DROP TABLE IF EXISTS identity_interface_activity;
+
+             UPDATE identity_activity
+                SET display_name = (
+                    SELECT display_name FROM contacts
+                     WHERE contacts.dest_hash = identity_activity.dest_hash
+                     LIMIT 1
+                )
+              WHERE display_name = ''
+                AND EXISTS (
+                    SELECT 1 FROM contacts
+                     WHERE contacts.dest_hash = identity_activity.dest_hash
+                       AND COALESCE(contacts.display_name, '') != ''
+                );
+
+             UPDATE schema_version SET version = 20;",
+        )?;
+        tracing::info!(
+            "Migrated to schema version 20 (display_name on identity_activity, dropped identity_interface_activity)"
+        );
+    }
+
+    if from_version < 21 {
+        // Add `last_interface`; required by v22's DROP COLUMN below.
+        let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+        if !cols.iter().any(|c| c == "last_interface") {
+            conn.execute_batch(
+                "ALTER TABLE identity_activity
+                    ADD COLUMN last_interface TEXT NOT NULL DEFAULT '';",
+            )?;
+        }
+        conn.execute_batch("UPDATE schema_version SET version = 21;")?;
+        tracing::info!("Migrated to schema version 21 (last_interface on identity_activity)");
+    }
+
+    if from_version < 22 {
+        let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+        if cols.iter().any(|c| c == "last_interface") {
+            conn.execute_batch("ALTER TABLE identity_activity DROP COLUMN last_interface;")?;
+        }
+        conn.execute_batch("UPDATE schema_version SET version = 22;")?;
+        tracing::info!("Migrated to schema version 22 (dropped last_interface)");
+    }
+
+    if from_version < 23 {
+        // Re-add `last_interface`; stamped atomically with `last_seen` per announce.
+        let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+        if !cols.iter().any(|c| c == "last_interface") {
+            conn.execute_batch(
+                "ALTER TABLE identity_activity
+                    ADD COLUMN last_interface TEXT NOT NULL DEFAULT '';",
+            )?;
+        }
+        conn.execute_batch("UPDATE schema_version SET version = 23;")?;
+        tracing::info!(
+            "Migrated to schema version 23 (last_interface restored, atomic with announce)"
+        );
+    }
+
+    if from_version < 24 {
+        // Add propagation Off/Auto/Manual mode + favor_static.
+        // Pre-existing `propagation_node` and `propagation_enabled` preserved;
+        // `enable_propagation` becomes a shim mapping to mode.
+        let cols = get_column_names(conn, "identities").unwrap_or_default();
+        if !cols.iter().any(|c| c == "propagation_mode") {
+            conn.execute_batch(
+                "ALTER TABLE identities
+                    ADD COLUMN propagation_mode TEXT NOT NULL DEFAULT 'auto';",
+            )?;
+        }
+        if !cols.iter().any(|c| c == "propagation_auto_favor_static") {
+            conn.execute_batch(
+                "ALTER TABLE identities
+                    ADD COLUMN propagation_auto_favor_static INTEGER NOT NULL DEFAULT 1;",
+            )?;
+        }
+        conn.execute_batch("UPDATE schema_version SET version = 24;")?;
+        tracing::info!("Migrated to schema version 24 (propagation_mode + auto_favor_static)");
+    }
+
+    if from_version < 25 {
+        // Persist the chosen LXMF delivery method per outbound message so the
+        // UI can render proof-aware state icons (muted check for opportunistic,
+        // accent check for direct, envelope for propagated).
+        let cols = get_column_names(conn, "messages").unwrap_or_default();
+        if !cols.iter().any(|c| c == "delivery_method") {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN delivery_method TEXT;")?;
+        }
+        conn.execute_batch("UPDATE schema_version SET version = 25;")?;
+        tracing::info!("Migrated to schema version 25 (messages.delivery_method)");
+    }
+
+    if from_version < 26 {
+        // LRGP application-layer retry queue removed — Direct's
+        // MAX_DELIVERY_ATTEMPTS=5 is the actual transport-layer reliability,
+        // and the queue's nonce-replay window (30 min) outran LRGP's per-
+        // session dedup TTL (10 min), risking duplicate move application.
+        conn.execute_batch("DROP TABLE IF EXISTS lrgp_pending_sends;")?;
+        conn.execute_batch("UPDATE schema_version SET version = 26;")?;
+        tracing::info!("Migrated to schema version 26 (drop lrgp_pending_sends)");
+    }
+
+    if from_version < 27 {
+        // Persist the packed LRGP envelope per action so the manual "Resend
+        // last move" path can re-transmit the exact same envelope without
+        // re-dispatching through the LRGP router (which would reject the
+        // resend as `not_your_turn` because local state already advanced).
+        let cols = get_column_names(conn, "app_actions").unwrap_or_default();
+        if !cols.iter().any(|c| c == "envelope_mp") {
+            conn.execute_batch("ALTER TABLE app_actions ADD COLUMN envelope_mp BLOB;")?;
+        }
+        conn.execute_batch("UPDATE schema_version SET version = 27;")?;
+        tracing::info!("Migrated to schema version 27 (app_actions.envelope_mp)");
+    }
+
+    Ok(())
+}
+
+fn get_column_names(conn: &Connection, table: &str) -> Result<Vec<String>, rusqlite::Error> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let cols = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(cols)
+}
+
+pub fn get_active_identity(pool: &DbPool) -> Option<serde_json::Value> {
+    let conn = pool.get().ok()?;
+    let mut stmt = conn
+        .prepare("SELECT * FROM identities WHERE is_active = 1 LIMIT 1")
+        .ok()?;
+    stmt.query_row([], row_to_identity).ok()
+}
+
+pub fn get_all_identities(pool: &DbPool) -> Vec<serde_json::Value> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare("SELECT * FROM identities ORDER BY created_at ASC") {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map([], row_to_identity)
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+pub fn save_identity(
+    pool: &DbPool,
+    hash_hex: &str,
+    lxmf_hash: &str,
+    nickname: &str,
+    display_name: &str,
+) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let now = now_ts();
+    // ON CONFLICT closes the race between two "not exists" → INSERT callers.
+    conn.execute(
+        "INSERT INTO identities
+             (hash, lxmf_hash, nickname, display_name, created_at, last_used,
+              is_active, propagation_node, propagation_enabled)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0, '', 0)
+         ON CONFLICT(hash) DO UPDATE SET
+             lxmf_hash    = excluded.lxmf_hash,
+             nickname     = excluded.nickname,
+             display_name = excluded.display_name,
+             last_used    = excluded.last_used",
+        params![hash_hex, lxmf_hash, nickname, display_name, now],
+    )
+    .ok();
+}
+
+pub fn set_active_identity(pool: &DbPool, hash_hex: &str) -> Result<(), String> {
+    let mut conn = pool.get().map_err(|e| format!("pool: {e}"))?;
+    let now = now_ts();
+    let tx = conn.transaction().map_err(|e| format!("begin: {e}"))?;
+    tx.execute("UPDATE identities SET is_active = 0", [])
+        .map_err(|e| format!("deactivate: {e}"))?;
+    tx.execute(
+        "UPDATE identities SET is_active = 1, last_used = ?1 WHERE hash = ?2",
+        params![now, hash_hex],
+    )
+    .map_err(|e| format!("activate: {e}"))?;
+    tx.commit().map_err(|e| format!("commit: {e}"))?;
+    Ok(())
+}
+
+pub fn update_identity(
+    pool: &DbPool,
+    hash_hex: &str,
+    nickname: Option<&str>,
+    display_name: Option<&str>,
+) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| format!("pool: {e}"))?;
+    if let Some(nn) = nickname {
+        conn.execute(
+            "UPDATE identities SET nickname = ?1 WHERE hash = ?2",
+            params![nn, hash_hex],
+        )
+        .map_err(|e| format!("nickname: {e}"))?;
+    }
+    if let Some(dn) = display_name {
+        conn.execute(
+            "UPDATE identities SET display_name = ?1 WHERE hash = ?2",
+            params![dn, hash_hex],
+        )
+        .map_err(|e| format!("display_name: {e}"))?;
+    }
+    Ok(())
+}
+
+pub fn delete_identity(pool: &DbPool, hash_hex: &str, cascade: bool) -> Result<(), String> {
+    let mut conn = pool.get().map_err(|e| format!("pool: {e}"))?;
+    let tx = conn.transaction().map_err(|e| format!("begin: {e}"))?;
+    if cascade {
+        // Static DELETEs (no format!() interpolation), children before parents.
+        for (label, sql) in [
+            (
+                "app_actions",
+                "DELETE FROM app_actions WHERE identity_id = ?1",
+            ),
+            (
+                "app_sessions",
+                "DELETE FROM app_sessions WHERE identity_id = ?1",
+            ),
+            ("games", "DELETE FROM games WHERE identity_id = ?1"),
+            ("reactions", "DELETE FROM reactions WHERE identity_id = ?1"),
+            (
+                "hidden_conversations",
+                "DELETE FROM hidden_conversations WHERE identity_id = ?1",
+            ),
+            (
+                "blocked_contacts",
+                "DELETE FROM blocked_contacts WHERE identity_id = ?1",
+            ),
+            ("contacts", "DELETE FROM contacts WHERE identity_id = ?1"),
+            ("messages", "DELETE FROM messages WHERE identity_id = ?1"),
+        ] {
+            tx.execute(sql, params![hash_hex])
+                .map_err(|e| format!("delete {label}: {e}"))?;
+        }
+    }
+    tx.execute("DELETE FROM identities WHERE hash = ?1", params![hash_hex])
+        .map_err(|e| format!("delete identity: {e}"))?;
+    tx.commit().map_err(|e| format!("commit: {e}"))?;
+    Ok(())
+}
+
+pub fn save_contact(
+    pool: &DbPool,
+    dest_hash: &str,
+    display_name: Option<&str>,
+    trust: &str,
+    identity_id: &str,
+) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let now = now_ts();
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM contacts WHERE dest_hash = ?1 AND identity_id = ?2",
+            params![dest_hash, identity_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+
+    if exists {
+        if let Some(dn) = display_name {
+            conn.execute(
+                "UPDATE contacts SET display_name = ?1, trust = ?2, last_seen = ?3 WHERE dest_hash = ?4 AND identity_id = ?5",
+                params![dn, trust, now, dest_hash, identity_id],
+            ).ok();
+        } else {
+            conn.execute(
+                "UPDATE contacts SET trust = ?1, last_seen = ?2 WHERE dest_hash = ?3 AND identity_id = ?4",
+                params![trust, now, dest_hash, identity_id],
+            ).ok();
+        }
+    } else {
+        let dn = display_name.unwrap_or("");
+        conn.execute(
+            "INSERT INTO contacts (dest_hash, identity_id, display_name, first_seen, last_seen, trust, notes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, '')",
+            params![dest_hash, identity_id, dn, now, now, trust],
+        ).ok();
+    }
+}
+
+pub fn delete_contact(pool: &DbPool, dest_hash: &str, identity_id: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    conn.execute(
+        "DELETE FROM contacts WHERE dest_hash = ?1 AND identity_id = ?2",
+        params![dest_hash, identity_id],
+    )
+    .ok();
+}
+
+pub fn get_all_contacts(pool: &DbPool, identity_id: &str) -> Vec<serde_json::Value> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt =
+        match conn.prepare("SELECT * FROM contacts WHERE identity_id = ?1 ORDER BY display_name") {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+
+    stmt.query_map(params![identity_id], row_to_contact)
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+pub fn get_all_contacts_conn(conn: &Connection, identity_id: &str) -> Vec<serde_json::Value> {
+    let mut stmt =
+        match conn.prepare("SELECT * FROM contacts WHERE identity_id = ?1 ORDER BY display_name") {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+
+    stmt.query_map(params![identity_id], row_to_contact)
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+/// Updates display_name only when empty; preserves user-chosen names.
+pub fn update_contact_name_from_announce(
+    pool: &DbPool,
+    dest_hash: &str,
+    name: &str,
+    identity_id: &str,
+) -> bool {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let rows = conn
+        .execute(
+            "UPDATE contacts SET display_name = ?1, last_seen = ?4
+         WHERE dest_hash = ?2 AND identity_id = ?3
+         AND (display_name IS NULL OR display_name = '')",
+            params![
+                name,
+                dest_hash,
+                identity_id,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64()
+            ],
+        )
+        .unwrap_or(0);
+    rows > 0
+}
+
+pub fn get_contact(pool: &DbPool, dest_hash: &str, identity_id: &str) -> Option<serde_json::Value> {
+    let conn = pool.get().ok()?;
+    let mut stmt = conn
+        .prepare("SELECT * FROM contacts WHERE dest_hash = ?1 AND identity_id = ?2")
+        .ok()?;
+    stmt.query_row(params![dest_hash, identity_id], row_to_contact)
+        .ok()
+}
+
+pub fn block_contact(pool: &DbPool, dest_hash: &str, display_name: &str, identity_id: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, %dest_hash, "block_contact: pool.get() failed");
+            return;
+        }
+    };
+    if let Err(e) = conn.execute(
+        "INSERT OR REPLACE INTO blocked_contacts (dest_hash, identity_id, display_name, blocked_at) VALUES (?1, ?2, ?3, ?4)",
+        params![dest_hash, identity_id, display_name, now_ts()],
+    ) {
+        tracing::warn!(error = %e, %dest_hash, "block_contact: INSERT failed");
+    }
+}
+
+pub fn unblock_contact(pool: &DbPool, dest_hash: &str, identity_id: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, %dest_hash, "unblock_contact: pool.get() failed");
+            return;
+        }
+    };
+    if let Err(e) = conn.execute(
+        "DELETE FROM blocked_contacts WHERE dest_hash = ?1 AND identity_id = ?2",
+        params![dest_hash, identity_id],
+    ) {
+        tracing::warn!(error = %e, %dest_hash, "unblock_contact: DELETE failed");
+    }
+}
+
+pub fn get_blocked_contacts(pool: &DbPool, identity_id: &str) -> Vec<serde_json::Value> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT dest_hash, display_name, blocked_at FROM blocked_contacts WHERE identity_id = ?1 ORDER BY blocked_at DESC"
+    ) { Ok(s) => s, Err(_) => return vec![] };
+
+    stmt.query_map(params![identity_id], |row| {
+        Ok(serde_json::json!({
+            "hash": row.get::<_, String>(0)?,
+            "display_name": row.get::<_, String>(1).unwrap_or_default(),
+            "blocked_at": row.get::<_, f64>(2).unwrap_or(0.0),
+        }))
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+pub fn is_blocked(pool: &DbPool, dest_hash: &str, identity_id: &str) -> bool {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    conn.query_row(
+        "SELECT COUNT(*) FROM blocked_contacts WHERE dest_hash = ?1 AND identity_id = ?2",
+        params![dest_hash, identity_id],
+        |row| row.get::<_, i64>(0),
+    )
+    .unwrap_or(0)
+        > 0
+}
+
+pub fn get_blocked_set(pool: &DbPool, identity_id: &str) -> std::collections::HashSet<String> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return Default::default(),
+    };
+    let mut stmt =
+        match conn.prepare("SELECT dest_hash FROM blocked_contacts WHERE identity_id = ?1") {
+            Ok(s) => s,
+            Err(_) => return Default::default(),
+        };
+
+    stmt.query_map(params![identity_id], |row| row.get::<_, String>(0))
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+pub fn get_message_delivery_method(pool: &DbPool, msg_id: &str) -> Option<String> {
+    let conn = pool.get().ok()?;
+    conn.query_row(
+        "SELECT delivery_method FROM messages WHERE id = ?1",
+        params![msg_id],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
+pub fn message_exists(pool: &DbPool, msg_id: &str) -> bool {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    conn.query_row(
+        "SELECT COUNT(*) FROM messages WHERE id = ?1",
+        params![msg_id],
+        |row| row.get::<_, i64>(0),
+    )
+    .unwrap_or(0)
+        > 0
+}
+
+// Mirrors the `messages` table insert/update columns. Keeping the call explicit
+// makes schema writes easy to trace at each persistence site.
+#[allow(clippy::too_many_arguments)]
+pub fn save_message(
+    pool: &DbPool,
+    msg_id: &str,
+    source: &str,
+    destination: &str,
+    content: &str,
+    title: &str,
+    timestamp: f64,
+    state: &str,
+    direction: &str,
+    identity_id: &str,
+    attachment_name: &str,
+    attachment_stored_name: &str,
+    image_name: &str,
+    image_stored_name: &str,
+    reply_to_id: &str,
+    reply_to_preview: &str,
+    delivery_method: Option<&str>,
+) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE id = ?1",
+            params![msg_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+
+    if exists {
+        conn.execute(
+            "UPDATE messages SET state = ?1 WHERE id = ?2",
+            params![state, msg_id],
+        )
+        .ok();
+    } else {
+        conn.execute(
+            "INSERT INTO messages (id, source, destination, content, title, timestamp, state, direction, identity_id, attachment_name, attachment_stored_name, image_name, image_stored_name, reply_to_id, reply_to_preview, delivery_method) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![msg_id, source, destination, content, title, timestamp, state, direction, identity_id, attachment_name, attachment_stored_name, image_name, image_stored_name, reply_to_id, reply_to_preview, delivery_method],
+        ).ok();
+    }
+}
+
+/// One-way lattice: terminal states (delivered/propagated/failed/cancelled/rejected)
+/// cannot be regressed by later updates. `propagated` is terminal at the LXMF
+/// layer because the propagation path only confirms node-deposit, not end-to-end
+/// recipient delivery — there is no later signal that upgrades it to `delivered`.
+pub fn update_message_state(pool: &DbPool, msg_id: &str, state: &str, rtt_ms: Option<f64>) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    if let Some(rtt) = rtt_ms {
+        conn.execute(
+            "UPDATE messages SET state = ?1, rtt_ms = ?2 \
+             WHERE id = ?3 AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
+            params![state, rtt, msg_id],
+        )
+        .ok();
+    } else {
+        conn.execute(
+            "UPDATE messages SET state = ?1 \
+             WHERE id = ?2 AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
+            params![state, msg_id],
+        )
+        .ok();
+    }
+}
+
+pub fn get_conversation(
+    pool: &DbPool,
+    dest_hash: &str,
+    identity_id: &str,
+    limit: i64,
+) -> Vec<serde_json::Value> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    // UNION ALL preserves index use (OR would defeat it); rowid tiebreak.
+    let mut stmt = match conn.prepare(
+        "SELECT * FROM (
+            SELECT *, rowid AS _rw FROM messages WHERE source = ?1 AND identity_id = ?2
+            UNION ALL
+            SELECT *, rowid AS _rw FROM messages WHERE destination = ?1 AND identity_id = ?2 AND source != ?1
+        ) ORDER BY timestamp ASC, _rw ASC LIMIT ?3"
+    ) { Ok(s) => s, Err(_) => return vec![] };
+
+    let rows: Vec<serde_json::Value> = stmt
+        .query_map(params![dest_hash, identity_id, limit], row_to_message)
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default();
+
+    let msg_ids: Vec<String> = rows
+        .iter()
+        .filter_map(|m: &serde_json::Value| {
+            m.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())
+        })
+        .collect();
+    let reactions = get_reactions_batch(&conn, &msg_ids, identity_id);
+
+    rows.into_iter()
+        .map(|mut m: serde_json::Value| {
+            let mid = m
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if let Some(rxns) = reactions.get(&mid) {
+                if let Some(o) = m.as_object_mut() {
+                    o.insert("reactions".into(), serde_json::json!(rxns));
+                }
+            } else if let Some(o) = m.as_object_mut() {
+                o.insert("reactions".into(), serde_json::json!([]));
+            }
+            m
+        })
+        .collect()
+}
+
+pub fn search_messages(
+    pool: &DbPool,
+    query: &str,
+    identity_id: &str,
+    limit: i64,
+) -> Vec<serde_json::Value> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "search_messages: pool.get() failed");
+            return vec![];
+        }
+    };
+    // Phrase-search escape; tolerates user-typed FTS5 specials.
+    let safe_query = format!("\"{}\"", query.replace('"', "\"\""));
+
+    let result = conn.prepare(
+        "SELECT m.* FROM messages m JOIN messages_fts f ON m.rowid = f.rowid WHERE messages_fts MATCH ?1 AND f.identity_id = ?2 ORDER BY m.timestamp DESC LIMIT ?3"
+    ).and_then(|mut stmt| {
+        stmt.query_map(params![safe_query, identity_id, limit], row_to_message)
+            .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+    });
+
+    match result {
+        Ok(rows) => rows,
+        Err(_) => {
+            // LIKE fallback on FTS errors.
+            let pattern = format!("%{query}%");
+            conn.prepare(
+                "SELECT * FROM messages WHERE content LIKE ?1 AND identity_id = ?2 ORDER BY timestamp DESC LIMIT ?3"
+            ).and_then(|mut stmt| {
+                stmt.query_map(params![pattern, identity_id, limit], row_to_message)
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            }).unwrap_or_default()
+        }
+    }
+}
+
+pub fn mark_read(pool: &DbPool, dest_hash: &str, identity_id: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    conn.execute(
+        "UPDATE messages SET state = 'read' WHERE source = ?1 AND direction = 'inbound' AND state != 'read' AND identity_id = ?2",
+        params![dest_hash, identity_id],
+    ).ok();
+}
+
+pub fn get_all_unread_counts(
+    pool: &DbPool,
+    identity_id: &str,
+) -> std::collections::HashMap<String, i64> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return Default::default(),
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT source, COUNT(*) as cnt FROM messages WHERE direction = 'inbound' AND state != 'read' AND identity_id = ?1 GROUP BY source"
+    ) { Ok(s) => s, Err(_) => return Default::default() };
+
+    stmt.query_map(params![identity_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+/// Used by the Android foreground-service to render per-sender notifications.
+pub fn get_unread_breakdown(
+    pool: &DbPool,
+    identity_id: &str,
+) -> Vec<(String, Option<String>, i64, String, f64)> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let sql = "
+        SELECT cnt.source,
+               c.display_name,
+               cnt.unread,
+               latest.content,
+               latest.ts
+        FROM (
+            SELECT source, COUNT(*) AS unread
+            FROM messages
+            WHERE direction = 'inbound' AND state != 'read' AND identity_id = ?1
+            GROUP BY source
+        ) cnt
+        JOIN (
+            SELECT source,
+                   content,
+                   timestamp AS ts,
+                   ROW_NUMBER() OVER (PARTITION BY source ORDER BY timestamp DESC) AS rn
+            FROM messages
+            WHERE direction = 'inbound' AND state != 'read' AND identity_id = ?1
+        ) latest ON latest.source = cnt.source AND latest.rn = 1
+        LEFT JOIN contacts c ON c.dest_hash = cnt.source AND c.identity_id = ?1
+        ORDER BY latest.ts DESC
+    ";
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "get_unread_breakdown: prepare failed");
+            return Vec::new();
+        }
+    };
+    stmt.query_map(params![identity_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1).ok().flatten(),
+            row.get::<_, i64>(2)?,
+            row.get::<_, String>(3).unwrap_or_default(),
+            row.get::<_, f64>(4).unwrap_or(0.0),
+        ))
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+pub fn get_all_unread_counts_conn(
+    conn: &Connection,
+    identity_id: &str,
+) -> std::collections::HashMap<String, i64> {
+    let mut stmt = match conn.prepare(
+        "SELECT source, COUNT(*) as cnt FROM messages WHERE direction = 'inbound' AND state != 'read' AND identity_id = ?1 GROUP BY source"
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "get_all_unread_counts_conn: prepare failed");
+            return Default::default();
+        }
+    };
+
+    stmt.query_map(params![identity_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "get_all_unread_counts_conn: query_map failed");
+        Default::default()
+    })
+}
+
+pub fn cleanup_stale_outbound(pool: &DbPool, identity_id: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let result = conn.execute(
+        "UPDATE messages SET state = 'failed' WHERE state IN ('sending', 'routing', 'propagating', 'sent') AND direction = 'outbound' AND identity_id = ?1",
+        params![identity_id],
+    );
+    if let Ok(count) = result
+        && count > 0
+    {
+        tracing::info!("Cleaned up {count} stale outbound message(s)");
+    }
+}
+
+pub fn hide_conversation(pool: &DbPool, dest_hash: &str, identity_id: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    conn.execute(
+        "INSERT OR REPLACE INTO hidden_conversations (dest_hash, identity_id, hidden_at) VALUES (?1, ?2, ?3)",
+        params![dest_hash, identity_id, now_ts()],
+    ).ok();
+}
+
+pub fn unhide_conversation(pool: &DbPool, dest_hash: &str, identity_id: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    conn.execute(
+        "DELETE FROM hidden_conversations WHERE dest_hash = ?1 AND identity_id = ?2",
+        params![dest_hash, identity_id],
+    )
+    .ok();
+}
+
+pub fn get_hidden_conversations(
+    pool: &DbPool,
+    identity_id: &str,
+) -> std::collections::HashSet<String> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return Default::default(),
+    };
+    let mut stmt =
+        match conn.prepare("SELECT dest_hash FROM hidden_conversations WHERE identity_id = ?1") {
+            Ok(s) => s,
+            Err(_) => return Default::default(),
+        };
+
+    stmt.query_map(params![identity_id], |row| row.get::<_, String>(0))
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+pub fn delete_conversation(pool: &DbPool, dest_hash: &str, identity_id: &str) -> Vec<String> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    let mut file_refs = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT attachment_stored_name, image_stored_name FROM messages WHERE (source = ?1 OR destination = ?1) AND identity_id = ?2"
+    )
+        && let Ok(rows) = stmt.query_map(params![dest_hash, identity_id], |row| {
+            Ok((
+                row.get::<_, String>(0).unwrap_or_default(),
+                row.get::<_, String>(1).unwrap_or_default(),
+            ))
+        })
+    {
+        for r in rows.flatten() {
+            if !r.0.is_empty() { file_refs.push(r.0); }
+            if !r.1.is_empty() { file_refs.push(r.1); }
+        }
+    }
+
+    conn.execute(
+        "DELETE FROM messages WHERE (source = ?1 OR destination = ?1) AND identity_id = ?2",
+        params![dest_hash, identity_id],
+    )
+    .ok();
+    conn.execute(
+        "DELETE FROM hidden_conversations WHERE dest_hash = ?1 AND identity_id = ?2",
+        params![dest_hash, identity_id],
+    )
+    .ok();
+
+    file_refs
+}
+
+pub fn get_setting(pool: &DbPool, key: &str) -> Option<String> {
+    let conn = pool.get().ok()?;
+    conn.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        params![key],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+}
+
+pub fn set_setting(pool: &DbPool, key: &str, value: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        params![key, value],
+    )
+    .ok();
+}
+
+/// Overridable via `known_identities_prune_days` (0 disables).
+pub const DEFAULT_PRUNE_DAYS: u32 = 14;
+
+/// Soft cap on `known_identities`; cap-based prune backstop. ~2MB at 25k.
+pub const SOFT_CAP_IDENTITIES: usize = 25_000;
+
+/// Cap eviction never touches entries fresher than this.
+pub const CAP_HARD_FLOOR_DAYS: u32 = 90;
+
+/// `None` disables pruning; `Some(n)` evicts entries older than `n` days.
+pub fn get_prune_days(pool: &DbPool) -> Option<u32> {
+    let raw = get_setting(pool, "known_identities_prune_days")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(DEFAULT_PRUNE_DAYS);
+    if raw == 0 { None } else { Some(raw) }
+}
+
+/// Upsert one announce per row; `last_seen` + `display_name` + `last_interface`
+/// stamped atomically. Empty optionals preserve the existing column.
+/// Returns rows touched.
+pub fn touch_identity_activity(
+    pool: &DbPool,
+    rows: &[(String, f64, Option<String>, Option<String>)],
+) -> usize {
+    if rows.is_empty() {
+        return 0;
+    }
+    let mut conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    let tx = match conn.transaction() {
+        Ok(t) => t,
+        Err(_) => return 0,
+    };
+    let mut touched = 0usize;
+    {
+        // Four prepared statements over (name?, iface?) presence combos to
+        // avoid needless name self-writes that would bump the WAL.
+        let mut both = match tx.prepare_cached(
+            "INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count, display_name, last_interface)
+             VALUES (?1, ?2, ?2, 1, ?3, ?4)
+             ON CONFLICT(dest_hash) DO UPDATE SET
+                 last_seen = MAX(excluded.last_seen, last_seen),
+                 announce_count = announce_count + 1,
+                 display_name = excluded.display_name,
+                 last_interface = excluded.last_interface",
+        ) { Ok(s) => s, Err(_) => return 0 };
+        let mut name_only = match tx.prepare_cached(
+            "INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count, display_name)
+             VALUES (?1, ?2, ?2, 1, ?3)
+             ON CONFLICT(dest_hash) DO UPDATE SET
+                 last_seen = MAX(excluded.last_seen, last_seen),
+                 announce_count = announce_count + 1,
+                 display_name = excluded.display_name",
+        ) { Ok(s) => s, Err(_) => return 0 };
+        let mut iface_only = match tx.prepare_cached(
+            "INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count, last_interface)
+             VALUES (?1, ?2, ?2, 1, ?3)
+             ON CONFLICT(dest_hash) DO UPDATE SET
+                 last_seen = MAX(excluded.last_seen, last_seen),
+                 announce_count = announce_count + 1,
+                 last_interface = excluded.last_interface",
+        ) { Ok(s) => s, Err(_) => return 0 };
+        let mut bare = match tx.prepare_cached(
+            "INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count)
+             VALUES (?1, ?2, ?2, 1)
+             ON CONFLICT(dest_hash) DO UPDATE SET
+                 last_seen = MAX(excluded.last_seen, last_seen),
+                 announce_count = announce_count + 1",
+        ) {
+            Ok(s) => s,
+            Err(_) => return 0,
+        };
+        for (hash, ts, name, iface) in rows {
+            let n = name.as_deref().filter(|s| !s.is_empty());
+            let i = iface.as_deref().filter(|s| !s.is_empty());
+            let ok = match (n, i) {
+                (Some(n), Some(i)) => both.execute(params![hash, ts, n, i]).is_ok(),
+                (Some(n), None) => name_only.execute(params![hash, ts, n]).is_ok(),
+                (None, Some(i)) => iface_only.execute(params![hash, ts, i]).is_ok(),
+                (None, None) => bare.execute(params![hash, ts]).is_ok(),
+            };
+            if ok {
+                touched += 1;
+            }
+        }
+    }
+    tx.commit().ok();
+    touched
+}
+
+pub fn touch_identity_last_heard(pool: &DbPool, dest_hash: &str, timestamp: f64) -> bool {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    conn.execute(
+        "INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count)
+         VALUES (?1, ?2, ?2, 0)
+         ON CONFLICT(dest_hash) DO UPDATE SET
+             last_seen = MAX(excluded.last_seen, last_seen)",
+        params![dest_hash, timestamp],
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
+}
+
+/// Same JOIN as `get_peers_snapshot`, scoped to an explicit hash list.
+pub fn get_peers_by_hashes(pool: &DbPool, hashes: &[String], identity_id: &str) -> Vec<PeerRow> {
+    if hashes.is_empty() {
+        return vec![];
+    }
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    // Chunk to avoid SQLITE_LIMIT_VARIABLE_NUMBER (default 999).
+    let mut out = Vec::with_capacity(hashes.len());
+    for chunk in hashes.chunks(500) {
+        let placeholders: Vec<String> = (0..chunk.len()).map(|i| format!("?{}", i + 2)).collect();
+        let sql = format!(
+            "SELECT
+                ia.dest_hash,
+                ia.last_seen,
+                ia.first_seen,
+                COALESCE(NULLIF(c.display_name, ''), ia.display_name, '') AS display_name,
+                CASE WHEN c.dest_hash IS NOT NULL THEN 1 ELSE 0 END AS is_contact,
+                ia.last_interface
+             FROM identity_activity ia
+             LEFT JOIN contacts c ON c.dest_hash = ia.dest_hash AND c.identity_id = ?1
+             WHERE ia.dest_hash IN ({})
+               AND ia.dest_hash NOT IN (SELECT dest_hash FROM blocked_contacts WHERE identity_id = ?1)",
+            placeholders.join(",")
+        );
+        let mut stmt = match conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "get_peers_by_hashes: prepare failed");
+                continue;
+            }
+        };
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> =
+            Vec::with_capacity(chunk.len().saturating_add(1));
+        params_vec.push(&identity_id);
+        params_vec.extend(chunk.iter().map(|h| h as &dyn rusqlite::ToSql));
+        let rows = stmt
+            .query_map(
+                rusqlite::params_from_iter(params_vec.iter().copied()),
+                |row| {
+                    Ok(PeerRow {
+                        hash: row.get::<_, String>(0)?,
+                        last_seen: row.get::<_, Option<f64>>(1)?,
+                        first_seen: row.get::<_, Option<f64>>(2)?,
+                        display_name: row.get::<_, String>(3)?,
+                        is_contact: row.get::<_, i64>(4)? != 0,
+                        last_interface: row.get::<_, String>(5)?,
+                    })
+                },
+            )
+            .map(|it| it.filter_map(|r| r.ok()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        out.extend(rows);
+    }
+    out
+}
+
+pub use ratspeak_core::types::PeerRow;
+
+/// Active peers (within cutoff) UNION every contact. Display-name precedence:
+/// `contacts.display_name` over `identity_activity.display_name`.
+pub fn get_peers_snapshot(pool: &DbPool, cutoff_unix: f64, identity_id: &str) -> Vec<PeerRow> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT
+            ia.dest_hash,
+            ia.last_seen,
+            ia.first_seen,
+            COALESCE(NULLIF(c.display_name, ''), ia.display_name, '') AS display_name,
+            CASE WHEN c.dest_hash IS NOT NULL THEN 1 ELSE 0 END AS is_contact,
+            ia.last_interface
+         FROM identity_activity ia
+         LEFT JOIN contacts c ON c.dest_hash = ia.dest_hash AND c.identity_id = ?2
+         WHERE ia.last_seen >= ?1
+           AND c.dest_hash IS NULL
+           AND ia.dest_hash NOT IN (SELECT dest_hash FROM blocked_contacts WHERE identity_id = ?2)
+         UNION ALL
+         SELECT
+            c.dest_hash,
+            ia.last_seen,
+            ia.first_seen,
+            COALESCE(NULLIF(c.display_name, ''), ia.display_name, '') AS display_name,
+            1 AS is_contact,
+            COALESCE(ia.last_interface, '') AS last_interface
+         FROM contacts c
+         LEFT JOIN identity_activity ia ON ia.dest_hash = c.dest_hash
+         WHERE c.identity_id = ?2
+           AND c.dest_hash NOT IN (SELECT dest_hash FROM blocked_contacts WHERE identity_id = ?2)",
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "get_peers_snapshot: prepare failed");
+            return vec![];
+        }
+    };
+
+    stmt.query_map(params![cutoff_unix, identity_id], |row| {
+        Ok(PeerRow {
+            hash: row.get::<_, String>(0)?,
+            last_seen: row.get::<_, Option<f64>>(1)?,
+            first_seen: row.get::<_, Option<f64>>(2)?,
+            display_name: row.get::<_, String>(3)?,
+            is_contact: row.get::<_, i64>(4)? != 0,
+            last_interface: row.get::<_, String>(5)?,
+        })
+    })
+    .map(|it| it.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+/// Protected: contacts, blocked, message counterparties, propagation_node,
+/// `protected_extra`.
+pub fn find_prune_candidates(
+    pool: &DbPool,
+    cutoff_unix: f64,
+    protected_extra: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT dest_hash FROM identity_activity
+         WHERE last_seen < ?1
+           AND dest_hash NOT IN (SELECT dest_hash FROM contacts)
+           AND dest_hash NOT IN (SELECT dest_hash FROM blocked_contacts)
+           AND dest_hash NOT IN (SELECT source      FROM messages WHERE source      != '')
+           AND dest_hash NOT IN (SELECT destination FROM messages WHERE destination != '')
+           AND dest_hash NOT IN (SELECT propagation_node FROM identities WHERE propagation_node != '')"
+    ) { Ok(s) => s, Err(_) => return vec![] };
+    let rows: Vec<String> = stmt
+        .query_map(params![cutoff_unix], |row| row.get::<_, String>(0))
+        .map(|it| it.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default();
+    if protected_extra.is_empty() {
+        rows
+    } else {
+        rows.into_iter()
+            .filter(|h| !protected_extra.contains(h))
+            .collect()
+    }
+}
+
+/// Oldest non-protected (same rules as `find_prune_candidates`) older than
+/// `cutoff_unix`, up to `limit`.
+pub fn find_cap_eviction_candidates(
+    pool: &DbPool,
+    cutoff_unix: f64,
+    limit: usize,
+    protected_extra: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    if limit == 0 {
+        return vec![];
+    }
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    // 4x over-fetch absorbs protected_extra filtering in one round-trip.
+    let sql_limit = limit.saturating_mul(4).min(100_000) as i64;
+    let mut stmt = match conn.prepare(
+        "SELECT dest_hash FROM identity_activity
+         WHERE last_seen < ?1
+           AND dest_hash NOT IN (SELECT dest_hash FROM contacts)
+           AND dest_hash NOT IN (SELECT dest_hash FROM blocked_contacts)
+           AND dest_hash NOT IN (SELECT source      FROM messages WHERE source      != '')
+           AND dest_hash NOT IN (SELECT destination FROM messages WHERE destination != '')
+           AND dest_hash NOT IN (SELECT propagation_node FROM identities WHERE propagation_node != '')
+         ORDER BY last_seen ASC
+         LIMIT ?2",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    let rows: Vec<String> = stmt
+        .query_map(params![cutoff_unix, sql_limit], |row| {
+            row.get::<_, String>(0)
+        })
+        .map(|it| it.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default();
+    if protected_extra.is_empty() {
+        rows.into_iter().take(limit).collect()
+    } else {
+        rows.into_iter()
+            .filter(|h| !protected_extra.contains(h))
+            .take(limit)
+            .collect()
+    }
+}
+
+/// Chunked at 500 to stay under SQLite's default parameter limit.
+pub fn delete_identity_activity(pool: &DbPool, hashes: &[String]) -> usize {
+    if hashes.is_empty() {
+        return 0;
+    }
+    let mut conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    let tx = match conn.transaction() {
+        Ok(t) => t,
+        Err(_) => return 0,
+    };
+    let mut deleted = 0usize;
+    for chunk in hashes.chunks(500) {
+        let placeholders: String = (1..=chunk.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("DELETE FROM identity_activity WHERE dest_hash IN ({placeholders})");
+        let params: Vec<&dyn rusqlite::types::ToSql> = chunk
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+        match tx.execute(&sql, params.as_slice()) {
+            Ok(n) => deleted += n,
+            Err(e) => {
+                // Continue on chunk failure; pruner retries next pass.
+                tracing::warn!(
+                    error = %e,
+                    chunk_len = chunk.len(),
+                    "delete_identity_activity chunk failed; remaining chunks will still be attempted"
+                );
+            }
+        }
+    }
+    if let Err(e) = tx.commit() {
+        tracing::error!(error = %e, "delete_identity_activity commit failed — deletions discarded");
+        return 0;
+    }
+    deleted
+}
+
+/// `ON CONFLICT DO NOTHING`: only stamps unseen peers.
+pub fn seed_identity_activity_now(pool: &DbPool, hashes: &[String]) {
+    if hashes.is_empty() {
+        return;
+    }
+    let now = now_ts();
+    let mut conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let tx = match conn.transaction() {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    {
+        let mut stmt = match tx.prepare_cached(
+            "INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count)
+             VALUES (?1, ?2, ?2, 0)
+             ON CONFLICT(dest_hash) DO NOTHING",
+        ) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        for hash in hashes {
+            let _ = stmt.execute(params![hash, now]);
+        }
+    }
+    tx.commit().ok();
+}
+
+pub fn save_reaction(
+    pool: &DbPool,
+    message_id: &str,
+    sender: &str,
+    emoji: &str,
+    identity_id: &str,
+) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    conn.execute(
+        "INSERT OR IGNORE INTO reactions (message_id, sender, emoji, timestamp, identity_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![message_id, sender, emoji, now_ts(), identity_id],
+    ).ok();
+}
+
+pub fn remove_reaction(
+    pool: &DbPool,
+    message_id: &str,
+    sender: &str,
+    emoji: &str,
+    identity_id: &str,
+) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    conn.execute(
+        "DELETE FROM reactions WHERE message_id = ?1 AND sender = ?2 AND emoji = ?3 AND identity_id = ?4",
+        params![message_id, sender, emoji, identity_id],
+    ).ok();
+}
+
+fn get_reactions_batch(
+    conn: &Connection,
+    message_ids: &[String],
+    identity_id: &str,
+) -> std::collections::HashMap<String, Vec<serde_json::Value>> {
+    if message_ids.is_empty() {
+        return Default::default();
+    }
+    let placeholders: String = (0..message_ids.len())
+        .map(|i| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT message_id, sender, emoji, timestamp FROM reactions WHERE message_id IN ({placeholders}) AND identity_id = ?{} ORDER BY timestamp ASC",
+        message_ids.len() + 1,
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return Default::default(),
+    };
+
+    let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = message_ids
+        .iter()
+        .map(|id| Box::new(id.clone()) as Box<dyn rusqlite::types::ToSql>)
+        .collect();
+    params_vec.push(Box::new(identity_id.to_string()));
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params_vec.iter().map(|p| p.as_ref()).collect();
+
+    let mut result: std::collections::HashMap<String, Vec<serde_json::Value>> = Default::default();
+    if let Ok(rows) = stmt.query_map(param_refs.as_slice(), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, f64>(3)?,
+        ))
+    }) {
+        for r in rows.flatten() {
+            result.entry(r.0).or_default().push(serde_json::json!({
+                "sender": r.1, "emoji": r.2, "timestamp": r.3,
+            }));
+        }
+    }
+    result
+}
+
+pub fn get_connection_history(pool: &DbPool, limit: i64) -> Vec<serde_json::Value> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt =
+        match conn.prepare("SELECT * FROM connection_history ORDER BY last_used DESC LIMIT ?1") {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+
+    stmt.query_map(params![limit], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, i64>(0)?,
+            "host": row.get::<_, String>(1)?,
+            "port": row.get::<_, i64>(2)?,
+            "name": row.get::<_, String>(3).unwrap_or_default(),
+            "last_used": row.get::<_, f64>(4)?,
+            "times_used": row.get::<_, i64>(5).unwrap_or(1),
+        }))
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+pub fn delete_connection_history(pool: &DbPool, history_id: i64) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    conn.execute(
+        "DELETE FROM connection_history WHERE id = ?1",
+        params![history_id],
+    )
+    .ok();
+}
+
+pub fn save_connection_history(pool: &DbPool, host: &str, port: i64, name: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let now = now_ts();
+    let existing: Option<(i64, i64)> = conn
+        .query_row(
+            "SELECT id, times_used FROM connection_history WHERE host = ?1 AND port = ?2",
+            params![host, port],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok();
+
+    if let Some((id, _)) = existing {
+        conn.execute(
+            "UPDATE connection_history SET last_used = ?1, times_used = times_used + 1, name = CASE WHEN ?2 != '' THEN ?2 ELSE name END WHERE id = ?3",
+            params![now, name, id],
+        ).ok();
+    } else {
+        conn.execute(
+            "INSERT INTO connection_history (host, port, name, last_used, times_used) VALUES (?1, ?2, ?3, ?4, 1)",
+            params![host, port, name, now],
+        ).ok();
+    }
+}
+
+pub fn clear_all_messages(pool: &DbPool, identity_id: &str) -> Vec<String> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut file_refs = Vec::new();
+    if identity_id.is_empty() {
+        if let Ok(mut stmt) =
+            conn.prepare("SELECT attachment_stored_name, image_stored_name FROM messages")
+            && let Ok(rows) = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0).unwrap_or_default(),
+                    row.get::<_, String>(1).unwrap_or_default(),
+                ))
+            })
+        {
+            for r in rows.flatten() {
+                if !r.0.is_empty() {
+                    file_refs.push(r.0);
+                }
+                if !r.1.is_empty() {
+                    file_refs.push(r.1);
+                }
+            }
+        }
+    } else {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT attachment_stored_name, image_stored_name FROM messages WHERE identity_id = ?1",
+        ) && let Ok(rows) = stmt.query_map(params![identity_id], |row| {
+            Ok((
+                row.get::<_, String>(0).unwrap_or_default(),
+                row.get::<_, String>(1).unwrap_or_default(),
+            ))
+        }) {
+            for r in rows.flatten() {
+                if !r.0.is_empty() {
+                    file_refs.push(r.0);
+                }
+                if !r.1.is_empty() {
+                    file_refs.push(r.1);
+                }
+            }
+        }
+    }
+    if identity_id.is_empty() {
+        conn.execute("DELETE FROM messages", []).ok();
+    } else {
+        conn.execute(
+            "DELETE FROM messages WHERE identity_id = ?1",
+            params![identity_id],
+        )
+        .ok();
+    }
+    file_refs
+}
+
+pub fn clear_all_contacts(pool: &DbPool, identity_id: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    if identity_id.is_empty() {
+        conn.execute("DELETE FROM contacts", []).ok();
+    } else {
+        conn.execute(
+            "DELETE FROM contacts WHERE identity_id = ?1",
+            params![identity_id],
+        )
+        .ok();
+    }
+}
+
+pub fn clear_all_blocked(pool: &DbPool, identity_id: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    if identity_id.is_empty() {
+        conn.execute("DELETE FROM blocked_contacts", []).ok();
+    } else {
+        conn.execute(
+            "DELETE FROM blocked_contacts WHERE identity_id = ?1",
+            params![identity_id],
+        )
+        .ok();
+    }
+}
+
+pub fn get_database_stats(pool: &DbPool) -> serde_json::Value {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return serde_json::json!({"messages": 0, "contacts": 0, "connection_history": 0}),
+    };
+    let msg_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+        .unwrap_or(0);
+    let contact_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM contacts", [], |row| row.get(0))
+        .unwrap_or(0);
+    let history_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM connection_history", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+    serde_json::json!({
+        "messages": msg_count,
+        "contacts": contact_count,
+        "connection_history": history_count,
+    })
+}
+
+pub fn backfill_identity_id(pool: &DbPool, identity_hash: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    conn.execute(
+        "UPDATE contacts SET identity_id = ?1 WHERE identity_id = ''",
+        params![identity_hash],
+    )
+    .ok();
+    conn.execute(
+        "UPDATE messages SET identity_id = ?1 WHERE identity_id = ''",
+        params![identity_hash],
+    )
+    .ok();
+    tracing::info!(
+        "Backfilled identity_id={} on existing contacts/messages",
+        &identity_hash[..16.min(identity_hash.len())]
+    );
+}
+
+pub fn save_game_session(pool: &DbPool, session: &lrgp::session::Session) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let metadata_json = serde_json::to_string(&session.metadata).unwrap_or_else(|_| "{}".into());
+    conn.execute(
+        "INSERT OR REPLACE INTO app_sessions (session_id, identity_id, app_id, app_version, contact_hash, initiator, status, metadata, unread, created_at, updated_at, last_action_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            session.session_id, session.identity_id, session.app_id, session.app_version,
+            session.contact_hash, session.initiator, session.status, metadata_json,
+            session.unread, session.created_at, session.updated_at, session.last_action_at,
+        ],
+    ).ok();
+}
+
+pub fn get_game_session(
+    pool: &DbPool,
+    session_id: &str,
+    identity_id: &str,
+) -> Option<serde_json::Value> {
+    let conn = pool.get().ok()?;
+    conn.query_row(
+        "SELECT * FROM app_sessions WHERE session_id = ?1 AND identity_id = ?2",
+        params![session_id, identity_id],
+        row_to_app_session,
+    )
+    .ok()
+}
+
+pub fn list_game_sessions(
+    pool: &DbPool,
+    identity_id: &str,
+    contact_hash: Option<&str>,
+    status: Option<&str>,
+) -> Vec<serde_json::Value> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    let mut sql = "SELECT * FROM app_sessions WHERE identity_id = ?1".to_string();
+    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
+        vec![Box::new(identity_id.to_string())];
+
+    if let Some(ch) = contact_hash {
+        sql.push_str(&format!(" AND contact_hash = ?{}", param_values.len() + 1));
+        param_values.push(Box::new(ch.to_string()));
+    }
+    if let Some(st) = status {
+        sql.push_str(&format!(" AND status = ?{}", param_values.len() + 1));
+        param_values.push(Box::new(st.to_string()));
+    }
+    sql.push_str(" ORDER BY last_action_at DESC");
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map(param_refs.as_slice(), row_to_app_session)
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+pub fn save_game_action(pool: &DbPool, action: &lrgp::store::Action, envelope_mp: Option<&[u8]>) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    conn.execute(
+        "INSERT OR REPLACE INTO app_actions (session_id, identity_id, action_num, command, payload_json, sender, timestamp, envelope_mp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            action.session_id, action.identity_id, action.action_num,
+            action.command, action.payload_json, action.sender, action.timestamp,
+            envelope_mp,
+        ],
+    ).ok();
+}
+
+/// Returns the packed LRGP envelope for the active identity's most recent
+/// outbound action in this session. Used by the manual "Resend last move"
+/// path so we re-transmit the same envelope rather than re-dispatching.
+pub fn get_last_outbound_envelope_for_session(
+    pool: &DbPool,
+    session_id: &str,
+    identity_id: &str,
+) -> Option<Vec<u8>> {
+    let conn = pool.get().ok()?;
+    conn.query_row(
+        "SELECT envelope_mp FROM app_actions
+         WHERE session_id = ?1 AND identity_id = ?2 AND sender = ?2 AND envelope_mp IS NOT NULL
+         ORDER BY action_num DESC LIMIT 1",
+        params![session_id, identity_id],
+        |row| row.get::<_, Option<Vec<u8>>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
+pub fn get_game_actions(
+    pool: &DbPool,
+    session_id: &str,
+    identity_id: &str,
+) -> Vec<serde_json::Value> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT * FROM app_actions WHERE session_id = ?1 AND identity_id = ?2 ORDER BY action_num ASC"
+    ) { Ok(s) => s, Err(_) => return vec![] };
+
+    stmt.query_map(params![session_id, identity_id], |row| {
+        let payload_str: String = row.get::<_, String>(4).unwrap_or_else(|_| "{}".into());
+        let payload: serde_json::Value =
+            serde_json::from_str(&payload_str).unwrap_or(serde_json::json!({}));
+        Ok(serde_json::json!({
+            "session_id": row.get::<_, String>(0)?,
+            "identity_id": row.get::<_, String>(1).unwrap_or_default(),
+            "action_num": row.get::<_, i64>(2)?,
+            "command": row.get::<_, String>(3)?,
+            "payload": payload,
+            "sender": row.get::<_, String>(5)?,
+            "timestamp": row.get::<_, f64>(6)?,
+        }))
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+pub fn get_game_action_count(pool: &DbPool, session_id: &str, identity_id: &str) -> i64 {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    conn.query_row(
+        "SELECT COUNT(*) FROM app_actions WHERE session_id = ?1 AND identity_id = ?2",
+        params![session_id, identity_id],
+        |row| row.get(0),
+    )
+    .unwrap_or(0)
+}
+
+pub fn mark_game_read(pool: &DbPool, session_id: &str, identity_id: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    conn.execute(
+        "UPDATE app_sessions SET unread = 0 WHERE session_id = ?1 AND identity_id = ?2",
+        params![session_id, identity_id],
+    )
+    .ok();
+}
+
+pub fn delete_game_session(pool: &DbPool, session_id: &str, identity_id: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    conn.execute(
+        "DELETE FROM app_actions WHERE session_id = ?1 AND identity_id = ?2",
+        params![session_id, identity_id],
+    )
+    .ok();
+    conn.execute(
+        "DELETE FROM app_sessions WHERE session_id = ?1 AND identity_id = ?2",
+        params![session_id, identity_id],
+    )
+    .ok();
+}
+
+pub fn get_failed_messages_for_contact(
+    pool: &DbPool,
+    dest_hash: &str,
+    identity_id: &str,
+) -> Vec<serde_json::Value> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let cutoff = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+        - 3600.0;
+    let mut stmt = match conn.prepare(
+        "SELECT * FROM messages WHERE destination = ?1 AND identity_id = ?2 AND state = 'failed' AND direction = 'outbound' AND timestamp > ?3 ORDER BY timestamp ASC"
+    ) { Ok(s) => s, Err(_) => return vec![] };
+
+    stmt.query_map(params![dest_hash, identity_id, cutoff], row_to_message)
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+/// Bypasses the terminal-state guard for an intentional retry.
+pub fn mark_message_resent(pool: &DbPool, msg_id: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    conn.execute(
+        "UPDATE messages SET state = 'resent' WHERE id = ?1 AND state = 'failed'",
+        params![msg_id],
+    )
+    .ok();
+}
+
+fn row_to_identity(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value> {
+    Ok(serde_json::json!({
+        "hash": row.get::<_, String>(0)?,
+        "lxmf_hash": row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+        "nickname": row.get::<_, String>(2).unwrap_or_default(),
+        "display_name": row.get::<_, String>(3).unwrap_or_default(),
+        "created_at": row.get::<_, f64>(4)?,
+        "last_used": row.get::<_, Option<f64>>(5)?,
+        "is_active": row.get::<_, i64>(6).unwrap_or(0),
+        "propagation_node": row.get::<_, String>(7).unwrap_or_default(),
+        "propagation_enabled": row.get::<_, i64>(8).unwrap_or(0),
+        "propagation_mode": row.get::<_, String>(9).unwrap_or_else(|_| "auto".to_string()),
+        "propagation_auto_favor_static": row.get::<_, i64>(10).unwrap_or(1),
+    }))
+}
+
+fn row_to_contact(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dest_hash": row.get::<_, String>(0)?,
+        "identity_id": row.get::<_, String>(1).unwrap_or_default(),
+        "display_name": row.get::<_, Option<String>>(2)?,
+        "identity_pubkey": row.get::<_, Option<String>>(3)?,
+        "first_seen": row.get::<_, Option<f64>>(4)?,
+        "last_seen": row.get::<_, Option<f64>>(5)?,
+        "trust": row.get::<_, String>(6).unwrap_or("pending".into()),
+        "notes": row.get::<_, String>(7).unwrap_or_default(),
+    }))
+}
+
+fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value> {
+    let attachment_name = row.get::<_, String>(12).unwrap_or_default();
+    let attachment_stored_name = row.get::<_, String>(13).unwrap_or_default();
+    let image_name = row.get::<_, String>(14).unwrap_or_default();
+    let image_stored_name = row.get::<_, String>(15).unwrap_or_default();
+
+    // Reshape flat columns to nested `msg.image` / `msg.attachments`.
+    let image_json = (!image_stored_name.is_empty()).then(|| {
+        serde_json::json!({
+            "stored_name": image_stored_name,
+            "filename": image_name,
+        })
+    });
+    let attachments_json = (!attachment_stored_name.is_empty()).then(|| {
+        serde_json::json!([{
+            "filename": attachment_name,
+            "stored_name": attachment_stored_name,
+        }])
+    });
+
+    Ok(serde_json::json!({
+        "id": row.get::<_, String>(0)?,
+        "source": row.get::<_, String>(1)?,
+        "destination": row.get::<_, String>(2)?,
+        "content": row.get::<_, String>(3).unwrap_or_default(),
+        "title": row.get::<_, String>(4).unwrap_or_default(),
+        "timestamp": row.get::<_, f64>(5)?,
+        "state": row.get::<_, String>(6).unwrap_or("unknown".into()),
+        "direction": row.get::<_, String>(7).unwrap_or("outbound".into()),
+        "rtt_ms": row.get::<_, Option<f64>>(8)?,
+        "hops": row.get::<_, Option<i64>>(9)?,
+        "path": row.get::<_, Option<String>>(10)?,
+        "identity_id": row.get::<_, String>(11).unwrap_or_default(),
+        "image": image_json,
+        "attachments": attachments_json,
+        "reply_to_id": row.get::<_, String>(16).unwrap_or_default(),
+        "reply_to_preview": row.get::<_, String>(17).unwrap_or_default(),
+        "game_id": row.get::<_, String>(18).unwrap_or_default(),
+        "game_action": row.get::<_, String>(19).unwrap_or_default(),
+        "game_move_san": row.get::<_, String>(20).unwrap_or_default(),
+        "delivery_method": row.get::<_, Option<String>>(21)?,
+    }))
+}
+
+fn row_to_app_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value> {
+    let metadata_str: String = row.get::<_, String>(7).unwrap_or_else(|_| "{}".into());
+    let metadata: serde_json::Value =
+        serde_json::from_str(&metadata_str).unwrap_or(serde_json::json!({}));
+    let session_id = row.get::<_, String>(0)?;
+    let identity_id = row.get::<_, String>(1).unwrap_or_default();
+    let initiator = row.get::<_, String>(5).unwrap_or_default();
+
+    let mut obj = serde_json::json!({
+        "game_id": session_id.clone(),
+        "session_id": session_id,
+        "identity_id": identity_id.clone(),
+        "my_lxmf_hash": identity_id,
+        "app_id": row.get::<_, String>(2)?,
+        "app_version": row.get::<_, i64>(3).unwrap_or(1),
+        "contact_hash": row.get::<_, String>(4)?,
+        "initiator": initiator.clone(),
+        "challenger": initiator,
+        "status": row.get::<_, String>(6).unwrap_or("pending".into()),
+        "metadata": metadata.clone(),
+        "unread": row.get::<_, i64>(8).unwrap_or(0),
+        "created_at": row.get::<_, f64>(9).unwrap_or(0.0),
+        "updated_at": row.get::<_, f64>(10).unwrap_or(0.0),
+        "last_action_at": row.get::<_, f64>(11).unwrap_or(0.0),
+    });
+
+    // Lift known metadata keys to top-level for the frontend.
+    if let serde_json::Value::Object(meta) = &metadata
+        && let Some(obj_map) = obj.as_object_mut()
+    {
+        if let Some(board) = meta.get("board") {
+            obj_map.insert("state".to_string(), board.clone());
+        }
+        for key in &[
+            "turn",
+            "first_turn",
+            "my_marker",
+            "winner",
+            "terminal",
+            "draw_offered",
+            "move_count",
+            "cancelled_by_initiator",
+            "delivery_state",
+            "fen",
+            "legal_moves",
+            "last_move",
+            "in_check",
+            "my_color",
+            "terminal_reason",
+            "draw_offer_reason",
+        ] {
+            if let Some(val) = meta.get(*key) {
+                obj_map.insert(key.to_string(), val.clone());
+            }
+        }
+    }
+
+    Ok(obj)
+}
+
+#[cfg(test)]
+mod unread_breakdown_tests {
+    use super::*;
+    use r2d2_sqlite::SqliteConnectionManager;
+
+    fn test_pool() -> DbPool {
+        let mgr = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(1).build(mgr).unwrap();
+        init_schema(&pool).unwrap();
+        pool
+    }
+
+    // Test fixture mirrors the subset of message columns under assertion.
+    #[allow(clippy::too_many_arguments)]
+    fn insert_msg(
+        pool: &DbPool,
+        id: &str,
+        source: &str,
+        dest: &str,
+        content: &str,
+        ts: f64,
+        state: &str,
+        direction: &str,
+        identity_id: &str,
+    ) {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, source, destination, content, title, timestamp, state, direction, identity_id)
+             VALUES (?1, ?2, ?3, ?4, '', ?5, ?6, ?7, ?8)",
+            params![id, source, dest, content, ts, state, direction, identity_id],
+        )
+        .unwrap();
+    }
+
+    fn insert_contact(pool: &DbPool, dest_hash: &str, display_name: &str, identity_id: &str) {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO contacts (dest_hash, identity_id, display_name, first_seen, last_seen)
+             VALUES (?1, ?2, ?3, 0, 0)",
+            params![dest_hash, identity_id, display_name],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn breakdown_empty_when_no_unread() {
+        let pool = test_pool();
+        let rows = get_unread_breakdown(&pool, "me");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn breakdown_groups_by_sender_and_orders_by_timestamp_desc() {
+        let pool = test_pool();
+        insert_msg(
+            &pool,
+            "a1",
+            "alice",
+            "me",
+            "hi1",
+            100.0,
+            "delivered",
+            "inbound",
+            "me",
+        );
+        insert_msg(
+            &pool,
+            "a2",
+            "alice",
+            "me",
+            "hi2",
+            200.0,
+            "delivered",
+            "inbound",
+            "me",
+        );
+        insert_msg(
+            &pool,
+            "b1",
+            "bob",
+            "me",
+            "hello",
+            150.0,
+            "delivered",
+            "inbound",
+            "me",
+        );
+        insert_msg(
+            &pool, "o1", "me", "bob", "reply", 160.0, "sent", "outbound", "me",
+        );
+        insert_msg(
+            &pool, "a0", "alice", "me", "read_me", 50.0, "read", "inbound", "me",
+        );
+        insert_contact(&pool, "alice", "Alice Display", "me");
+
+        let rows = get_unread_breakdown(&pool, "me");
+        assert_eq!(rows.len(), 2, "expected two unread senders, got {rows:?}");
+
+        assert_eq!(rows[0].0, "alice");
+        assert_eq!(rows[0].1, Some("Alice Display".to_string()));
+        assert_eq!(rows[0].2, 2, "alice should have 2 unread");
+        assert_eq!(rows[0].3, "hi2", "preview should be newest unread content");
+        assert!((rows[0].4 - 200.0).abs() < f64::EPSILON);
+
+        assert_eq!(rows[1].0, "bob");
+        assert_eq!(rows[1].1, None, "bob has no contact row");
+        assert_eq!(rows[1].2, 1);
+        assert_eq!(rows[1].3, "hello");
+    }
+
+    #[test]
+    fn breakdown_isolates_by_identity_id() {
+        let pool = test_pool();
+        insert_msg(
+            &pool,
+            "x1",
+            "alice",
+            "meA",
+            "for A",
+            100.0,
+            "delivered",
+            "inbound",
+            "meA",
+        );
+        insert_msg(
+            &pool,
+            "x2",
+            "alice",
+            "meB",
+            "for B",
+            100.0,
+            "delivered",
+            "inbound",
+            "meB",
+        );
+
+        let a = get_unread_breakdown(&pool, "meA");
+        let b = get_unread_breakdown(&pool, "meB");
+        let c = get_unread_breakdown(&pool, "meC");
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].3, "for A");
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].3, "for B");
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn breakdown_excludes_outbound_and_read() {
+        let pool = test_pool();
+        insert_msg(
+            &pool,
+            "1",
+            "alice",
+            "me",
+            "unread",
+            100.0,
+            "delivered",
+            "inbound",
+            "me",
+        );
+        insert_msg(
+            &pool,
+            "2",
+            "alice",
+            "me",
+            "already_read",
+            90.0,
+            "read",
+            "inbound",
+            "me",
+        );
+        insert_msg(
+            &pool, "3", "me", "alice", "outbound", 110.0, "sent", "outbound", "me",
+        );
+
+        let rows = get_unread_breakdown(&pool, "me");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "alice");
+        assert_eq!(rows[0].2, 1, "only the single unread inbound should count");
+        assert_eq!(rows[0].3, "unread");
+    }
+
+    #[test]
+    fn total_matches_sum_of_breakdown() {
+        let pool = test_pool();
+        insert_msg(
+            &pool,
+            "1",
+            "alice",
+            "me",
+            "m",
+            10.0,
+            "delivered",
+            "inbound",
+            "me",
+        );
+        insert_msg(
+            &pool,
+            "2",
+            "alice",
+            "me",
+            "m",
+            11.0,
+            "delivered",
+            "inbound",
+            "me",
+        );
+        insert_msg(
+            &pool,
+            "3",
+            "bob",
+            "me",
+            "m",
+            20.0,
+            "delivered",
+            "inbound",
+            "me",
+        );
+
+        let rows = get_unread_breakdown(&pool, "me");
+        let legacy_total: i64 = get_all_unread_counts(&pool, "me").values().sum();
+        let breakdown_total: i64 = rows.iter().map(|(_, _, c, _, _)| *c).sum();
+        assert_eq!(legacy_total, breakdown_total);
+        assert_eq!(breakdown_total, 3);
+    }
+
+    #[test]
+    fn clear_all_messages_returns_attachment_file_refs_for_identity() {
+        let pool = test_pool();
+        save_message(
+            &pool,
+            "with-file",
+            "me",
+            "peer",
+            "content",
+            "",
+            10.0,
+            "sent",
+            "outbound",
+            "me",
+            "note.txt",
+            "123_note.txt",
+            "",
+            "456_image.png",
+            "",
+            "",
+            Some("direct"),
+        );
+        save_message(
+            &pool,
+            "other-identity",
+            "me",
+            "peer",
+            "content",
+            "",
+            10.0,
+            "sent",
+            "outbound",
+            "other",
+            "other.txt",
+            "789_other.txt",
+            "",
+            "",
+            "",
+            "",
+            Some("direct"),
+        );
+
+        let refs = clear_all_messages(&pool, "me");
+
+        assert_eq!(
+            refs,
+            vec!["123_note.txt".to_string(), "456_image.png".to_string()]
+        );
+        assert_eq!(get_conversation(&pool, "peer", "me", 10).len(), 0);
+        assert_eq!(get_conversation(&pool, "peer", "other", 10).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    use r2d2_sqlite::SqliteConnectionManager;
+
+    fn empty_pool() -> DbPool {
+        let mgr = SqliteConnectionManager::memory();
+        r2d2::Pool::builder().max_size(1).build(mgr).unwrap()
+    }
+
+    fn read_schema_version(pool: &DbPool) -> i64 {
+        let conn = pool.get().unwrap();
+        conn.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn test_fresh_db_initializes_at_current_schema_version() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
+
+        let conn = pool.get().unwrap();
+        for table in [
+            "schema_version",
+            "identities",
+            "contacts",
+            "messages",
+            "connection_history",
+            "messages_fts",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists > 0, "expected table `{table}` after init_schema");
+        }
+
+        for index in [
+            "idx_contacts_dest_identity",
+            "idx_messages_identity_state",
+            "idx_messages_source_identity",
+            "idx_messages_dest_identity",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    [index],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists > 0, "expected index `{index}` after init_schema");
+        }
+    }
+
+    #[test]
+    fn test_init_schema_idempotent() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        init_schema(&pool).unwrap();
+        assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
+
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO identities (hash, created_at) VALUES ('abc', 0.0)",
+                [],
+            )
+            .unwrap();
+        }
+        init_schema(&pool).unwrap();
+        let count: i64 = pool
+            .get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM identities", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "data survives repeat init_schema calls");
+    }
+
+    #[test]
+    fn test_migration_from_v2_to_current_preserves_data() {
+        let pool = empty_pool();
+
+        // Minimal v2 schema: contacts/messages without identity_id, no FTS.
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE schema_version (version INTEGER NOT NULL);
+                INSERT INTO schema_version (version) VALUES (2);
+
+                CREATE TABLE contacts (
+                    dest_hash TEXT PRIMARY KEY,
+                    display_name TEXT,
+                    identity_pubkey TEXT,
+                    first_seen REAL,
+                    last_seen REAL,
+                    trust TEXT DEFAULT 'pending',
+                    notes TEXT DEFAULT ''
+                );
+                INSERT INTO contacts (dest_hash, display_name, first_seen, last_seen)
+                VALUES ('deadbeef', 'Old Friend', 100.0, 200.0);
+
+                CREATE TABLE messages (
+                    id TEXT PRIMARY KEY,
+                    source TEXT,
+                    destination TEXT,
+                    content TEXT,
+                    title TEXT,
+                    timestamp REAL,
+                    state TEXT,
+                    direction TEXT
+                );
+                INSERT INTO messages (id, source, destination, content, title, timestamp, state, direction)
+                VALUES ('msg1', 'src', 'dst', 'hello from v2', '', 300.0, 'delivered', 'outbound');
+
+                CREATE TABLE connection_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    host TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    name TEXT DEFAULT '',
+                    last_used REAL NOT NULL,
+                    times_used INTEGER DEFAULT 1,
+                    UNIQUE(host, port)
+                );
+                INSERT INTO connection_history (host, port, name, last_used)
+                VALUES ('testhub', 4242, 'v2-hub', 400.0);
+                "#,
+            )
+            .unwrap();
+        }
+
+        init_schema(&pool).unwrap();
+
+        assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
+
+        let conn = pool.get().unwrap();
+
+        let (dest, display, identity_id): (String, String, String) = conn
+            .query_row(
+                "SELECT dest_hash, display_name, identity_id FROM contacts WHERE dest_hash = 'deadbeef'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(dest, "deadbeef");
+        assert_eq!(display, "Old Friend");
+        assert_eq!(
+            identity_id, "",
+            "identity_id defaults to '' for legacy rows"
+        );
+
+        let (msg_id, msg_content, msg_identity, attachment_name): (String, String, String, String) =
+            conn.query_row(
+                "SELECT id, content, identity_id, attachment_name FROM messages WHERE id = 'msg1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(msg_id, "msg1");
+        assert_eq!(msg_content, "hello from v2");
+        assert_eq!(msg_identity, "");
+        assert_eq!(attachment_name, "", "v4 attachment_name defaults to empty");
+
+        let host: String = conn
+            .query_row(
+                "SELECT host FROM connection_history WHERE port = 4242",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(host, "testhub");
+
+        for table in ["identities", "messages_fts"] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists > 0, "migration must create `{table}`");
+        }
+    }
+
+    #[test]
+    fn test_re_init_after_migration_is_noop() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO identities (hash, created_at) VALUES ('keep-me', 0.0)",
+                [],
+            )
+            .unwrap();
+        }
+        init_schema(&pool).unwrap();
+
+        let kept: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM identities WHERE hash = 'keep-me'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 1);
+    }
+}
+
+#[cfg(test)]
+mod peers_snapshot_tests {
+    use super::*;
+    use r2d2_sqlite::SqliteConnectionManager;
+
+    fn test_pool() -> DbPool {
+        let mgr = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(1).build(mgr).unwrap();
+        init_schema(&pool).unwrap();
+        pool
+    }
+
+    fn touch(pool: &DbPool, hash: &str, ts: f64) {
+        touch_identity_activity(pool, &[(hash.to_string(), ts, None, None)]);
+    }
+
+    fn set_announce_name(pool: &DbPool, hash: &str, name: &str) {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "UPDATE identity_activity SET display_name = ?1 WHERE dest_hash = ?2",
+            params![name, hash],
+        )
+        .unwrap();
+    }
+
+    fn add_contact(pool: &DbPool, hash: &str, display_name: &str) {
+        add_contact_for(pool, "me", hash, display_name);
+    }
+
+    fn add_contact_for(pool: &DbPool, identity_id: &str, hash: &str, display_name: &str) {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO contacts (dest_hash, identity_id, display_name, first_seen, last_seen)
+             VALUES (?1, ?2, ?3, 0, 0)",
+            params![hash, identity_id, display_name],
+        )
+        .unwrap();
+    }
+
+    fn block(pool: &DbPool, hash: &str) {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO blocked_contacts (dest_hash, identity_id, blocked_at)
+             VALUES (?1, 'me', 0)",
+            params![hash],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn snapshot_returns_recent_non_contacts_with_announce_name() {
+        let pool = test_pool();
+        touch(&pool, "alice", 100.0);
+        set_announce_name(&pool, "alice", "Alice");
+        touch(&pool, "bob", 200.0);
+        let rows = get_peers_snapshot(&pool, 0.0, "me");
+        assert_eq!(rows.len(), 2);
+        let alice = rows.iter().find(|r| r.hash == "alice").unwrap();
+        let bob = rows.iter().find(|r| r.hash == "bob").unwrap();
+        assert_eq!(alice.display_name, "Alice");
+        assert_eq!(alice.last_seen, Some(100.0));
+        assert!(!alice.is_contact);
+        assert_eq!(bob.display_name, "");
+        assert!(!bob.is_contact);
+    }
+
+    #[test]
+    fn snapshot_filters_by_cutoff() {
+        let pool = test_pool();
+        touch(&pool, "old", 100.0);
+        touch(&pool, "fresh", 300.0);
+        let rows = get_peers_snapshot(&pool, 200.0, "me");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].hash, "fresh");
+    }
+
+    #[test]
+    fn snapshot_includes_never_seen_contacts() {
+        let pool = test_pool();
+        add_contact(&pool, "stranger", "Stranger");
+        let rows = get_peers_snapshot(&pool, 0.0, "me");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].hash, "stranger");
+        assert_eq!(rows[0].display_name, "Stranger");
+        assert!(rows[0].is_contact);
+        assert!(rows[0].last_seen.is_none());
+    }
+
+    #[test]
+    fn snapshot_contact_name_overrides_announce_name() {
+        let pool = test_pool();
+        touch(&pool, "alice", 100.0);
+        set_announce_name(&pool, "alice", "alice-from-announce");
+        add_contact(&pool, "alice", "Alice The Friend");
+        let rows = get_peers_snapshot(&pool, 0.0, "me");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].hash, "alice");
+        assert_eq!(rows[0].display_name, "Alice The Friend");
+        assert!(rows[0].is_contact);
+        assert_eq!(rows[0].last_seen, Some(100.0));
+    }
+
+    #[test]
+    fn snapshot_falls_back_to_announce_name_when_contact_name_empty() {
+        let pool = test_pool();
+        touch(&pool, "alice", 100.0);
+        set_announce_name(&pool, "alice", "Alice The Mesh");
+        add_contact(&pool, "alice", "");
+        let rows = get_peers_snapshot(&pool, 0.0, "me");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].display_name, "Alice The Mesh");
+        assert!(rows[0].is_contact);
+    }
+
+    #[test]
+    fn snapshot_excludes_blocked_peers_even_if_seen_recently() {
+        let pool = test_pool();
+        touch(&pool, "spammer", 100.0);
+        block(&pool, "spammer");
+        touch(&pool, "alice", 100.0);
+        let rows = get_peers_snapshot(&pool, 0.0, "me");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].hash, "alice");
+    }
+
+    #[test]
+    fn snapshot_excludes_blocked_contacts_too() {
+        let pool = test_pool();
+        add_contact(&pool, "ex", "Ex Friend");
+        block(&pool, "ex");
+        let rows = get_peers_snapshot(&pool, 0.0, "me");
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn snapshot_uses_announce_name_for_non_contacts() {
+        let pool = test_pool();
+        touch(&pool, "stranger", 100.0);
+        set_announce_name(&pool, "stranger", "Stranger Joe");
+        let rows = get_peers_snapshot(&pool, 0.0, "me");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].display_name, "Stranger Joe");
+        assert!(!rows[0].is_contact);
+    }
+
+    #[test]
+    fn snapshot_keeps_old_activity_for_contacts() {
+        let pool = test_pool();
+        touch(&pool, "alice", 100.0);
+        add_contact(&pool, "alice", "Alice");
+        let rows = get_peers_snapshot(&pool, 200.0, "me");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].hash, "alice");
+        assert_eq!(rows[0].last_seen, Some(100.0));
+        assert!(rows[0].is_contact);
+    }
+
+    #[test]
+    fn snapshot_scopes_contacts_to_identity() {
+        let pool = test_pool();
+        touch(&pool, "alice", 100.0);
+        add_contact_for(&pool, "other", "alice", "Other Alice");
+        let rows = get_peers_snapshot(&pool, 0.0, "me");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].hash, "alice");
+        assert!(!rows[0].is_contact);
+        assert_ne!(rows[0].display_name, "Other Alice");
+    }
+
+    #[test]
+    fn peer_by_hashes_scopes_contact_state_to_identity() {
+        let pool = test_pool();
+        touch(&pool, "alice", 100.0);
+        add_contact_for(&pool, "other", "alice", "Other Alice");
+        let rows = get_peers_by_hashes(&pool, &["alice".to_string()], "me");
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].is_contact);
+        assert_ne!(rows[0].display_name, "Other Alice");
+    }
+
+    #[test]
+    fn touch_identity_last_heard_does_not_increment_announce_count() {
+        let pool = test_pool();
+        assert!(touch_identity_last_heard(&pool, "alice", 100.0));
+        assert!(touch_identity_last_heard(&pool, "alice", 200.0));
+        let conn = pool.get().unwrap();
+        let (last_seen, announce_count): (f64, i64) = conn
+            .query_row(
+                "SELECT last_seen, announce_count FROM identity_activity WHERE dest_hash = 'alice'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(last_seen, 200.0);
+        assert_eq!(announce_count, 0);
+    }
+}

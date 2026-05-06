@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head>
+<body style="background:#18171a">
+<script>
+// Fallback redirect — normally the WebView loads the dashboard directly.
+// This page only appears if the External URL navigation fails.
+(function() {
+    var port = window.__RATSPEAK_PORT__ || 5050;
+    window.location.replace('http://127.0.0.1:' + port + '/');
+})();
+</script>
+</body></html>

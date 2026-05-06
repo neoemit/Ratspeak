@@ -1,0 +1,177 @@
+name: Release Linux
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish_github_release:
+        description: "Publish Linux artifacts to a GitHub Release"
+        required: true
+        default: false
+        type: boolean
+      release_tag:
+        description: "Release tag to publish when manually dispatching."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Linux
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Ratspeak
+        uses: actions/checkout@v4
+        with:
+          path: Ratspeak
+
+      - name: Checkout rsReticulum
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/rsReticulum
+          ref: v0.9.0
+          path: rsReticulum
+
+      - name: Checkout rsLXMF
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/rsLXMF
+          ref: v0.9.0
+          path: rsLXMF
+
+      - name: Checkout lrgp-rs
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/lrgp-rs
+          path: lrgp-rs
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            Ratspeak
+            Ratspeak/src-tauri
+
+      - name: Install Linux system deps
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libudev-dev \
+            pkg-config \
+            patchelf \
+            libfuse2 \
+            rpm \
+            file
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0" --locked
+
+      - name: Run tests
+        working-directory: Ratspeak
+        run: cargo test --workspace
+
+      - name: Build CSS
+        shell: bash
+        working-directory: Ratspeak
+        run: bash dashboard/build-css.sh
+
+      - name: Check Tauri desktop shell
+        shell: bash
+        working-directory: Ratspeak
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Build Tauri desktop app
+        shell: bash
+        working-directory: Ratspeak/src-tauri
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          unset TAURI_CONFIG
+          unset TAURI_DEV_HOST
+          cargo tauri build --bundles deb appimage rpm
+
+      - name: Check for bundled dev URLs
+        shell: bash
+        working-directory: Ratspeak
+        run: bash scripts/release/assert-no-tauri-dev-url.sh src-tauri/target/release/bundle
+
+      - name: Validate manual release tag
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_github_release && inputs.release_tag == '' }}
+        shell: bash
+        run: |
+          echo "release_tag is required when publishing a GitHub Release from workflow_dispatch."
+          exit 1
+
+      - name: Stage Linux release artifacts
+        shell: bash
+        working-directory: Ratspeak
+        run: |
+          out_dir="dist/linux"
+          rm -rf "$out_dir"
+          mkdir -p "$out_dir"
+
+          mapfile -t appimages < <(find src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' | sort)
+          mapfile -t debs < <(find src-tauri/target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' | sort)
+          mapfile -t rpms < <(find src-tauri/target/release/bundle/rpm -maxdepth 1 -type f -name '*.rpm' | sort || true)
+
+          appimage="${appimages[0]:-}"
+          deb="${debs[0]:-}"
+          rpm="${rpms[0]:-}"
+
+          test -n "$appimage"
+          test -n "$deb"
+
+          cp "$appimage" "$out_dir/Ratspeak-x86_64.AppImage"
+          cp "$deb" "$out_dir/Ratspeak-amd64.deb"
+          if [ -n "$rpm" ]; then
+            cp "$rpm" "$out_dir/Ratspeak-x86_64.rpm"
+          fi
+
+          chmod +x "$out_dir/Ratspeak-x86_64.AppImage"
+          dpkg-deb --info "$out_dir/Ratspeak-amd64.deb" >/dev/null
+          file "$out_dir/Ratspeak-x86_64.AppImage"
+
+      - name: Write Linux checksums
+        shell: bash
+        working-directory: Ratspeak
+        run: |
+          checksum_file="checksums-linux.txt"
+          : > "$checksum_file"
+          find dist/linux -type f -print0 |
+            sort -z |
+            while IFS= read -r -d '' artifact; do
+              sha256sum "$artifact" >> "$checksum_file"
+            done
+          test -s "$checksum_file"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ratspeak-linux
+          path: |
+            Ratspeak/dist/linux/*
+            Ratspeak/checksums-linux.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          files: |
+            Ratspeak/dist/linux/*
+            Ratspeak/checksums-linux.txt
