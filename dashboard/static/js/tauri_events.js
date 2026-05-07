@@ -232,8 +232,12 @@ RS.listen('node_operation_status', function(data) {
 
     if (progressHandling) {
         if (data.done) {
-            if (data.error) progressDialog.error(displayStep);
-            else progressDialog.success(displayStep);
+            if (data.error) {
+                var detail = (typeof data.error === 'string') ? data.error : '';
+                progressDialog.error(detail ? (displayStep + ': ' + detail) : displayStep);
+            } else {
+                progressDialog.success(displayStep);
+            }
             window._activeProgressDialog = null;
         } else {
             progressDialog.update(displayStep);
@@ -1013,10 +1017,13 @@ RS.listen('identity_error', function(data) {
 });
 
 RS.listen('announce_triggered', function(data) {
-    if (!data || !data.success) {
-        if (typeof showToast === 'function') {
-            showToast('Announce failed: ' + ((data && data.error) || 'Unknown error'), 'toast-red');
-        }
+    if (!data || data.success) return;
+    // settings.js owns the manual announce UX and gives context-specific errors.
+    if (data.error === 'no_interfaces' || data.error === 'not_sent' || data.error === 'not_ready') {
+        return;
+    }
+    if (typeof showToast === 'function') {
+        showToast('Announce failed: ' + (data.error || 'Unknown error'), 'toast-red');
     }
 });
 

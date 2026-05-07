@@ -665,7 +665,10 @@ RS.listen('announce_triggered', function(data) {
             networkBtn.disabled = false;
         }
     } else if (data.error === 'not_sent') {
-        showToast('Local Network is still finding peers. Try again in a moment.', 'toast-orange', 4000);
+        var announceMsg = window._autoEnabled
+            ? 'Announce queued, but no interface transmitted it yet. Local Network may still be finding peers.'
+            : 'Announce queued, but no connected interface transmitted it. Check that your TCP peer is connected or enable Local Network.';
+        showToast(announceMsg, 'toast-orange', 5000);
         if (origin && typeof showAnnounceFailAnimation === 'function') {
             showAnnounceFailAnimation(origin.el, origin.cx, origin.cy);
         }
