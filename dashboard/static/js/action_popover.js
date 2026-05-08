@@ -15,6 +15,9 @@
             if (p.scrim.parentNode) p.scrim.remove();
             if (p.popover.parentNode) p.popover.remove();
         }, 130);
+        if (typeof p.onClose === 'function') {
+            try { p.onClose(); } catch (_) {}
+        }
     }
 
     function position(popover, trigger) {
@@ -47,16 +50,20 @@
     }
 
     // items: [{ label, icon: '<svg>', onSelect: function, disabled?, danger? }]
-    window.actionPopover = function(trigger, items) {
+    // opts: { onClose?: function } — fires after close animation regardless of dismissal path.
+    window.actionPopover = function(trigger, items, opts) {
         if (!trigger || !items || !items.length) return;
         if (_activePopover && _activePopover.trigger === trigger) {
             close();
             return;
         }
         close();
+        opts = opts || {};
 
         var scrim = document.createElement('div');
         scrim.className = 'action-popover-scrim';
+        scrim.addEventListener('mousedown', function(e) { e.preventDefault(); });
+        scrim.addEventListener('touchstart', function(e) { e.preventDefault(); }, { passive: false });
         scrim.addEventListener('click', close);
         scrim.addEventListener('contextmenu', function(e) { e.preventDefault(); close(); });
 
@@ -85,6 +92,10 @@
                 btn.disabled = true;
                 btn.classList.add('disabled');
             } else {
+                // preventDefault on mousedown/touchstart keeps any prior text-input
+                // focused (and the soft keyboard up) when this menu item is tapped.
+                btn.addEventListener('mousedown', function(e) { e.preventDefault(); });
+                btn.addEventListener('touchstart', function(e) { e.preventDefault(); }, { passive: false });
                 btn.addEventListener('click', function(e) {
                     e.stopPropagation();
                     close();
@@ -113,7 +124,8 @@
             popover: popover,
             scrim: scrim,
             onKey: onKey,
-            onReflow: onReflow
+            onReflow: onReflow,
+            onClose: opts.onClose || null
         };
 
         document.addEventListener('keydown', onKey, true);

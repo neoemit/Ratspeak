@@ -2710,7 +2710,14 @@ document.addEventListener('DOMContentLoaded', function() {
     var msgContainer = document.getElementById('lxmf-messages');
     if (msgContainer) _wireLxmfMessageScroll(msgContainer);
     if (msgContainer && typeof isMobile === 'function' && isMobile()) {
-        msgContainer.addEventListener('touchstart', function() {
+        msgContainer.addEventListener('touchstart', function(e) {
+            var t = e.target;
+            // Don't blur for taps on the compose bar or interactive controls — only
+            // for taps on message body / list whitespace.
+            if (t && t.closest && (
+                t.closest('.lxmf-compose') ||
+                t.closest('button, a, input, textarea, select, [role="button"], [role="menuitem"]')
+            )) return;
             var active = document.activeElement;
             if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
                 active.blur();
@@ -2772,41 +2779,122 @@ document.addEventListener('DOMContentLoaded', function() {
                 ? !!propagationStatus.auto_active_node
                 : !!propagationStatus.propagation_node;
         }
+        var input = document.getElementById('lxmf-input');
+        var wasFocused = !!(input && document.activeElement === input);
         actionPopover(sendBtn, [
             { label: 'Opportunistic', icon: ICON_ROUTE, onSelect: function() { sendLxmfMessage('opportunistic'); } },
             { label: 'Direct', icon: ICON_ROUTE, onSelect: function() { sendLxmfMessage('direct'); } },
             { label: 'Offline Inbox', icon: ICON_RELAY, disabled: !hasRelay, onSelect: function() { sendLxmfMessage('propagated'); } },
-        ]);
+        ], {
+            onClose: function() {
+                if (wasFocused && input && document.activeElement !== input) {
+                    _focusLxmfComposerInput(input);
+                }
+            }
+        });
     }
 
     if (sendBtn) {
-        var sendHoldTimer = null;
-        var sendHoldOpened = false;
-        sendBtn.addEventListener('pointerdown', function(e) {
-            _captureLxmfSendFocusState();
-            sendHoldOpened = false;
-            if (sendHoldTimer) clearTimeout(sendHoldTimer);
-            sendHoldTimer = setTimeout(function() {
-                sendHoldOpened = true;
+        // Send button gesture wiring. Tap = sendLxmfMessage('auto'), 500ms hold = method popover.
+        // Both paths must preserve textarea focus on iOS so the soft keyboard stays open.
+        // Implementation:
+        //   - Non-passive touchstart preventDefault blocks iOS synthetic mouse events that
+        //     would otherwise transfer first-responder away from the textarea (and collapse
+        //     the keyboard before the hold timer fires).
+        //   - mousedown preventDefault is the desktop equivalent for keyboard preservation.
+        //   - Because preventDefault on touchstart suppresses the synthetic click on iOS,
+        //     the tap-to-send path is dispatched from touchend instead, with a short
+        //     suppressClick window guarding against any platform that still synthesizes click.
+        var holdTimer = null;
+        var holdFired = false;
+        var didDrift = false;
+        var startX = 0, startY = 0;
+        var suppressClick = false;
+        var moveCancelPx = (RS.gestures && RS.gestures.LONG_PRESS_MOVE_CANCEL_PX) || 20;
+        var moveCancelSq = moveCancelPx * moveCancelPx;
+        var holdMs = (RS.gestures && RS.gestures.LONG_PRESS_SEND_MS) || 500;
+
+        function _startHold() {
+            holdFired = false;
+            didDrift = false;
+            if (holdTimer) clearTimeout(holdTimer);
+            holdTimer = setTimeout(function() {
+                holdFired = true;
+                holdTimer = null;
                 if (typeof haptic === 'function') haptic(20);
                 openSendMethodPopover();
-            }, 500);
+            }, holdMs);
+        }
+        function _clearHold() {
+            if (holdTimer) clearTimeout(holdTimer);
+            holdTimer = null;
+        }
+        function _armSuppressClick() {
+            suppressClick = true;
+            setTimeout(function() { suppressClick = false; }, 500);
+        }
+
+        sendBtn.addEventListener('touchstart', function(e) {
+            e.preventDefault();
+            _captureLxmfSendFocusState();
+            var t = e.touches && e.touches[0];
+            if (t) { startX = t.clientX; startY = t.clientY; }
+            _startHold();
+        }, { passive: false });
+
+        sendBtn.addEventListener('touchmove', function(e) {
+            if (!holdTimer || holdFired) return;
+            var t = e.touches && e.touches[0];
+            if (!t) return;
+            var dx = t.clientX - startX;
+            var dy = t.clientY - startY;
+            if (dx * dx + dy * dy > moveCancelSq) {
+                didDrift = true;
+                _clearHold();
+            }
+        }, { passive: true });
+
+        sendBtn.addEventListener('touchend', function() {
+            if (holdFired) {
+                _armSuppressClick();
+                holdFired = false;
+                return;
+            }
+            var hadTimer = !!holdTimer;
+            _clearHold();
+            if (!didDrift && hadTimer) {
+                _armSuppressClick();
+                sendLxmfMessage('auto');
+            }
         });
-        ['pointerup', 'pointercancel', 'pointerleave'].forEach(function(ev) {
+
+        sendBtn.addEventListener('touchcancel', function() {
+            _clearHold();
+            holdFired = false;
+        });
+
+        sendBtn.addEventListener('mousedown', function(e) {
+            e.preventDefault();
+            _captureLxmfSendFocusState();
+            _startHold();
+        });
+        ['mouseup', 'mouseleave'].forEach(function(ev) {
             sendBtn.addEventListener(ev, function() {
-                if (sendHoldTimer) clearTimeout(sendHoldTimer);
-                sendHoldTimer = null;
+                if (!holdFired) _clearHold();
             });
         });
+
         sendBtn.addEventListener('contextmenu', function(e) {
             e.preventDefault();
+            _clearHold();
             openSendMethodPopover();
         });
+
         sendBtn.addEventListener('click', function(e) {
-            if (sendHoldOpened) {
+            if (suppressClick || holdFired) {
                 e.preventDefault();
                 e.stopPropagation();
-                sendHoldOpened = false;
+                holdFired = false;
                 return;
             }
             sendLxmfMessage('auto');

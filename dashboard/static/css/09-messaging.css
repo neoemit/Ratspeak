@@ -523,6 +523,7 @@
 .lxmf-char-count.char-warn { color: var(--status-warning); }
 .lxmf-char-count.char-limit { color: var(--status-error); font-weight: 600; }
 .lxmf-send-btn {
+    position: relative;
     width: 40px;
     height: 40px;
     border-radius: var(--radius-full);
@@ -534,9 +535,27 @@
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    transition: background var(--transition-fast), opacity var(--transition-fast);
+    transition: background var(--transition-fast), opacity var(--transition-fast), transform var(--transition-fast);
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+}
+/* Invisible hit-area expansion to ≥48×48 without changing visual size. */
+.lxmf-send-btn::before {
+    content: '';
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    bottom: -6px;
+    left: -6px;
 }
 .lxmf-send-btn:hover {
+    background: var(--accent-dim);
+}
+.lxmf-send-btn:active {
+    transform: scale(0.94);
     background: var(--accent-dim);
 }
 .lxmf-compose-attach-btn {
@@ -553,6 +572,11 @@
     flex-shrink: 0;
     transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
     padding: 0;
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
 }
 .lxmf-compose-attach-btn:hover {
     border-color: var(--border-surface-strong);
