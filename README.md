@@ -19,6 +19,8 @@ Reticulum, a new type of mesh networking. Ratspeak gives you messaging, file/ima
 
 <img src="docs/readme/ratspeak-showcase.png" alt="Ratspeak running on desktop and mobile" width="100%">
 
+###### *Note: Ratspeak is currently in ALPHA. If you are looking for a more stable<br> experience, I recommend waiting until v1.1.0 is released.*
+
 </div>
 
 ## What It Is
@@ -27,7 +29,7 @@ Ratspeak is for private messaging when the normal internet is unavailable,
 untrusted, or not the path you want to depend on. When your cell tower is down, when natural disaster hits, or when you just want an alternative. When you know the current system is broken.
 
 It runs on
-[Reticulum](https://reticulum.network/) and LXMF, so conversations can happen
+[Reticulum](https://github.com/ratspeak/rsReticulum) and [LXMF](https://https://github.com/ratspeak/rsLXMF), so conversations can happen
 over regular internet, LoRa radios, WiFi, Bluetooth, there is no limit - if it can move data it can be a part of the mesh.
 
 There is no Ratspeak account server, no central database, no hub where everything routes through by default. Your Reticulum identity is generated on
