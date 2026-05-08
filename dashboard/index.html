@@ -852,53 +852,82 @@
                     </div>
 
                     <div class="panel" id="panel-settings-system">
-                        <div class="panel-header">System</div>
+                        <div class="panel-header">System Data</div>
                         <div class="panel-body system-panel-body">
-                            <div class="system-subsection">
-                                <div class="system-subsection-header">
-                                    <span class="system-subsection-title">Caches</span>
-                                    <span class="system-subsection-desc">Safe to clear at any time. Data re-populates automatically.</span>
+
+                            <div class="system-subsection collapsed" id="system-section-caches">
+                                <div class="system-subsection-header" role="button" tabindex="0" aria-expanded="false" aria-controls="system-body-caches">
+                                    <div class="system-subsection-meta">
+                                        <span class="system-subsection-title">Caches</span>
+                                        <span class="system-subsection-desc">Safe to clear at any time. Data re-populates automatically.</span>
+                                    </div>
+                                    <svg class="system-subsection-chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                                        <polyline points="6 9 12 15 18 9"/>
+                                    </svg>
                                 </div>
-                                <div class="system-action-grid">
-                                    <button class="system-action-btn" id="settings-clear-paths">
-                                        <span class="system-action-label">Clear Paths</span>
-                                        <span class="system-action-hint">Cached network routes</span>
-                                    </button>
-                                    <button class="system-action-btn" id="settings-clear-announces">
-                                        <span class="system-action-label">Clear Announces</span>
-                                        <span class="system-action-hint">Announce history</span>
-                                    </button>
+                                <div class="system-subsection-body" id="system-body-caches">
+                                    <div class="system-subsection-body-inner">
+                                        <div class="system-action-grid">
+                                            <button class="system-action-btn" id="settings-clear-paths">
+                                                <span class="system-action-label">Clear Paths</span>
+                                                <span class="system-action-hint">Cached network routes</span>
+                                            </button>
+                                            <button class="system-action-btn" id="settings-clear-announces">
+                                                <span class="system-action-label">Clear Announces</span>
+                                                <span class="system-action-hint">Announce history</span>
+                                            </button>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
 
-                            <div class="system-subsection system-subsection--destructive">
-                                <div class="system-subsection-header">
-                                    <span class="system-subsection-title">Delete Data</span>
-                                    <span class="system-subsection-desc">Permanently removes content. Cannot be undone.</span>
+                            <div class="system-subsection system-subsection--destructive collapsed" id="system-section-delete">
+                                <div class="system-subsection-header" role="button" tabindex="0" aria-expanded="false" aria-controls="system-body-delete">
+                                    <div class="system-subsection-meta">
+                                        <span class="system-subsection-title">Delete Data</span>
+                                        <span class="system-subsection-desc">Permanently removes content. Cannot be undone.</span>
+                                    </div>
+                                    <svg class="system-subsection-chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                                        <polyline points="6 9 12 15 18 9"/>
+                                    </svg>
                                 </div>
-                                <div class="system-action-grid">
-                                    <button class="system-action-btn system-action-btn--danger" id="settings-clear-messages">
-                                        <span class="system-action-label">Delete Messages</span>
-                                        <span class="system-action-hint">All conversation history</span>
-                                    </button>
-                                    <button class="system-action-btn system-action-btn--danger" id="settings-clear-contacts">
-                                        <span class="system-action-label">Delete Contacts</span>
-                                        <span class="system-action-hint">All saved contacts</span>
-                                    </button>
-                                    <button class="system-action-btn system-action-btn--danger system-action-btn--danger-high" id="settings-reset-database">
-                                        <span class="system-action-label">Delete All Data</span>
-                                        <span class="system-action-hint">Messages and contacts</span>
-                                    </button>
+                                <div class="system-subsection-body" id="system-body-delete">
+                                    <div class="system-subsection-body-inner">
+                                        <div class="system-action-grid">
+                                            <button class="system-action-btn system-action-btn--danger" id="settings-clear-messages">
+                                                <span class="system-action-label">Delete Messages</span>
+                                                <span class="system-action-hint">All conversation history</span>
+                                            </button>
+                                            <button class="system-action-btn system-action-btn--danger" id="settings-clear-contacts">
+                                                <span class="system-action-label">Delete Contacts</span>
+                                                <span class="system-action-hint">All saved contacts</span>
+                                            </button>
+                                            <button class="system-action-btn system-action-btn--danger system-action-btn--danger-high" id="settings-reset-database">
+                                                <span class="system-action-label">Delete All Data</span>
+                                                <span class="system-action-hint">Messages and contacts</span>
+                                            </button>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
 
-                            <div class="system-subsection system-subsection--nuclear">
-                                <div class="system-subsection-header">
-                                    <span class="system-subsection-title">Factory Reset</span>
-                                    <span class="system-subsection-desc">Destroys all identities, contacts, messages, and settings. Resets to first-run state.</span>
+                            <div class="system-subsection system-subsection--nuclear collapsed" id="system-section-factory">
+                                <div class="system-subsection-header" role="button" tabindex="0" aria-expanded="false" aria-controls="system-body-factory">
+                                    <div class="system-subsection-meta">
+                                        <span class="system-subsection-title">Factory Reset</span>
+                                        <span class="system-subsection-desc">Destroys all identities, contacts, messages, and settings. Resets to first-run state.</span>
+                                    </div>
+                                    <svg class="system-subsection-chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                                        <polyline points="6 9 12 15 18 9"/>
+                                    </svg>
                                 </div>
-                                <button class="danger-btn danger-btn--nuclear" id="settings-factory-reset">Reset Everything</button>
+                                <div class="system-subsection-body" id="system-body-factory">
+                                    <div class="system-subsection-body-inner">
+                                        <button class="danger-btn danger-btn--nuclear" id="settings-factory-reset">Reset Everything</button>
+                                    </div>
+                                </div>
                             </div>
+
                         </div>
                     </div>
                 </div>

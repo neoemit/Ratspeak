@@ -299,17 +299,24 @@
 .system-panel-body {
     display: flex;
     flex-direction: column;
-    gap: var(--space-6);
+    gap: var(--space-3);
     padding: var(--space-6);
 }
+/* === System Data panel — collapsible subsections =========================
+   Header is the only always-visible affordance; body collapses via
+   grid-template-rows. Destructive/nuclear visual cues (left rule, tinted
+   bg, error title color) live on the parent .system-subsection so they
+   stay visible when sealed — the user scans the stack and sees "danger
+   here" without expanding. The chevron also carries severity in its
+   stroke color: muted → muted-red → full-red.
+   ========================================================================= */
 .system-subsection {
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
-    padding: var(--space-4) var(--space-5);
     border: 1px solid var(--divider);
     border-radius: var(--radius-md);
     background: var(--bg-elevated, transparent);
+    overflow: hidden;
 }
 .system-subsection--destructive {
     border-left: 3px solid rgba(var(--status-error-rgb), 0.4);
@@ -318,10 +325,34 @@
     border-color: rgba(var(--status-error-rgb), 0.35);
     background: rgba(var(--status-error-rgb), 0.04);
 }
+
 .system-subsection-header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-4);
+    padding: var(--space-4) var(--space-5);
+    min-height: 44px;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: background var(--transition-fast);
+}
+.system-subsection-header:hover,
+.system-subsection-header:active {
+    background: var(--hover-subtle);
+}
+.system-subsection-header:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+.system-subsection-meta {
     display: flex;
     flex-direction: column;
     gap: 2px;
+    flex: 1;
+    min-width: 0;
 }
 .system-subsection-title {
     font-size: var(--text-sm);
@@ -336,6 +367,55 @@
     color: var(--text-muted);
     line-height: var(--type-leading-copy);
 }
+
+.system-subsection-chevron {
+    flex-shrink: 0;
+    fill: none;
+    stroke: var(--text-muted);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform var(--transition-base), stroke var(--transition-fast);
+}
+.system-subsection.collapsed .system-subsection-chevron {
+    transform: rotate(-90deg);
+}
+.system-subsection--destructive .system-subsection-chevron {
+    stroke: rgba(var(--status-error-rgb), 0.55);
+}
+.system-subsection--nuclear .system-subsection-chevron {
+    stroke: var(--status-error);
+}
+
+.system-subsection-body {
+    display: grid;
+    grid-template-rows: 1fr;
+    transition: grid-template-rows var(--transition-base);
+}
+.system-subsection.collapsed .system-subsection-body {
+    grid-template-rows: 0fr;
+}
+.system-subsection-body-inner {
+    min-height: 0;
+    overflow: hidden;
+    padding: 0 var(--space-5) var(--space-5);
+    opacity: 1;
+    transition: opacity var(--transition-fast);
+}
+.system-subsection.collapsed .system-subsection-body-inner {
+    opacity: 0;
+}
+.system-subsection-body-inner::before {
+    content: '';
+    display: block;
+    height: 1px;
+    margin: 0 0 var(--space-4);
+    background: var(--divider);
+}
+.system-subsection--nuclear .system-subsection-body-inner::before {
+    background: rgba(var(--status-error-rgb), 0.18);
+}
+
 .system-action-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -385,6 +465,14 @@
 }
 .system-action-btn--danger-high:hover {
     background: rgba(var(--status-error-rgb), 0.18);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .system-subsection-chevron,
+    .system-subsection-body,
+    .system-subsection-body-inner {
+        transition: none;
+    }
 }
 .danger-btn--nuclear {
     background: var(--status-error);

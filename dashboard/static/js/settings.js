@@ -1,5 +1,35 @@
 function openSettings() {
     switchView('settings');
+    // Re-seal every System Data subsection on each visit. The collapse IS the
+    // safety feature for destructive ops — a stale-open Delete Data section
+    // from a previous visit would defeat it.
+    resetSystemDataCollapse();
+}
+
+// Seal all System Data subsections. Called on every Settings open so the
+// destructive/nuclear sections never start expanded after a previous session.
+function resetSystemDataCollapse() {
+    var sections = document.querySelectorAll('#panel-settings-system .system-subsection');
+    for (var i = 0; i < sections.length; i++) {
+        sections[i].classList.add('collapsed');
+        var header = sections[i].querySelector('.system-subsection-header');
+        if (header) header.setAttribute('aria-expanded', 'false');
+    }
+}
+
+function toggleSystemSubsection(headerEl) {
+    var section = headerEl.closest('.system-subsection');
+    if (!section) return;
+    section.classList.toggle('collapsed');
+    var collapsed = section.classList.contains('collapsed');
+    headerEl.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+}
+
+function handleSystemSubsectionKey(e) {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        e.preventDefault();
+        toggleSystemSubsection(e.currentTarget);
+    }
 }
 
 function loadSettingsInterfaces() {
@@ -943,6 +973,16 @@ document.addEventListener('DOMContentLoaded', function() {
     var badge = document.getElementById('settings-blocked-count');
     if (badge) {
         badge.addEventListener('click', openBlockListModal);
+    }
+
+    var systemHeaders = document.querySelectorAll(
+        '#panel-settings-system .system-subsection-header'
+    );
+    for (var i = 0; i < systemHeaders.length; i++) {
+        systemHeaders[i].addEventListener('click', function() {
+            toggleSystemSubsection(this);
+        });
+        systemHeaders[i].addEventListener('keydown', handleSystemSubsectionKey);
     }
 });
 
