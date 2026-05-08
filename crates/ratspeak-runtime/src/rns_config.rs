@@ -1,6 +1,8 @@
 //! RNS config file (INI-flavoured) read/write.
 
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ratspeak_core::config::{
     LEGACY_RNS_INSTANCE_CONTROL_PORT, LEGACY_RNS_SHARED_INSTANCE_PORT,
@@ -8,18 +10,63 @@ use ratspeak_core::config::{
 };
 use serde_json::{Value, json};
 
+static CONFIG_WRITE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 pub fn read_config(config_dir: &Path) -> Option<String> {
     let path = config_dir.join("config");
     std::fs::read_to_string(&path).ok()
 }
 
-pub fn write_config(config_dir: &Path, content: &str) -> bool {
+pub fn write_config_result(config_dir: &Path, content: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(config_dir)?;
     let path = config_dir.join("config");
-    let backup = config_dir.join("config.backup");
-    if path.exists() {
-        std::fs::copy(&path, &backup).ok();
+    let tmp_path = unique_config_tmp_path(config_dir, "write");
+
+    let write_result = (|| {
+        let mut tmp = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        tmp.write_all(content.as_bytes())?;
+        tmp.sync_all()?;
+        drop(tmp);
+
+        if path.exists() {
+            std::fs::copy(&path, config_dir.join("config.backup"))?;
+        }
+
+        match std::fs::rename(&tmp_path, &path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                std::fs::copy(&tmp_path, &path)?;
+                std::fs::remove_file(&tmp_path).ok();
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    })();
+
+    if write_result.is_err() {
+        std::fs::remove_file(&tmp_path).ok();
     }
-    std::fs::write(&path, content).is_ok()
+    write_result
+}
+
+pub fn write_config(config_dir: &Path, content: &str) -> bool {
+    write_config_result(config_dir, content).is_ok()
+}
+
+fn unique_config_tmp_path(config_dir: &Path, label: &str) -> PathBuf {
+    let unique = CONFIG_WRITE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    config_dir.join(format!(
+        ".config.{label}.{}.{}.{unique}.tmp",
+        std::process::id(),
+        nanos,
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +82,7 @@ pub fn ensure_app_private_shared_instance_ports(
     std::fs::create_dir_all(config_dir)?;
     let path = config_dir.join("config");
     if !path.exists() {
-        std::fs::write(&path, ratspeak_default_config())?;
+        write_config_result(config_dir, &ratspeak_default_config())?;
         return Ok(RatspeakRnsPortConfigChange::Created);
     }
 
@@ -47,8 +94,7 @@ pub fn ensure_app_private_shared_instance_ports(
         return Ok(RatspeakRnsPortConfigChange::Unchanged);
     }
 
-    std::fs::copy(&path, config_dir.join("config.backup"))?;
-    std::fs::write(&path, updated)?;
+    write_config_result(config_dir, &updated)?;
     Ok(RatspeakRnsPortConfigChange::Updated)
 }
 
@@ -423,8 +469,57 @@ fn build_interface_entry(
     entry
 }
 
+fn safe_interface_name(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty()
+        && !name
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '[' | ']' | '=' | '#'))
+}
+
+fn safe_config_scalar(value: &str) -> bool {
+    !value.is_empty()
+        && !value
+            .chars()
+            .any(|c| c == '\r' || c == '\n' || c == '\0' || c == '#')
+}
+
+fn safe_optional_scalar(value: Option<&str>) -> bool {
+    value.is_none_or(|value| value.is_empty() || safe_config_scalar(value))
+}
+
+fn safe_config_list(values: Option<&Vec<String>>) -> bool {
+    values.is_none_or(|values| {
+        values
+            .iter()
+            .all(|value| safe_config_scalar(value) && !value.contains(','))
+    })
+}
+
+fn safe_auto_options(opts: &AutoInterfaceOptions) -> bool {
+    safe_optional_scalar(opts.group_id.as_deref())
+        && safe_optional_scalar(opts.discovery_scope.as_deref())
+        && safe_optional_scalar(opts.multicast_address_type.as_deref())
+        && safe_config_list(opts.devices.as_ref())
+        && safe_config_list(opts.ignored_devices.as_ref())
+}
+
+fn safe_rnode_args(args: RnodeInterfaceArgs<'_>) -> bool {
+    safe_interface_name(args.name)
+        && safe_config_scalar(args.port)
+        && safe_optional_scalar(args.region_key)
+        && safe_optional_scalar(args.preset_key)
+}
+
+fn safe_backbone_client_args(args: BackboneClientArgs<'_>) -> bool {
+    safe_interface_name(args.name) && safe_config_scalar(args.host)
+}
+
 /// Removes any existing block with the same `name` before insertion.
 pub fn add_rnode_interface(config_dir: &Path, args: RnodeInterfaceArgs<'_>) -> bool {
+    if !safe_rnode_args(args) {
+        return false;
+    }
     let block = rnode_interface_block(args);
     upsert_interface_block(config_dir, &[args.name], &block)
 }
@@ -461,6 +556,9 @@ pub fn remove_interface(config_dir: &Path, name: &str) -> bool {
 }
 
 pub fn remove_interfaces(config_dir: &Path, names: &[String]) -> bool {
+    if names.iter().any(|name| !safe_interface_name(name)) {
+        return false;
+    }
     let content = match read_config(config_dir) {
         Some(c) => c,
         None => return false,
@@ -545,6 +643,9 @@ fn insert_interface_block(content: &str, block: &str) -> String {
 }
 
 fn upsert_interface_block(config_dir: &Path, remove_names: &[&str], block: &str) -> bool {
+    if remove_names.iter().any(|name| !safe_interface_name(name)) {
+        return false;
+    }
     let content = read_config(config_dir).unwrap_or_default();
     let (content, _) = remove_interface_blocks_from_content(&content, remove_names);
     let new_content = insert_interface_block(&content, block);
@@ -552,6 +653,9 @@ fn upsert_interface_block(config_dir: &Path, remove_names: &[&str], block: &str)
 }
 
 fn replace_interface_block(config_dir: &Path, old_name: &str, new_name: &str, block: &str) -> bool {
+    if !safe_interface_name(old_name) || !safe_interface_name(new_name) {
+        return false;
+    }
     let content = match read_config(config_dir) {
         Some(c) => c,
         None => return false,
@@ -680,6 +784,9 @@ pub struct AutoInterfaceOptions {
 }
 
 pub fn add_auto_interface(config_dir: &Path, name: &str, opts: &AutoInterfaceOptions) -> bool {
+    if !safe_interface_name(name) || !safe_auto_options(opts) {
+        return false;
+    }
     let mut block = format!("\n  [[{name}]]\n    type = AutoInterface\n    enabled = true\n");
     if let Some(g) = opts.group_id.as_deref().filter(|s| !s.is_empty()) {
         block.push_str(&format!("    group_id = {g}\n"));
@@ -713,16 +820,25 @@ pub fn add_auto_interface(config_dir: &Path, name: &str, opts: &AutoInterfaceOpt
 }
 
 pub fn add_tcp_client(config_dir: &Path, name: &str, host: &str, port: u16) -> bool {
+    if !safe_interface_name(name) || !safe_config_scalar(host) {
+        return false;
+    }
     let block = tcp_client_block(name, host, port);
     upsert_interface_block(config_dir, &[name], &block)
 }
 
 pub fn add_tcp_server(config_dir: &Path, name: &str, listen_port: u16, listen_ip: &str) -> bool {
+    if !safe_interface_name(name) || !safe_config_scalar(listen_ip) {
+        return false;
+    }
     let block = tcp_server_block(name, listen_port, listen_ip);
     upsert_interface_block(config_dir, &[name], &block)
 }
 
 pub fn add_backbone_client(config_dir: &Path, args: BackboneClientArgs<'_>) -> bool {
+    if !safe_backbone_client_args(args) {
+        return false;
+    }
     let block = backbone_client_block(args);
     upsert_interface_block(config_dir, &[args.name], &block)
 }
@@ -735,6 +851,10 @@ pub fn add_backbone_server(
     prefer_ipv6: bool,
     device: Option<&str>,
 ) -> bool {
+    if !safe_interface_name(name) || !safe_config_scalar(listen_ip) || !safe_optional_scalar(device)
+    {
+        return false;
+    }
     // Synthesizer reads `listen_on` (interface_factory.rs); IPC arg is
     // `listen_ip` for parity with the TCP server command.
     let block = backbone_server_block(name, listen_port, listen_ip, prefer_ipv6, device);
@@ -746,6 +866,9 @@ pub fn update_rnode_interface(
     old_name: &str,
     args: RnodeInterfaceArgs<'_>,
 ) -> bool {
+    if !safe_interface_name(old_name) || !safe_rnode_args(args) {
+        return false;
+    }
     let block = rnode_interface_block(args);
     replace_interface_block(config_dir, old_name, args.name, &block)
 }
@@ -757,6 +880,9 @@ pub fn update_tcp_client(
     host: &str,
     port: u16,
 ) -> bool {
+    if !safe_interface_name(old_name) || !safe_interface_name(name) || !safe_config_scalar(host) {
+        return false;
+    }
     let block = tcp_client_block(name, host, port);
     replace_interface_block(config_dir, old_name, name, &block)
 }
@@ -768,6 +894,12 @@ pub fn update_tcp_server(
     listen_port: u16,
     listen_ip: &str,
 ) -> bool {
+    if !safe_interface_name(old_name)
+        || !safe_interface_name(name)
+        || !safe_config_scalar(listen_ip)
+    {
+        return false;
+    }
     let block = tcp_server_block(name, listen_port, listen_ip);
     replace_interface_block(config_dir, old_name, name, &block)
 }
@@ -777,6 +909,9 @@ pub fn update_backbone_client(
     old_name: &str,
     args: BackboneClientArgs<'_>,
 ) -> bool {
+    if !safe_interface_name(old_name) || !safe_backbone_client_args(args) {
+        return false;
+    }
     let block = backbone_client_block(args);
     replace_interface_block(config_dir, old_name, args.name, &block)
 }
@@ -790,15 +925,19 @@ pub fn update_backbone_server(
     prefer_ipv6: bool,
     device: Option<&str>,
 ) -> bool {
+    if !safe_interface_name(old_name)
+        || !safe_interface_name(name)
+        || !safe_config_scalar(listen_ip)
+        || !safe_optional_scalar(device)
+    {
+        return false;
+    }
     let block = backbone_server_block(name, listen_port, listen_ip, prefer_ipv6, device);
     replace_interface_block(config_dir, old_name, name, &block)
 }
 
 pub fn set_transport_mode(config_dir: &Path, enable: bool) -> bool {
-    let content = match read_config(config_dir) {
-        Some(c) => c,
-        None => return false,
-    };
+    let content = read_config(config_dir).unwrap_or_else(ratspeak_default_config);
 
     let val = if enable { "True" } else { "False" };
     let mut found = false;
@@ -856,6 +995,28 @@ mod tests {
     fn count_header(content: &str, name: &str) -> usize {
         let needle = format!("[[{name}]]");
         content.lines().filter(|line| line.trim() == needle).count()
+    }
+
+    #[test]
+    fn write_config_creates_missing_config_dir() {
+        let dir = temp_config_dir().join("identity").join("reticulum");
+        assert!(!dir.exists());
+
+        write_config_result(&dir, "[interfaces]\n").unwrap();
+
+        assert_eq!(read_config(&dir).unwrap(), "[interfaces]\n");
+        assert!(dir.join("config").exists());
+    }
+
+    #[test]
+    fn set_transport_mode_creates_missing_config_dir() {
+        let dir = temp_config_dir().join("identity").join("reticulum");
+
+        assert!(set_transport_mode(&dir, true));
+
+        let content = read_config(&dir).unwrap();
+        assert!(content.contains("enable_transport = True"));
+        assert!(content.contains("[interfaces]"));
     }
 
     #[test]
@@ -1010,6 +1171,30 @@ mod tests {
         assert_eq!(count_header(&content, "Hub"), 1);
         assert!(!content.contains("one.example"));
         assert!(content.contains("two.example"));
+    }
+
+    #[test]
+    fn unsafe_interface_config_values_are_rejected_without_writing() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        let before = read_config(&dir).unwrap();
+
+        assert!(!add_tcp_client(
+            &dir,
+            "Injected]]\n[logging]",
+            "host.example",
+            4242
+        ));
+        assert!(!add_auto_interface(
+            &dir,
+            "Local Network",
+            &AutoInterfaceOptions {
+                devices: Some(vec!["eth0\n  [[Injected]]".to_string()]),
+                ..AutoInterfaceOptions::default()
+            }
+        ));
+
+        assert_eq!(read_config(&dir).unwrap(), before);
     }
 
     #[test]

@@ -1,13 +1,16 @@
 //! Interface discovery + management: presets, serial enum, BLE,
 //! connection history, transport toggle, add/remove LoRa/TCP/Auto.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tauri::State;
 
-use crate::commands::shared::{emit_hub_interfaces, emit_op_status_broadcast};
+use crate::commands::shared::{
+    active_rns_config_dir, emit_hub_interfaces, emit_op_status_broadcast, with_rns_config_lock,
+};
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::helpers::sanitize_text;
@@ -464,11 +467,16 @@ fn apply_transport_runtime_update(
     mode: &str,
     configured_enable: bool,
     config_enable: bool,
-) -> Value {
+) -> Result<Value, String> {
     let runtime_allowed = local_transport_runtime_allowed(state);
     let enable = configured_enable && runtime_allowed;
 
-    crate::rns_config::set_transport_mode(&state.config.rns_config_dir, config_enable);
+    let config_dir = active_rns_config_dir(state);
+    if !with_rns_config_lock(state, || {
+        crate::rns_config::set_transport_mode(&config_dir, config_enable)
+    }) {
+        return Err("Config write error".to_string());
+    }
 
     if let Some(tx) = state
         .rns
@@ -481,12 +489,12 @@ fn apply_transport_runtime_update(
         );
     }
 
-    json!({
+    Ok(json!({
         "mode": mode,
         "enabled": enable,
         "configured_enabled": configured_enable,
         "suppressed": configured_enable && !runtime_allowed,
-    })
+    }))
 }
 
 pub(crate) fn reconcile_auto_transport_after_interface_change(state: &AppState, ifaces: &Value) {
@@ -499,8 +507,10 @@ pub(crate) fn reconcile_auto_transport_after_interface_change(state: &AppState, 
     let configured_enable = auto_transport_enabled_for_interfaces(ifaces, &network_type);
     let runtime_allowed = local_transport_runtime_allowed(state);
     let enable = configured_enable && runtime_allowed;
-    let payload = apply_transport_runtime_update(state, "auto", configured_enable, enable);
-    state.emit_to_all("transport_mode_updated", payload);
+    match apply_transport_runtime_update(state, "auto", configured_enable, enable) {
+        Ok(payload) => state.emit_to_all("transport_mode_updated", payload),
+        Err(error) => tracing::warn!(error = %error, "failed to reconcile transport mode config"),
+    }
 }
 
 #[tauri::command]
@@ -508,7 +518,7 @@ pub async fn set_transport_mode(
     state: State<'_, Arc<AppState>>,
     args: TransportModeArgs,
 ) -> AppResult<Value> {
-    let config_dir = state.config.rns_config_dir.clone();
+    let config_dir = active_rns_config_dir(&state);
 
     let configured_enable = match args.mode.as_str() {
         "on" => true,
@@ -533,7 +543,8 @@ pub async fn set_transport_mode(
         enable
     };
     let payload =
-        apply_transport_runtime_update(&state, &args.mode, configured_enable, config_enable);
+        apply_transport_runtime_update(&state, &args.mode, configured_enable, config_enable)
+            .map_err(AppError::internal)?;
     state.emit_to_all("transport_mode_updated", payload.clone());
     Ok(payload)
 }
@@ -570,11 +581,12 @@ pub async fn network_type_changed(
         return Ok(json!({ "mode": mode, "updated": false }));
     }
 
-    let config_dir = state.config.rns_config_dir.clone();
+    let config_dir = active_rns_config_dir(&state);
     let configured_enable = auto_transport_enabled(&config_dir, &args.network_type);
     let runtime_allowed = local_transport_runtime_allowed(&state);
     let enable = configured_enable && runtime_allowed;
-    let payload = apply_transport_runtime_update(&state, "auto", configured_enable, enable);
+    let payload = apply_transport_runtime_update(&state, "auto", configured_enable, enable)
+        .map_err(AppError::internal)?;
     state.emit_to_all("transport_mode_updated", payload.clone());
     Ok(payload)
 }
@@ -582,7 +594,8 @@ pub async fn network_type_changed(
 #[cfg(target_os = "android")]
 async fn respawn_android_auto_interfaces(state: Arc<AppState>) {
     let auto_configs: Vec<rns_interface::auto::AutoInterfaceConfig> = {
-        let v = crate::rns_config::get_all_interfaces(&state.config.rns_config_dir);
+        let config_dir = active_rns_config_dir(&state);
+        let v = crate::rns_config::get_all_interfaces(&config_dir);
         v.get("auto")
             .and_then(|a| a.as_array())
             .map(|arr| {
@@ -658,7 +671,7 @@ async fn respawn_android_auto_interfaces(state: Arc<AppState>) {
         }
     }
 
-    let ifaces = crate::rns_config::get_all_interfaces(&state.config.rns_config_dir);
+    let ifaces = crate::rns_config::get_all_interfaces(&active_rns_config_dir(&state));
     emit_hub_interfaces(&state, ifaces);
 }
 
@@ -1410,6 +1423,7 @@ async fn spawn_editable_interface(
 
 async fn finish_interface_replace(
     state: Arc<AppState>,
+    config_dir: PathBuf,
     operation: &'static str,
     old_config_content: String,
     old_runtime: EditableInterfaceConfig,
@@ -1442,8 +1456,9 @@ async fn finish_interface_replace(
             }
         }
         Err(e) => {
-            let restored =
-                crate::rns_config::write_config(&state.config.rns_config_dir, &old_config_content);
+            let restored = with_rns_config_lock(&state, || {
+                crate::rns_config::write_config(&config_dir, &old_config_content)
+            });
             let rollback = if restored {
                 match spawn_editable_interface(&state, &old_runtime).await {
                     Ok(step) => format!(" Rolled back: {step}."),
@@ -1474,7 +1489,7 @@ async fn finish_interface_replace(
         }
     }
 
-    let ifaces = crate::rns_config::get_all_interfaces(&state.config.rns_config_dir);
+    let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
     emit_hub_interfaces(&state, ifaces);
 }
 
@@ -1497,7 +1512,7 @@ pub async fn add_lora_interface(
         tx_power: args.tx_power,
     })?;
 
-    let config_dir = state_arc.config.rns_config_dir.clone();
+    let config_dir = active_rns_config_dir(&state_arc);
     emit_op_status_broadcast(
         &state_arc,
         "add_lora",
@@ -1507,20 +1522,28 @@ pub async fn add_lora_interface(
         None,
     );
 
-    if !crate::rns_config::add_rnode_interface(
-        &config_dir,
-        crate::rns_config::RnodeInterfaceArgs {
-            name: &name,
-            port: &port,
-            frequency: radio.frequency,
-            bandwidth: radio.bandwidth,
-            spreading_factor: radio.spreading_factor,
-            coding_rate: radio.coding_rate,
-            tx_power: radio.tx_power,
-            region_key: radio.region_key,
-            preset_key: radio.preset_key,
-        },
-    ) {
+    let (existing_rnode_port, config_written) = with_rns_config_lock(&state_arc, || {
+        let existing_rnode_port = find_config_interface(&config_dir, "rnode", &name)
+            .and_then(|entry| rnode_config_from_entry(&entry))
+            .and_then(|config| config.rnode_port().map(str::to_string));
+        let config_written = crate::rns_config::add_rnode_interface(
+            &config_dir,
+            crate::rns_config::RnodeInterfaceArgs {
+                name: &name,
+                port: &port,
+                frequency: radio.frequency,
+                bandwidth: radio.bandwidth,
+                spreading_factor: radio.spreading_factor,
+                coding_rate: radio.coding_rate,
+                tx_power: radio.tx_power,
+                region_key: radio.region_key,
+                preset_key: radio.preset_key,
+            },
+        );
+        (existing_rnode_port, config_written)
+    });
+
+    if !config_written {
         emit_op_status_broadcast(
             &state_arc,
             "add_lora",
@@ -1549,8 +1572,11 @@ pub async fn add_lora_interface(
         }
         let st = Arc::clone(&state_arc);
         let iface_name = name.clone();
+        let config_dir = config_dir.clone();
+        let existing_rnode_port = existing_rnode_port.clone();
         tokio::spawn(async move {
             teardown_rnode_handoff_broadcast(&st, "ble://", "BLE").await;
+            teardown_live_interface_by_name(&st, &iface_name, existing_rnode_port.as_deref()).await;
 
             emit_op_status_broadcast(
                 &st,
@@ -1608,8 +1634,7 @@ pub async fn add_lora_interface(
                 .await
                 {
                     Ok(id) => {
-                        let ifaces =
-                            crate::rns_config::get_all_interfaces(&st.config.rns_config_dir);
+                        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
                         emit_hub_interfaces(&st, ifaces);
                         emit_op_status_broadcast(
                             &st,
@@ -1679,8 +1704,11 @@ pub async fn add_lora_interface(
                 .to_string();
             let st_a = Arc::clone(&st);
             let name_a = name.clone();
+            let existing_rnode_port = existing_rnode_port.clone();
             tokio::spawn(async move {
                 teardown_rnode_handoff_broadcast(&st_a, "androidusb://", "USB").await;
+                teardown_live_interface_by_name(&st_a, &name_a, existing_rnode_port.as_deref())
+                    .await;
                 st_a.emit_to_all(
                     "ble_rnode_connect_native",
                     json!({
@@ -1709,6 +1737,8 @@ pub async fn add_lora_interface(
         #[cfg(not(target_os = "android"))]
         {
             let name_for_status = name.clone();
+            let config_dir = config_dir.clone();
+            let existing_rnode_port = existing_rnode_port.clone();
             tokio::spawn(async move {
                 emit_op_status_broadcast(
                     &st,
@@ -1720,6 +1750,8 @@ pub async fn add_lora_interface(
                 );
 
                 if let Some(rns) = runtime_handle(&st) {
+                    teardown_live_interface_by_name(&st, &name, existing_rnode_port.as_deref())
+                        .await;
                     match rns_runtime::reticulum::spawn_ble_rnode_runtime(
                         &rns,
                         &name,
@@ -1757,13 +1789,13 @@ pub async fn add_lora_interface(
                                 }
                                 if start.elapsed() > timeout {
                                     // Rollback: interface never came up.
-                                    let _ = crate::rns_config::remove_interface(
-                                        &st.config.rns_config_dir,
-                                        &name_for_status,
-                                    );
-                                    let ifaces = crate::rns_config::get_all_interfaces(
-                                        &st.config.rns_config_dir,
-                                    );
+                                    let _ = with_rns_config_lock(&st, || {
+                                        crate::rns_config::remove_interface(
+                                            &config_dir,
+                                            &name_for_status,
+                                        )
+                                    });
+                                    let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
                                     emit_hub_interfaces(&st, ifaces);
                                     emit_op_status_broadcast(
                                         &st,
@@ -1802,7 +1834,7 @@ pub async fn add_lora_interface(
                     );
                 }
 
-                let ifaces = crate::rns_config::get_all_interfaces(&st.config.rns_config_dir);
+                let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
                 emit_hub_interfaces(&st, ifaces);
             });
             return Ok(json!({ "deferred": true, "transport": "ble" }));
@@ -1814,6 +1846,8 @@ pub async fn add_lora_interface(
         let st = Arc::clone(&state_arc);
         let name_owned = name.clone();
         let port_str = port.clone();
+        let config_dir = config_dir.clone();
+        let existing_rnode_port = existing_rnode_port.clone();
         tokio::spawn(async move {
             emit_op_status_broadcast(
                 &st,
@@ -1825,6 +1859,8 @@ pub async fn add_lora_interface(
             );
 
             if let Some(rns) = runtime_handle(&st) {
+                teardown_live_interface_by_name(&st, &name_owned, existing_rnode_port.as_deref())
+                    .await;
                 match rns_runtime::reticulum::spawn_rnode_runtime(
                     &rns,
                     rns_runtime::reticulum::RnodeRuntimeArgs {
@@ -1871,7 +1907,7 @@ pub async fn add_lora_interface(
                 );
             }
 
-            let ifaces = crate::rns_config::get_all_interfaces(&st.config.rns_config_dir);
+            let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
             emit_hub_interfaces(&st, ifaces);
         });
         Ok(json!({ "deferred": true, "transport": "serial" }))
@@ -1948,28 +1984,34 @@ pub async fn update_lora_interface(
         tx_power: args.tx_power,
     })?;
 
-    let config_dir = state_arc.config.rns_config_dir.clone();
-    let old_entry = find_config_interface(&config_dir, "rnode", &old_name)
-        .ok_or_else(|| AppError::bad_request("Interface not found"))?;
-    let old_runtime = rnode_config_from_entry(&old_entry)
-        .ok_or_else(|| AppError::bad_request("Invalid radio config"))?;
-    let old_config_content = crate::rns_config::read_config(&config_dir).unwrap_or_default();
+    let config_dir = active_rns_config_dir(&state_arc);
+    let (old_runtime, old_config_content, config_written) =
+        with_rns_config_lock(&state_arc, || {
+            let old_entry = find_config_interface(&config_dir, "rnode", &old_name)
+                .ok_or_else(|| AppError::bad_request("Interface not found"))?;
+            let old_runtime = rnode_config_from_entry(&old_entry)
+                .ok_or_else(|| AppError::bad_request("Invalid radio config"))?;
+            let old_config_content =
+                crate::rns_config::read_config(&config_dir).unwrap_or_default();
+            let config_written = crate::rns_config::update_rnode_interface(
+                &config_dir,
+                &old_name,
+                crate::rns_config::RnodeInterfaceArgs {
+                    name: &name,
+                    port: &port,
+                    frequency: radio.frequency,
+                    bandwidth: radio.bandwidth,
+                    spreading_factor: radio.spreading_factor,
+                    coding_rate: radio.coding_rate,
+                    tx_power: radio.tx_power,
+                    region_key: radio.region_key,
+                    preset_key: radio.preset_key,
+                },
+            );
+            Ok::<_, AppError>((old_runtime, old_config_content, config_written))
+        })?;
 
-    if !crate::rns_config::update_rnode_interface(
-        &config_dir,
-        &old_name,
-        crate::rns_config::RnodeInterfaceArgs {
-            name: &name,
-            port: &port,
-            frequency: radio.frequency,
-            bandwidth: radio.bandwidth,
-            spreading_factor: radio.spreading_factor,
-            coding_rate: radio.coding_rate,
-            tx_power: radio.tx_power,
-            region_key: radio.region_key,
-            preset_key: radio.preset_key,
-        },
-    ) {
+    if !config_written {
         emit_op_status_broadcast(
             &state_arc,
             "update_lora",
@@ -1996,6 +2038,7 @@ pub async fn update_lora_interface(
     );
     tokio::spawn(finish_interface_replace(
         Arc::clone(&state_arc),
+        config_dir.clone(),
         "update_lora",
         old_config_content,
         old_runtime,
@@ -2011,7 +2054,7 @@ async fn teardown_rnode_handoff_broadcast(
     other_prefix: &str,
     friendly: &str,
 ) {
-    let config_dir = state.config.rns_config_dir.clone();
+    let config_dir = active_rns_config_dir(state);
     let names = crate::rns_config::rnode_names_with_port_prefix(&config_dir, other_prefix);
     if names.is_empty() {
         return;
@@ -2053,7 +2096,9 @@ async fn teardown_rnode_handoff_broadcast(
                 }
             }
         }
-        let _ = crate::rns_config::remove_interface(&config_dir, name);
+        let _ = with_rns_config_lock(state, || {
+            crate::rns_config::remove_interface(&config_dir, name)
+        });
         if state
             .network_log_enabled
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -2079,7 +2124,7 @@ pub async fn remove_lora_interface(
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let name = sanitize_text(&name, 64);
     tokio::spawn(async move {
-        let config_dir = state_arc.config.rns_config_dir.clone();
+        let config_dir = active_rns_config_dir(&state_arc);
 
         let port = {
             let all = crate::rns_config::get_all_interfaces(&config_dir);
@@ -2140,7 +2185,9 @@ pub async fn remove_lora_interface(
             }
         }
 
-        if crate::rns_config::remove_interface(&config_dir, &name) {
+        if with_rns_config_lock(&state_arc, || {
+            crate::rns_config::remove_interface(&config_dir, &name)
+        }) {
             emit_op_status_broadcast(
                 &state_arc,
                 "remove_lora",
@@ -2197,7 +2244,7 @@ pub async fn enable_auto_interface(
 
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let name = sanitize_text(name.as_deref().unwrap_or("Local Network"), 64);
-    let config_dir = state_arc.config.rns_config_dir.clone();
+    let config_dir = active_rns_config_dir(&state_arc);
     let opts = options.unwrap_or_default();
 
     // Validate before writing config to avoid half-written entries.
@@ -2235,7 +2282,9 @@ pub async fn enable_auto_interface(
         ));
     }
 
-    if !crate::rns_config::add_auto_interface(&config_dir, &name, &opts) {
+    if !with_rns_config_lock(&state_arc, || {
+        crate::rns_config::add_auto_interface(&config_dir, &name, &opts)
+    }) {
         emit_op_status_broadcast(
             &state_arc,
             "enable_auto",
@@ -2283,6 +2332,7 @@ pub async fn enable_auto_interface(
 
     let st = Arc::clone(&state_arc);
     let iface_name = name.clone();
+    let config_dir = config_dir.clone();
     tokio::spawn(async move {
         let rns_handle = st
             .rns
@@ -2290,6 +2340,7 @@ pub async fn enable_auto_interface(
             .ok()
             .and_then(|r| r.as_ref().map(|mgr| mgr.handle.clone()));
         if let Some(handle) = rns_handle {
+            teardown_live_interface_by_name(&st, &iface_name, None).await;
             match tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 rns_runtime::reticulum::spawn_auto_interface_runtime_with_config(
@@ -2323,8 +2374,9 @@ pub async fn enable_auto_interface(
                 Ok(Err(e)) => {
                     tracing::warn!(interface = %iface_name, error = %e, "AutoInterface spawn failed");
                     // Roll back config write on spawn failure.
-                    let _ =
-                        crate::rns_config::remove_interface(&st.config.rns_config_dir, &iface_name);
+                    let _ = with_rns_config_lock(&st, || {
+                        crate::rns_config::remove_interface(&config_dir, &iface_name)
+                    });
                     emit_op_status_broadcast(
                         &st,
                         "enable_auto",
@@ -2336,8 +2388,9 @@ pub async fn enable_auto_interface(
                 }
                 Err(_) => {
                     tracing::warn!(interface = %iface_name, "AutoInterface spawn timed out");
-                    let _ =
-                        crate::rns_config::remove_interface(&st.config.rns_config_dir, &iface_name);
+                    let _ = with_rns_config_lock(&st, || {
+                        crate::rns_config::remove_interface(&config_dir, &iface_name)
+                    });
                     emit_op_status_broadcast(
                         &st,
                         "enable_auto",
@@ -2358,7 +2411,7 @@ pub async fn enable_auto_interface(
                 None,
             );
         }
-        let ifaces = crate::rns_config::get_all_interfaces(&st.config.rns_config_dir);
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         emit_hub_interfaces(&st, ifaces);
     });
     Ok(json!({ "queued": true }))
@@ -2370,7 +2423,7 @@ pub async fn disable_auto_interface(
     name: Option<String>,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
-    let config_dir = state_arc.config.rns_config_dir.clone();
+    let config_dir = active_rns_config_dir(&state_arc);
     let names = name
         .as_deref()
         .map(str::trim)
@@ -2378,7 +2431,11 @@ pub async fn disable_auto_interface(
         .map(|s| vec![sanitize_text(s, 64)])
         .unwrap_or_else(|| crate::rns_config::auto_interface_names(&config_dir));
 
-    if !names.is_empty() && !crate::rns_config::remove_interfaces(&config_dir, &names) {
+    if !names.is_empty()
+        && !with_rns_config_lock(&state_arc, || {
+            crate::rns_config::remove_interfaces(&config_dir, &names)
+        })
+    {
         emit_op_status_broadcast(
             &state_arc,
             "disable_auto",
@@ -2394,6 +2451,7 @@ pub async fn disable_auto_interface(
     emit_hub_interfaces(&state_arc, ifaces_now);
 
     let st = Arc::clone(&state_arc);
+    let config_dir = config_dir.clone();
     tokio::spawn(async move {
         if let Some(handle) = st
             .rns
@@ -2439,7 +2497,7 @@ pub async fn disable_auto_interface(
                 "standard",
             );
         }
-        let ifaces = crate::rns_config::get_all_interfaces(&st.config.rns_config_dir);
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         emit_hub_interfaces(&st, ifaces);
     });
     Ok(json!({ "queued": true }))
@@ -2546,8 +2604,10 @@ pub async fn add_tcp_connection(
     })
     .await;
 
-    let config_dir = state_arc.config.rns_config_dir.clone();
-    if !crate::rns_config::add_tcp_client(&config_dir, &iface_name, &host, port as u16) {
+    let config_dir = active_rns_config_dir(&state_arc);
+    if !with_rns_config_lock(&state_arc, || {
+        crate::rns_config::add_tcp_client(&config_dir, &iface_name, &host, port as u16)
+    }) {
         emit_op_status_broadcast(
             &state_arc,
             "add_tcp",
@@ -2565,6 +2625,7 @@ pub async fn add_tcp_connection(
     let st = Arc::clone(&state_arc);
     let host_clone = host.clone();
     let iface_name_clone = iface_name.clone();
+    let config_dir = config_dir.clone();
     tokio::spawn(async move {
         let rns_handle = st
             .rns
@@ -2572,6 +2633,7 @@ pub async fn add_tcp_connection(
             .ok()
             .and_then(|r| r.as_ref().map(|mgr| mgr.handle.clone()));
         if let Some(handle) = rns_handle {
+            teardown_live_interface_by_name(&st, &iface_name_clone, None).await;
             match rns_runtime::reticulum::spawn_tcp_client_runtime(
                 &handle,
                 &iface_name_clone,
@@ -2626,7 +2688,7 @@ pub async fn add_tcp_connection(
                 None,
             );
         }
-        let ifaces = crate::rns_config::get_all_interfaces(&st.config.rns_config_dir);
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         emit_hub_interfaces(&st, ifaces);
     });
     Ok(json!({ "queued": true, "iface_name": iface_name }))
@@ -2668,12 +2730,7 @@ pub async fn update_tcp_connection(
         raw_name
     };
 
-    let config_dir = state_arc.config.rns_config_dir.clone();
-    let old_entry = find_config_interface(&config_dir, "tcp_client", &old_name)
-        .ok_or_else(|| AppError::bad_request("Interface not found"))?;
-    let old_runtime = tcp_client_config_from_entry(&old_entry)
-        .ok_or_else(|| AppError::bad_request("Invalid TCP config"))?;
-    let old_config_content = crate::rns_config::read_config(&config_dir).unwrap_or_default();
+    let config_dir = active_rns_config_dir(&state_arc);
 
     let host_for_db = host.clone();
     let name_for_db = name.clone();
@@ -2682,7 +2739,25 @@ pub async fn update_tcp_connection(
     })
     .await;
 
-    if !crate::rns_config::update_tcp_client(&config_dir, &old_name, &name, &host, port as u16) {
+    let (old_runtime, old_config_content, config_written) =
+        with_rns_config_lock(&state_arc, || {
+            let old_entry = find_config_interface(&config_dir, "tcp_client", &old_name)
+                .ok_or_else(|| AppError::bad_request("Interface not found"))?;
+            let old_runtime = tcp_client_config_from_entry(&old_entry)
+                .ok_or_else(|| AppError::bad_request("Invalid TCP config"))?;
+            let old_config_content =
+                crate::rns_config::read_config(&config_dir).unwrap_or_default();
+            let config_written = crate::rns_config::update_tcp_client(
+                &config_dir,
+                &old_name,
+                &name,
+                &host,
+                port as u16,
+            );
+            Ok::<_, AppError>((old_runtime, old_config_content, config_written))
+        })?;
+
+    if !config_written {
         emit_op_status_broadcast(
             &state_arc,
             "update_tcp",
@@ -2705,6 +2780,7 @@ pub async fn update_tcp_connection(
     );
     tokio::spawn(finish_interface_replace(
         Arc::clone(&state_arc),
+        config_dir.clone(),
         "update_tcp",
         old_config_content,
         old_runtime,
@@ -2720,9 +2796,11 @@ pub async fn remove_tcp_connection(
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let name = sanitize_text(&name, 64);
-    let config_dir = state_arc.config.rns_config_dir.clone();
+    let config_dir = active_rns_config_dir(&state_arc);
 
-    if !crate::rns_config::remove_interface(&config_dir, &name) {
+    if !with_rns_config_lock(&state_arc, || {
+        crate::rns_config::remove_interface(&config_dir, &name)
+    }) {
         emit_op_status_broadcast(
             &state_arc,
             "remove_tcp",
@@ -2739,6 +2817,7 @@ pub async fn remove_tcp_connection(
 
     let st = Arc::clone(&state_arc);
     let name2 = name.clone();
+    let config_dir = config_dir.clone();
     tokio::spawn(async move {
         let rns_handle = st
             .rns
@@ -2778,7 +2857,7 @@ pub async fn remove_tcp_connection(
                 "standard",
             );
         }
-        let ifaces = crate::rns_config::get_all_interfaces(&st.config.rns_config_dir);
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         emit_hub_interfaces(&st, ifaces);
     });
     Ok(json!({ "queued": true }))
@@ -2814,8 +2893,10 @@ pub async fn add_tcp_server(
     let listen_ip = sanitize_text(&args.listen_ip, 64);
     let listen_port = args.listen_port;
 
-    let config_dir = state_arc.config.rns_config_dir.clone();
-    if !crate::rns_config::add_tcp_server(&config_dir, &name, listen_port, &listen_ip) {
+    let config_dir = active_rns_config_dir(&state_arc);
+    if !with_rns_config_lock(&state_arc, || {
+        crate::rns_config::add_tcp_server(&config_dir, &name, listen_port, &listen_ip)
+    }) {
         emit_op_status_broadcast(
             &state_arc,
             "add_server",
@@ -2833,6 +2914,7 @@ pub async fn add_tcp_server(
     let st = Arc::clone(&state_arc);
     let name_clone = name.clone();
     let listen_ip_clone = listen_ip.clone();
+    let config_dir = config_dir.clone();
     tokio::spawn(async move {
         let rns_handle = st
             .rns
@@ -2840,6 +2922,7 @@ pub async fn add_tcp_server(
             .ok()
             .and_then(|r| r.as_ref().map(|mgr| mgr.handle.clone()));
         if let Some(handle) = rns_handle {
+            teardown_live_interface_by_name(&st, &name_clone, None).await;
             match rns_runtime::reticulum::spawn_tcp_server_runtime(
                 &handle,
                 &name_clone,
@@ -2866,8 +2949,9 @@ pub async fn add_tcp_server(
                     }
                 }
                 Err(e) => {
-                    let _ =
-                        crate::rns_config::remove_interface(&st.config.rns_config_dir, &name_clone);
+                    let _ = with_rns_config_lock(&st, || {
+                        crate::rns_config::remove_interface(&config_dir, &name_clone)
+                    });
                     emit_op_status_broadcast(
                         &st,
                         "add_server",
@@ -2899,7 +2983,7 @@ pub async fn add_tcp_server(
                 None,
             );
         }
-        let ifaces = crate::rns_config::get_all_interfaces(&st.config.rns_config_dir);
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         emit_hub_interfaces(&st, ifaces);
     });
     Ok(json!({ "queued": true, "iface_name": name }))
@@ -2937,20 +3021,26 @@ pub async fn update_tcp_server(
         return Err(AppError::bad_request("Name required"));
     }
 
-    let config_dir = state_arc.config.rns_config_dir.clone();
-    let old_entry = find_config_interface(&config_dir, "tcp_server", &old_name)
-        .ok_or_else(|| AppError::bad_request("Interface not found"))?;
-    let old_runtime = tcp_server_config_from_entry(&old_entry)
-        .ok_or_else(|| AppError::bad_request("Invalid TCP server config"))?;
-    let old_config_content = crate::rns_config::read_config(&config_dir).unwrap_or_default();
+    let config_dir = active_rns_config_dir(&state_arc);
+    let (old_runtime, old_config_content, config_written) =
+        with_rns_config_lock(&state_arc, || {
+            let old_entry = find_config_interface(&config_dir, "tcp_server", &old_name)
+                .ok_or_else(|| AppError::bad_request("Interface not found"))?;
+            let old_runtime = tcp_server_config_from_entry(&old_entry)
+                .ok_or_else(|| AppError::bad_request("Invalid TCP server config"))?;
+            let old_config_content =
+                crate::rns_config::read_config(&config_dir).unwrap_or_default();
+            let config_written = crate::rns_config::update_tcp_server(
+                &config_dir,
+                &old_name,
+                &name,
+                args.listen_port,
+                &listen_ip,
+            );
+            Ok::<_, AppError>((old_runtime, old_config_content, config_written))
+        })?;
 
-    if !crate::rns_config::update_tcp_server(
-        &config_dir,
-        &old_name,
-        &name,
-        args.listen_port,
-        &listen_ip,
-    ) {
+    if !config_written {
         emit_op_status_broadcast(
             &state_arc,
             "update_server",
@@ -2973,6 +3063,7 @@ pub async fn update_tcp_server(
     );
     tokio::spawn(finish_interface_replace(
         Arc::clone(&state_arc),
+        config_dir.clone(),
         "update_server",
         old_config_content,
         old_runtime,
@@ -2985,9 +3076,11 @@ pub async fn update_tcp_server(
 pub async fn remove_tcp_server(state: State<'_, Arc<AppState>>, name: String) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let name = sanitize_text(&name, 64);
-    let config_dir = state_arc.config.rns_config_dir.clone();
+    let config_dir = active_rns_config_dir(&state_arc);
 
-    if !crate::rns_config::remove_interface(&config_dir, &name) {
+    if !with_rns_config_lock(&state_arc, || {
+        crate::rns_config::remove_interface(&config_dir, &name)
+    }) {
         emit_op_status_broadcast(
             &state_arc,
             "remove_server",
@@ -3004,6 +3097,7 @@ pub async fn remove_tcp_server(state: State<'_, Arc<AppState>>, name: String) ->
 
     let st = Arc::clone(&state_arc);
     let name2 = name.clone();
+    let config_dir = config_dir.clone();
     tokio::spawn(async move {
         let rns_handle = st
             .rns
@@ -3039,7 +3133,7 @@ pub async fn remove_tcp_server(state: State<'_, Arc<AppState>>, name: String) ->
             true,
             None,
         );
-        let ifaces = crate::rns_config::get_all_interfaces(&st.config.rns_config_dir);
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         emit_hub_interfaces(&st, ifaces);
     });
     Ok(json!({ "queued": true }))
@@ -3104,19 +3198,21 @@ pub async fn add_backbone_connection(
         raw_name
     };
 
-    let config_dir = state_arc.config.rns_config_dir.clone();
-    if !crate::rns_config::add_backbone_client(
-        &config_dir,
-        crate::rns_config::BackboneClientArgs {
-            name: &iface_name,
-            host: &host,
-            port: port as u16,
-            prefer_ipv6: args.prefer_ipv6,
-            connect_timeout: args.connect_timeout,
-            max_reconnect_tries: args.max_reconnect_tries,
-            i2p_tunneled: args.i2p_tunneled,
-        },
-    ) {
+    let config_dir = active_rns_config_dir(&state_arc);
+    if !with_rns_config_lock(&state_arc, || {
+        crate::rns_config::add_backbone_client(
+            &config_dir,
+            crate::rns_config::BackboneClientArgs {
+                name: &iface_name,
+                host: &host,
+                port: port as u16,
+                prefer_ipv6: args.prefer_ipv6,
+                connect_timeout: args.connect_timeout,
+                max_reconnect_tries: args.max_reconnect_tries,
+                i2p_tunneled: args.i2p_tunneled,
+            },
+        )
+    }) {
         emit_op_status_broadcast(
             &state_arc,
             "add_backbone",
@@ -3137,6 +3233,7 @@ pub async fn add_backbone_connection(
     let prefer_ipv6 = args.prefer_ipv6;
     let connect_timeout = args.connect_timeout;
     let max_reconnect_tries = args.max_reconnect_tries;
+    let config_dir = config_dir.clone();
     tokio::spawn(async move {
         let rns_handle = st
             .rns
@@ -3144,6 +3241,7 @@ pub async fn add_backbone_connection(
             .ok()
             .and_then(|r| r.as_ref().map(|mgr| mgr.handle.clone()));
         if let Some(handle) = rns_handle {
+            teardown_live_interface_by_name(&st, &iface_name_clone, None).await;
             match rns_runtime::reticulum::spawn_backbone_client_runtime(
                 &handle,
                 &iface_name_clone,
@@ -3201,7 +3299,7 @@ pub async fn add_backbone_connection(
                 None,
             );
         }
-        let ifaces = crate::rns_config::get_all_interfaces(&st.config.rns_config_dir);
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         emit_hub_interfaces(&st, ifaces);
     });
     Ok(json!({ "queued": true, "iface_name": iface_name }))
@@ -3251,26 +3349,32 @@ pub async fn update_backbone_connection(
         raw_name
     };
 
-    let config_dir = state_arc.config.rns_config_dir.clone();
-    let old_entry = find_config_interface(&config_dir, "backbone_client", &old_name)
-        .ok_or_else(|| AppError::bad_request("Interface not found"))?;
-    let old_runtime = backbone_client_config_from_entry(&old_entry)
-        .ok_or_else(|| AppError::bad_request("Invalid Backbone config"))?;
-    let old_config_content = crate::rns_config::read_config(&config_dir).unwrap_or_default();
+    let config_dir = active_rns_config_dir(&state_arc);
+    let (old_runtime, old_config_content, config_written) =
+        with_rns_config_lock(&state_arc, || {
+            let old_entry = find_config_interface(&config_dir, "backbone_client", &old_name)
+                .ok_or_else(|| AppError::bad_request("Interface not found"))?;
+            let old_runtime = backbone_client_config_from_entry(&old_entry)
+                .ok_or_else(|| AppError::bad_request("Invalid Backbone config"))?;
+            let old_config_content =
+                crate::rns_config::read_config(&config_dir).unwrap_or_default();
+            let config_written = crate::rns_config::update_backbone_client(
+                &config_dir,
+                &old_name,
+                crate::rns_config::BackboneClientArgs {
+                    name: &name,
+                    host: &host,
+                    port: port as u16,
+                    prefer_ipv6: args.prefer_ipv6,
+                    connect_timeout: args.connect_timeout,
+                    max_reconnect_tries: args.max_reconnect_tries,
+                    i2p_tunneled: args.i2p_tunneled,
+                },
+            );
+            Ok::<_, AppError>((old_runtime, old_config_content, config_written))
+        })?;
 
-    if !crate::rns_config::update_backbone_client(
-        &config_dir,
-        &old_name,
-        crate::rns_config::BackboneClientArgs {
-            name: &name,
-            host: &host,
-            port: port as u16,
-            prefer_ipv6: args.prefer_ipv6,
-            connect_timeout: args.connect_timeout,
-            max_reconnect_tries: args.max_reconnect_tries,
-            i2p_tunneled: args.i2p_tunneled,
-        },
-    ) {
+    if !config_written {
         emit_op_status_broadcast(
             &state_arc,
             "update_backbone",
@@ -3297,6 +3401,7 @@ pub async fn update_backbone_connection(
     );
     tokio::spawn(finish_interface_replace(
         Arc::clone(&state_arc),
+        config_dir.clone(),
         "update_backbone",
         old_config_content,
         old_runtime,
@@ -3312,9 +3417,11 @@ pub async fn remove_backbone_connection(
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let name = sanitize_text(&name, 64);
-    let config_dir = state_arc.config.rns_config_dir.clone();
+    let config_dir = active_rns_config_dir(&state_arc);
 
-    if !crate::rns_config::remove_interface(&config_dir, &name) {
+    if !with_rns_config_lock(&state_arc, || {
+        crate::rns_config::remove_interface(&config_dir, &name)
+    }) {
         emit_op_status_broadcast(
             &state_arc,
             "remove_backbone",
@@ -3331,6 +3438,7 @@ pub async fn remove_backbone_connection(
 
     let st = Arc::clone(&state_arc);
     let name2 = name.clone();
+    let config_dir = config_dir.clone();
     tokio::spawn(async move {
         let rns_handle = st
             .rns
@@ -3377,7 +3485,7 @@ pub async fn remove_backbone_connection(
                 "standard",
             );
         }
-        let ifaces = crate::rns_config::get_all_interfaces(&st.config.rns_config_dir);
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         emit_hub_interfaces(&st, ifaces);
     });
     Ok(json!({ "queued": true }))
@@ -3412,15 +3520,17 @@ pub async fn add_backbone_server(
         .map(|s| sanitize_text(s, 64))
         .filter(|s| !s.is_empty());
 
-    let config_dir = state_arc.config.rns_config_dir.clone();
-    if !crate::rns_config::add_backbone_server(
-        &config_dir,
-        &name,
-        listen_port,
-        &listen_ip,
-        args.prefer_ipv6,
-        device.as_deref(),
-    ) {
+    let config_dir = active_rns_config_dir(&state_arc);
+    if !with_rns_config_lock(&state_arc, || {
+        crate::rns_config::add_backbone_server(
+            &config_dir,
+            &name,
+            listen_port,
+            &listen_ip,
+            args.prefer_ipv6,
+            device.as_deref(),
+        )
+    }) {
         emit_op_status_broadcast(
             &state_arc,
             "add_backbone_server",
@@ -3440,6 +3550,7 @@ pub async fn add_backbone_server(
     let listen_ip_clone = listen_ip.clone();
     let device_clone = device.clone();
     let prefer_ipv6 = args.prefer_ipv6;
+    let config_dir = config_dir.clone();
     tokio::spawn(async move {
         let rns_handle = st
             .rns
@@ -3447,6 +3558,7 @@ pub async fn add_backbone_server(
             .ok()
             .and_then(|r| r.as_ref().map(|mgr| mgr.handle.clone()));
         if let Some(handle) = rns_handle {
+            teardown_live_interface_by_name(&st, &name_clone, None).await;
             match rns_runtime::reticulum::spawn_backbone_server_runtime(
                 &handle,
                 &name_clone,
@@ -3482,8 +3594,9 @@ pub async fn add_backbone_server(
                     }
                 }
                 Err(e) => {
-                    let _ =
-                        crate::rns_config::remove_interface(&st.config.rns_config_dir, &name_clone);
+                    let _ = with_rns_config_lock(&st, || {
+                        crate::rns_config::remove_interface(&config_dir, &name_clone)
+                    });
                     emit_op_status_broadcast(
                         &st,
                         "add_backbone_server",
@@ -3518,7 +3631,7 @@ pub async fn add_backbone_server(
                 None,
             );
         }
-        let ifaces = crate::rns_config::get_all_interfaces(&st.config.rns_config_dir);
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         emit_hub_interfaces(&st, ifaces);
     });
     Ok(json!({ "queued": true, "iface_name": name }))
@@ -3564,22 +3677,28 @@ pub async fn update_backbone_server(
         return Err(AppError::bad_request("Name required"));
     }
 
-    let config_dir = state_arc.config.rns_config_dir.clone();
-    let old_entry = find_config_interface(&config_dir, "backbone_server", &old_name)
-        .ok_or_else(|| AppError::bad_request("Interface not found"))?;
-    let old_runtime = backbone_server_config_from_entry(&old_entry)
-        .ok_or_else(|| AppError::bad_request("Invalid Backbone server config"))?;
-    let old_config_content = crate::rns_config::read_config(&config_dir).unwrap_or_default();
+    let config_dir = active_rns_config_dir(&state_arc);
+    let (old_runtime, old_config_content, config_written) =
+        with_rns_config_lock(&state_arc, || {
+            let old_entry = find_config_interface(&config_dir, "backbone_server", &old_name)
+                .ok_or_else(|| AppError::bad_request("Interface not found"))?;
+            let old_runtime = backbone_server_config_from_entry(&old_entry)
+                .ok_or_else(|| AppError::bad_request("Invalid Backbone server config"))?;
+            let old_config_content =
+                crate::rns_config::read_config(&config_dir).unwrap_or_default();
+            let config_written = crate::rns_config::update_backbone_server(
+                &config_dir,
+                &old_name,
+                &name,
+                args.listen_port,
+                &listen_ip,
+                args.prefer_ipv6,
+                device.as_deref(),
+            );
+            Ok::<_, AppError>((old_runtime, old_config_content, config_written))
+        })?;
 
-    if !crate::rns_config::update_backbone_server(
-        &config_dir,
-        &old_name,
-        &name,
-        args.listen_port,
-        &listen_ip,
-        args.prefer_ipv6,
-        device.as_deref(),
-    ) {
+    if !config_written {
         emit_op_status_broadcast(
             &state_arc,
             "update_backbone_server",
@@ -3604,6 +3723,7 @@ pub async fn update_backbone_server(
     );
     tokio::spawn(finish_interface_replace(
         Arc::clone(&state_arc),
+        config_dir.clone(),
         "update_backbone_server",
         old_config_content,
         old_runtime,
@@ -3619,9 +3739,11 @@ pub async fn remove_backbone_server(
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let name = sanitize_text(&name, 64);
-    let config_dir = state_arc.config.rns_config_dir.clone();
+    let config_dir = active_rns_config_dir(&state_arc);
 
-    if !crate::rns_config::remove_interface(&config_dir, &name) {
+    if !with_rns_config_lock(&state_arc, || {
+        crate::rns_config::remove_interface(&config_dir, &name)
+    }) {
         emit_op_status_broadcast(
             &state_arc,
             "remove_backbone_server",
@@ -3638,6 +3760,7 @@ pub async fn remove_backbone_server(
 
     let st = Arc::clone(&state_arc);
     let name2 = name.clone();
+    let config_dir = config_dir.clone();
     tokio::spawn(async move {
         let rns_handle = st
             .rns
@@ -3673,7 +3796,7 @@ pub async fn remove_backbone_server(
             true,
             None,
         );
-        let ifaces = crate::rns_config::get_all_interfaces(&st.config.rns_config_dir);
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         emit_hub_interfaces(&st, ifaces);
     });
     Ok(json!({ "queued": true }))

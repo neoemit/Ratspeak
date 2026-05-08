@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use tauri::State;
 
 #[cfg(feature = "ble")]
-use crate::commands::shared::emit_hub_interfaces;
+use crate::commands::shared::{active_rns_config_dir, emit_hub_interfaces, with_rns_config_lock};
 use crate::commands::shared::{disable_ble_peer_inner, emit_op_status_broadcast};
 #[cfg(feature = "ble")]
 use crate::db;
@@ -694,7 +694,7 @@ pub async fn ble_rnode_bridge_ready(
                 );
             }
 
-            let ifaces = crate::rns_config::get_all_interfaces(&state_arc.config.rns_config_dir);
+            let ifaces = crate::rns_config::get_all_interfaces(&active_rns_config_dir(&state_arc));
             emit_hub_interfaces(&state_arc, ifaces);
         });
     }
@@ -731,7 +731,7 @@ pub async fn cancel_ble_connect(state: State<'_, Arc<AppState>>, name: String) -
         #[cfg(target_os = "linux")]
         rns_interface::ble_rnode::linux_cancel_pairing();
 
-        let config_dir = state_arc.config.rns_config_dir.clone();
+        let config_dir = active_rns_config_dir(&state_arc);
         let name_clone = name.clone();
         tokio::spawn(async move {
             let rns_handle = state_arc
@@ -762,7 +762,9 @@ pub async fn cancel_ble_connect(state: State<'_, Arc<AppState>>, name: String) -
                 }
             }
 
-            let _ = crate::rns_config::remove_interface(&config_dir, &name_clone);
+            let _ = with_rns_config_lock(&state_arc, || {
+                crate::rns_config::remove_interface(&config_dir, &name_clone)
+            });
             let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
             emit_hub_interfaces(&state_arc, ifaces);
             emit_op_status_broadcast(
@@ -793,7 +795,7 @@ pub async fn disconnect_ble_rnode(
 
     #[cfg(feature = "ble")]
     {
-        let config_dir = state_arc.config.rns_config_dir.clone();
+        let config_dir = active_rns_config_dir(&state_arc);
         let name_clone = name.clone();
         tokio::spawn(async move {
             emit_op_status_broadcast(
@@ -833,7 +835,9 @@ pub async fn disconnect_ble_rnode(
                 }
             }
 
-            if crate::rns_config::remove_interface(&config_dir, &name_clone) {
+            if with_rns_config_lock(&state_arc, || {
+                crate::rns_config::remove_interface(&config_dir, &name_clone)
+            }) {
                 emit_op_status_broadcast(
                     &state_arc,
                     "disconnect_ble_rnode",

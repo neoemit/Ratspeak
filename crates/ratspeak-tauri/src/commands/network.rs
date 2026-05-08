@@ -276,7 +276,8 @@ pub async fn set_propagation_mode(
 
 #[tauri::command]
 pub async fn api_hub_interfaces(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
-    let ifaces = crate::rns_config::get_all_interfaces(&state.config.rns_config_dir);
+    let config_dir = crate::commands::shared::active_rns_config_dir(&state);
+    let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
     Ok(crate::commands::shared::hub_interfaces_payload(
         &state, ifaces,
     ))

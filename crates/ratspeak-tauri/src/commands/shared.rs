@@ -1,7 +1,7 @@
 //! Cross-command helpers: transport RPC, interface progress, game persistence,
 //! BLE teardown, JSON→MessagePack. All `pub(crate)`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -18,6 +18,34 @@ pub(crate) fn transport_sender(
         .read()
         .ok()
         .and_then(|r| r.as_ref().map(|mgr| mgr.handle.transport_tx.clone()))
+}
+
+pub(crate) fn active_rns_config_dir(state: &AppState) -> PathBuf {
+    if let Some(config_dir) = state
+        .rns
+        .read()
+        .ok()
+        .and_then(|r| r.as_ref().map(|mgr| mgr.handle.config_dir.clone()))
+    {
+        return config_dir;
+    }
+
+    if state.config.uses_app_private_rns_config_dir() {
+        let active_identity = crate::helpers::active_identity_id(state);
+        if !active_identity.is_empty() {
+            return state.config.identity_rns_config_dir(&active_identity);
+        }
+    }
+
+    state.config.rns_config_dir.clone()
+}
+
+pub(crate) fn with_rns_config_lock<T>(state: &AppState, f: impl FnOnce() -> T) -> T {
+    let _guard = state
+        .rns_config_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    f()
 }
 
 pub(crate) fn remove_stored_file_refs(
@@ -96,7 +124,8 @@ pub(crate) async fn broadcast_blackhole_update(state: &AppState) {
 }
 
 fn config_transport_enabled(state: &AppState) -> bool {
-    crate::rns_config::read_config(&state.config.rns_config_dir)
+    let config_dir = active_rns_config_dir(state);
+    crate::rns_config::read_config(&config_dir)
         .and_then(|content| {
             content.lines().find_map(|line| {
                 let (key, value) = line.split_once('=')?;
@@ -434,7 +463,25 @@ pub(crate) async fn disable_ble_peer_inner(state: &Arc<AppState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DashboardConfig;
     use rns_transport::blackhole::BlackholeReason;
+    use std::sync::Arc;
+
+    fn memory_pool() -> ratspeak_db::DbPool {
+        let manager = r2d2_sqlite::SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(1).build(manager).unwrap();
+        ratspeak_db::init_schema(&pool).unwrap();
+        pool
+    }
+
+    fn state_for_config(config: DashboardConfig) -> AppState {
+        AppState::new(
+            config,
+            memory_pool(),
+            Arc::new(ratspeak_core::NoopEmitter),
+            Arc::new(ratspeak_core::NoopNotifier),
+        )
+    }
 
     #[test]
     fn blackhole_reason_display_prefers_custom_label() {
@@ -446,5 +493,119 @@ mod tests {
             blackhole_reason_display(BlackholeReason::RateLimit, None),
             "rate_limit"
         );
+    }
+
+    #[test]
+    fn active_rns_config_dir_uses_active_identity_before_runtime_starts() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = DashboardConfig::from_env_and_defaults(temp.path().to_path_buf());
+        let state = state_for_config(config.clone());
+        let identity_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        ratspeak_db::save_identity(
+            &state.db,
+            identity_hash,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "Default",
+            "Default",
+        );
+        ratspeak_db::set_active_identity(&state.db, identity_hash).unwrap();
+
+        let active_dir = active_rns_config_dir(&state);
+
+        assert_eq!(active_dir, config.identity_rns_config_dir(identity_hash));
+        assert!(active_dir.exists());
+        assert_ne!(active_dir, config.rns_config_dir);
+    }
+
+    #[test]
+    fn active_rns_config_dir_respects_explicit_override_before_runtime_starts() {
+        let temp = tempfile::tempdir().unwrap();
+        let override_dir = temp.path().join("custom-reticulum");
+        let config = DashboardConfig {
+            data_root: temp.path().to_path_buf(),
+            data_dir: temp.path().join(".ratspeak"),
+            rns_config_dir: override_dir.clone(),
+            rns_config_dir_overridden: true,
+            port: 5050,
+            api_token: String::new(),
+            poll_interval: 1.5,
+            max_log_entries: 200,
+        };
+        let state = state_for_config(config);
+        let identity_hash = "cccccccccccccccccccccccccccccccc";
+        ratspeak_db::save_identity(
+            &state.db,
+            identity_hash,
+            "dddddddddddddddddddddddddddddddd",
+            "Default",
+            "Default",
+        );
+        ratspeak_db::set_active_identity(&state.db, identity_hash).unwrap();
+
+        assert_eq!(active_rns_config_dir(&state), override_dir);
+    }
+
+    #[test]
+    fn interface_write_targets_active_identity_config_before_runtime_starts() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = DashboardConfig::from_env_and_defaults(temp.path().to_path_buf());
+        let state = state_for_config(config.clone());
+        let identity_hash = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        ratspeak_db::save_identity(
+            &state.db,
+            identity_hash,
+            "ffffffffffffffffffffffffffffffff",
+            "Default",
+            "Default",
+        );
+        ratspeak_db::set_active_identity(&state.db, identity_hash).unwrap();
+
+        let config_dir = active_rns_config_dir(&state);
+        assert!(with_rns_config_lock(&state, || {
+            crate::rns_config::add_auto_interface(
+                &config_dir,
+                "Local Network",
+                &crate::rns_config::AutoInterfaceOptions::default(),
+            )
+        }));
+
+        let identity_config = crate::rns_config::read_config(&config_dir).unwrap();
+        assert!(identity_config.contains("[[Local Network]]"));
+        assert!(crate::rns_config::read_config(&config.rns_config_dir).is_none());
+    }
+
+    #[test]
+    fn rns_config_lock_serializes_concurrent_interface_writes() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = DashboardConfig::from_env_and_defaults(temp.path().to_path_buf());
+        let state = Arc::new(state_for_config(config));
+        let config_dir = active_rns_config_dir(&state);
+        crate::rns_config::write_config(
+            &config_dir,
+            "[reticulum]\n  enable_transport = False\n\n[interfaces]\n",
+        );
+
+        let mut handles = Vec::new();
+        for idx in 0..8 {
+            let state = Arc::clone(&state);
+            let config_dir = config_dir.clone();
+            handles.push(std::thread::spawn(move || {
+                let name = format!("TCP {idx}");
+                let host = format!("node{idx}.example");
+                let port = 4000 + idx as u16;
+                assert!(with_rns_config_lock(&state, || {
+                    crate::rns_config::add_tcp_client(&config_dir, &name, &host, port)
+                }));
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let content = crate::rns_config::read_config(&config_dir).unwrap();
+        for idx in 0..8 {
+            assert!(content.contains(&format!("[[TCP {idx}]]")));
+            assert!(content.contains(&format!("target_host = node{idx}.example")));
+        }
     }
 }

@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tauri::State;
 
-use crate::commands::shared::remove_stored_file_refs;
+use crate::commands::shared::{active_rns_config_dir, remove_stored_file_refs};
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::helpers::{active_identity_id, sanitize_text};
@@ -15,7 +15,7 @@ use crate::state::AppState;
 
 #[tauri::command]
 pub async fn api_version() -> AppResult<Value> {
-    Ok(json!({ "version": "1.0.7", "name": "Ratspeak" }))
+    Ok(json!({ "version": "1.0.8", "name": "Ratspeak" }))
 }
 
 #[tauri::command]
@@ -406,13 +406,7 @@ pub async fn dismiss_alert(state: State<'_, Arc<AppState>>, index: i64) -> AppRe
 #[tracing::instrument(level = "debug", name = "command.api_factory_reset", skip_all)]
 pub async fn api_factory_reset(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     // Capture config_dir before shutdown wipes RNS.
-    let rns_config_dir = if let Ok(rns) = state.rns.read() {
-        rns.as_ref()
-            .map(|mgr| mgr.handle.config_dir.clone())
-            .unwrap_or_else(|| state.config.rns_config_dir.clone())
-    } else {
-        state.config.rns_config_dir.clone()
-    };
+    let rns_config_dir = active_rns_config_dir(&state);
 
     // Drop LXMF without save_crypto_state (would rewrite the dir we delete).
     if let Ok(mut lxmf) = state.lxmf.lock() {

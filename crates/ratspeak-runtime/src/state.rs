@@ -84,6 +84,8 @@ pub struct AppState {
     /// Lifetime count of `lxmf.propagation` announces with unparseable app_data.
     pub pn_parse_failures: AtomicU64,
     pub native_notifications_enabled: AtomicBool,
+    /// Serializes read-modify-write edits to the active Reticulum config file.
+    pub rns_config_lock: Mutex<()>,
     pub identity_switch_lock: tokio::sync::Mutex<()>,
     pub identity_session_generation: AtomicU64,
 }
@@ -169,6 +171,7 @@ impl AppState {
             auto_failure_counts: Mutex::new(HashMap::new()),
             pn_parse_failures: AtomicU64::new(0),
             native_notifications_enabled: AtomicBool::new(initial_notifications_enabled),
+            rns_config_lock: Mutex::new(()),
             identity_switch_lock: tokio::sync::Mutex::new(()),
             identity_session_generation: AtomicU64::new(0),
         }
