@@ -879,11 +879,18 @@ function openBlockListModal() {
             var shield = b.is_network_blocked
                 ? '<span class="block-list-shield-wrap" title="Also dropped at the network layer">' + shieldSvg + '</span>'
                 : '';
+            // Pending = "Also block on the network" was requested but we have not yet
+            // seen this contact's announce, so we cannot resolve their identity hash.
+            // The announce-handler escalates on first sighting (Stage 6).
+            var pending = b.is_blackhole_pending
+                ? '<span class="block-list-pending" title="Network blackhole queued \u2014 will activate on their next announce">pending</span>'
+                : '';
             html += '<div class="block-list-row" data-hash="' + escapeHtml(b.hash) +
-                    '" data-network-blocked="' + (b.is_network_blocked ? '1' : '0') + '">' +
+                    '" data-network-blocked="' + (b.is_network_blocked ? '1' : '0') +
+                    '" data-blackhole-pending="' + (b.is_blackhole_pending ? '1' : '0') + '">' +
                 '<div class="block-list-row-avatar">' + av + '</div>' +
                 '<div class="block-list-row-info">' +
-                    '<span class="block-list-row-name">' + escapeHtml(name) + shield + '</span>' +
+                    '<span class="block-list-row-name">' + escapeHtml(name) + shield + pending + '</span>' +
                     '<span class="block-list-row-meta">' + escapeHtml(typeof shortHash === 'function' ? shortHash(b.hash, 8, 4) : b.hash.substring(0, 16)) + (dateStr ? ' \u00B7 ' + dateStr : '') + '</span>' +
                 '</div>' +
             '</div>';
@@ -894,6 +901,7 @@ function openBlockListModal() {
             row.addEventListener('click', function() {
                 var h = this.dataset.hash;
                 var isNetworkBlocked = this.dataset.networkBlocked === '1';
+                var isPending = this.dataset.blackholePending === '1';
                 var entry = list.find(function(b) { return b.hash === h; });
                 var displayName = entry ? (entry.display_name || (typeof shortHash === 'function' ? shortHash(h, 8, 4) : h.substring(0, 12))) : (typeof shortHash === 'function' ? shortHash(h, 8, 4) : h.substring(0, 12));
 
@@ -904,12 +912,15 @@ function openBlockListModal() {
                     updateBlockedCount();
                 };
 
-                if (isNetworkBlocked && typeof rsConfirmWithCheckbox === 'function') {
+                if ((isNetworkBlocked || isPending) && typeof rsConfirmWithCheckbox === 'function') {
+                    var help = isPending
+                        ? 'Removes the queued network-layer block (it had not yet activated). Uncheck to leave it queued.'
+                        : 'Stops dropping their packets at the transport layer. Uncheck to keep the network-level block while restoring contact visibility.';
                     rsConfirmWithCheckbox({
                         message: 'Unblock "' + displayName + '"?',
                         confirmText: 'Unblock',
                         checkboxLabel: 'Also remove the network-layer block',
-                        checkboxHelp: 'Stops dropping their packets at the transport layer. Uncheck to keep the network-level block while restoring contact visibility.',
+                        checkboxHelp: help,
                         defaultChecked: true
                     }).then(function(result) {
                         if (!result.confirmed) return;
@@ -937,3 +948,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 RS.listen('contact_blocked', function() { updateBlockedCount(); });
 RS.listen('contact_unblocked', function() { updateBlockedCount(); });
+// Block-list modal listens for `blackhole_update` itself (line 822) so the
+// "pending" pill swaps for the active shield in place when the announce-handler
+// promotes a queued entry. Here we only refresh the count badge.
+RS.listen('blackhole_promoted', function() { updateBlockedCount(); });

@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 use tauri::State;
 
 use crate::commands::shared::{
-    broadcast_blackhole_update, format_contacts_list, hex_to_array16, snapshot_blackhole,
-    transport_query,
+    broadcast_blackhole_update, filter_blackholed_dests, format_contacts_list, hex_to_array16,
+    resolve_identity_hash, snapshot_blackhole, transport_query,
 };
 use crate::db;
 use crate::error::{AppError, AppResult};
@@ -56,7 +56,28 @@ pub async fn api_blocked_contacts(state: State<'_, Arc<AppState>>) -> AppResult<
         Default::default()
     });
 
-    let blackholed_set = current_blackholed_set(&state).await;
+    // Build the dest-bytes list from rows, parsing hex once.
+    let dest_bytes_list: Vec<[u8; 16]> = blocked
+        .iter()
+        .filter_map(|r| {
+            r.get("hash")
+                .and_then(|h| h.as_str())
+                .and_then(hex_to_array16)
+        })
+        .collect();
+    // Active blackholes for these dests (transport composes dest→identity→table).
+    let active_set = filter_blackholed_dests(&state, dest_bytes_list).await;
+
+    // Pending escalations (queued but waiting on first announce).
+    let id_for_pending = identity_id.clone();
+    let pending_rows = db::spawn_db(state.db.clone(), move |p| {
+        db::list_pending_blackholes_for_identity(&p, &id_for_pending)
+    })
+    .await
+    .unwrap_or_default();
+    let pending_set: std::collections::HashSet<String> =
+        pending_rows.into_iter().map(|r| r.dest_hash).collect();
+
     let decorated: Vec<Value> = blocked
         .into_iter()
         .map(|mut row| {
@@ -65,9 +86,14 @@ pub async fn api_blocked_contacts(state: State<'_, Arc<AppState>>) -> AppResult<
                 .and_then(|h| h.as_str())
                 .unwrap_or("")
                 .to_string();
-            let is_network_blocked = blackholed_set.contains(&hash);
+            let is_network_blocked = active_set.contains(&hash);
+            let is_blackhole_pending = pending_set.contains(&hash);
             if let Some(obj) = row.as_object_mut() {
                 obj.insert("is_network_blocked".to_string(), json!(is_network_blocked));
+                obj.insert(
+                    "is_blackhole_pending".to_string(),
+                    json!(is_blackhole_pending),
+                );
             }
             row
         })
@@ -240,24 +266,48 @@ pub async fn block_contact(
         result.ok_or_else(|| AppError::database_unavailable("Contact DB unavailable"))?;
 
     // Manual reason + permanent TTL.
+    //
+    // The user typed an LXMF dest hash; the transport blackhole keys on
+    // identity hash. Resolve via rsReticulum's recent_announces. If we have
+    // never seen an announce for this contact, queue the request and let the
+    // announce-handler escalate on first sighting.
     let mut blackholed = false;
+    let mut blackhole_pending = false;
     if args.escalate_to_blackhole
-        && let Some(hash_bytes) = hex_to_array16(&dest_hash)
+        && let Some(input_bytes) = hex_to_array16(&dest_hash)
     {
         use rns_transport::messages::{TransportQuery, TransportQueryResponse};
-        let resp = transport_query(
-            &state,
-            TransportQuery::BlackholeIdentity {
-                hash: hash_bytes,
-                ttl: None,
-                reason: rns_transport::blackhole::BlackholeReason::Manual,
-                reason_label: None,
-            },
-        )
-        .await;
-        blackholed = matches!(resp, Some(TransportQueryResponse::Ok));
-        if blackholed {
-            broadcast_blackhole_update(&state).await;
+        if let Some(identity_hash) = resolve_identity_hash(&state, input_bytes).await {
+            let resp = transport_query(
+                &state,
+                TransportQuery::BlackholeIdentity {
+                    hash: identity_hash,
+                    ttl: None,
+                    reason: rns_transport::blackhole::BlackholeReason::Manual,
+                    reason_label: None,
+                },
+            )
+            .await;
+            blackholed = matches!(resp, Some(TransportQueryResponse::Ok));
+            if blackholed {
+                // Clear any leftover pending row from a prior attempt.
+                let dest_c = dest_hash.clone();
+                let id_c = identity_id.clone();
+                db::spawn_db(state.db.clone(), move |p| {
+                    db::clear_pending_blackhole(&p, &dest_c, &id_c)
+                })
+                .await
+                .ok();
+                broadcast_blackhole_update(&state).await;
+            }
+        } else {
+            let dest_c = dest_hash.clone();
+            let id_c = identity_id.clone();
+            blackhole_pending = db::spawn_db(state.db.clone(), move |p| {
+                db::enqueue_pending_blackhole(&p, &dest_c, &id_c, None, None)
+            })
+            .await
+            .unwrap_or(false);
         }
     }
 
@@ -269,6 +319,7 @@ pub async fn block_contact(
             "hash": dest_hash,
             "display_name": display_name,
             "blackholed": blackholed,
+            "blackhole_pending": blackhole_pending,
         }),
     );
     state.emit_to_all("peer_removed", json!({ "hash": dest_hash }));
@@ -277,6 +328,7 @@ pub async fn block_contact(
         "hash": dest_hash,
         "display_name": display_name,
         "blackholed": blackholed,
+        "blackhole_pending": blackhole_pending,
     }))
 }
 
@@ -318,17 +370,41 @@ pub async fn unblock_contact(
     .map_err(|_| AppError::internal("unblock_contact db task panicked"))?;
 
     let mut unblackholed = false;
+    let mut pending_cleared = false;
     if args.also_remove_blackhole
-        && let Some(hash_bytes) = hex_to_array16(&dest_hash)
+        && let Some(input_bytes) = hex_to_array16(&dest_hash)
     {
         use rns_transport::messages::{TransportQuery, TransportQueryResponse};
-        let resp = transport_query(
+
+        // Always clear the pending row first so the announce-handler retry
+        // does not re-escalate after we just lifted.
+        let dest_c = dest_hash.clone();
+        let id_c = identity_id.clone();
+        pending_cleared = db::spawn_db(state.db.clone(), move |p| {
+            db::clear_pending_blackhole(&p, &dest_c, &id_c)
+        })
+        .await
+        .unwrap_or(false);
+
+        if let Some(identity_hash) = resolve_identity_hash(&state, input_bytes).await {
+            let resp = transport_query(
+                &state,
+                TransportQuery::UnblackholeIdentity { hash: identity_hash },
+            )
+            .await;
+            unblackholed = matches!(resp, Some(TransportQueryResponse::BoolResult(true)));
+        }
+
+        // Legacy cleanup: pre-fix builds stored the LXMF dest-hash bytes as if
+        // they were an identity hash. Try removing under the raw input too —
+        // harmless no-op when no such entry exists.
+        let _ = transport_query(
             &state,
-            TransportQuery::UnblackholeIdentity { hash: hash_bytes },
+            TransportQuery::UnblackholeIdentity { hash: input_bytes },
         )
         .await;
-        unblackholed = matches!(resp, Some(TransportQueryResponse::BoolResult(true)));
-        if unblackholed {
+
+        if unblackholed || pending_cleared {
             broadcast_blackhole_update(&state).await;
         }
     }
@@ -340,11 +416,16 @@ pub async fn unblock_contact(
             "ok": true,
             "hash": dest_hash,
             "unblackholed": unblackholed,
+            "pending_cleared": pending_cleared,
         }),
     );
     emit_peer_delta_for(&state, &dest_hash).await;
     crate::commands::messaging::broadcast_conversations(Arc::clone(&state));
-    Ok(json!({ "hash": dest_hash, "unblackholed": unblackholed }))
+    Ok(json!({
+        "hash": dest_hash,
+        "unblackholed": unblackholed,
+        "pending_cleared": pending_cleared,
+    }))
 }
 
 /// Same shape as `blackhole_update` broadcast.
@@ -392,34 +473,21 @@ pub async fn check_contact_status(state: State<'_, Arc<AppState>>) -> AppResult<
     Ok(status.unwrap_or(json!({})))
 }
 
-/// Returns empty if transport unreachable.
-async fn current_blackholed_set(state: &AppState) -> std::collections::HashSet<String> {
-    use rns_transport::messages::{TransportMessage, TransportQuery, TransportQueryResponse};
-    let tx = match state
-        .rns
-        .read()
-        .ok()
-        .and_then(|r| r.as_ref().map(|mgr| mgr.handle.transport_tx.clone()))
-    {
-        Some(t) => t,
-        None => return std::collections::HashSet::new(),
+/// Drop every Manual blackhole entry whose identity hash is not currently
+/// backed by a known announce. Useful after pre-fix builds populated the
+/// table with LXMF-dest-hash bytes that can never match an announcer.
+/// Returns `{ "purged": n }`. May also remove legit-but-unseen entries —
+/// frontends should warn the user before invoking.
+#[tauri::command]
+pub async fn purge_unverified_blackholes(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    use rns_transport::messages::{TransportQuery, TransportQueryResponse};
+    let resp = transport_query(&state, TransportQuery::PurgeUnverifiedBlackholes).await;
+    let purged = match resp {
+        Some(TransportQueryResponse::IntResult(n)) => n,
+        _ => 0,
     };
-    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-    if tx
-        .send(TransportMessage::Rpc {
-            query: TransportQuery::GetBlackholedIdentities,
-            response_tx: resp_tx,
-        })
-        .await
-        .is_err()
-    {
-        return std::collections::HashSet::new();
+    if purged > 0 {
+        broadcast_blackhole_update(&state).await;
     }
-    match resp_rx.await {
-        Ok(TransportQueryResponse::BlackholeList(entries)) => entries
-            .into_iter()
-            .map(|e| rns_crypto::hex_encode(&e.identity_hash))
-            .collect(),
-        _ => std::collections::HashSet::new(),
-    }
+    Ok(json!({ "purged": purged }))
 }

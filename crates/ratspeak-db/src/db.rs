@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 27;
+const SCHEMA_VERSION: i64 = 28;
 
 const POOL_MAX_SIZE: u32 = 32;
 
@@ -179,6 +179,21 @@ CREATE TABLE IF NOT EXISTS blocked_contacts (
     blocked_at REAL,
     PRIMARY KEY (dest_hash, identity_id)
 );
+
+-- Queue of escalations awaiting an announce. When the user blocks + escalates
+-- to network blackhole but we have not yet seen the contact's identity, we
+-- store the LXMF dest hash here. The announce-handler resolves and escalates
+-- on first sighting, then deletes the row.
+CREATE TABLE IF NOT EXISTS pending_blackholes (
+    dest_hash       TEXT NOT NULL,
+    identity_id     TEXT NOT NULL DEFAULT '',
+    reason_label    TEXT DEFAULT NULL,
+    ttl_seconds     REAL DEFAULT NULL,
+    queued_at       REAL NOT NULL,
+    PRIMARY KEY (dest_hash, identity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pending_blackholes_dest ON pending_blackholes(dest_hash);
+CREATE INDEX IF NOT EXISTS idx_pending_blackholes_identity ON pending_blackholes(identity_id);
 
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -864,6 +879,23 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         tracing::info!("Migrated to schema version 27 (app_actions.envelope_mp)");
     }
 
+    if from_version < 28 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pending_blackholes (
+                dest_hash       TEXT NOT NULL,
+                identity_id     TEXT NOT NULL DEFAULT '',
+                reason_label    TEXT DEFAULT NULL,
+                ttl_seconds     REAL DEFAULT NULL,
+                queued_at       REAL NOT NULL,
+                PRIMARY KEY (dest_hash, identity_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_pending_blackholes_dest ON pending_blackholes(dest_hash);
+            CREATE INDEX IF NOT EXISTS idx_pending_blackholes_identity ON pending_blackholes(identity_id);
+            UPDATE schema_version SET version = 28;",
+        )?;
+        tracing::info!("Migrated to schema version 28 (pending_blackholes)");
+    }
+
     Ok(())
 }
 
@@ -1215,6 +1247,121 @@ pub fn get_blocked_set(pool: &DbPool, identity_id: &str) -> std::collections::Ha
     stmt.query_map(params![identity_id], |row| row.get::<_, String>(0))
         .map(|rows| rows.filter_map(|r| r.ok()).collect())
         .unwrap_or_default()
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingBlackholeRow {
+    pub dest_hash: String,
+    pub identity_id: String,
+    pub reason_label: Option<String>,
+    pub ttl_seconds: Option<f64>,
+    pub queued_at: f64,
+}
+
+/// Insert a pending blackhole row. Returns true on success.
+/// Uses INSERT OR REPLACE so re-blocking the same dest+identity refreshes the
+/// queued_at timestamp without duplicating the row.
+pub fn enqueue_pending_blackhole(
+    pool: &DbPool,
+    dest_hash: &str,
+    identity_id: &str,
+    reason_label: Option<&str>,
+    ttl_seconds: Option<f64>,
+) -> bool {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, %dest_hash, "enqueue_pending_blackhole: pool.get() failed");
+            return false;
+        }
+    };
+    match conn.execute(
+        "INSERT OR REPLACE INTO pending_blackholes
+            (dest_hash, identity_id, reason_label, ttl_seconds, queued_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![dest_hash, identity_id, reason_label, ttl_seconds, now_ts()],
+    ) {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!(error = %e, %dest_hash, "enqueue_pending_blackhole: INSERT failed");
+            false
+        }
+    }
+}
+
+/// All pending rows for a given dest_hash across local identities. Used by
+/// the announce-handler sweep, which sees the dest hash on the wire and may
+/// have queued escalations under multiple receivers.
+pub fn list_pending_blackholes_by_dest(
+    pool: &DbPool,
+    dest_hash: &str,
+) -> Vec<PendingBlackholeRow> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT dest_hash, identity_id, reason_label, ttl_seconds, queued_at
+            FROM pending_blackholes WHERE dest_hash = ?1",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map(params![dest_hash], |row| {
+        Ok(PendingBlackholeRow {
+            dest_hash: row.get::<_, String>(0)?,
+            identity_id: row.get::<_, String>(1)?,
+            reason_label: row.get::<_, Option<String>>(2)?,
+            ttl_seconds: row.get::<_, Option<f64>>(3)?,
+            queued_at: row.get::<_, f64>(4)?,
+        })
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+/// All pending rows for a given local identity. Used by `api_blocked_contacts`
+/// to decorate the blocked list with `is_blackhole_pending`.
+pub fn list_pending_blackholes_for_identity(
+    pool: &DbPool,
+    identity_id: &str,
+) -> Vec<PendingBlackholeRow> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT dest_hash, identity_id, reason_label, ttl_seconds, queued_at
+            FROM pending_blackholes WHERE identity_id = ?1 ORDER BY queued_at DESC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map(params![identity_id], |row| {
+        Ok(PendingBlackholeRow {
+            dest_hash: row.get::<_, String>(0)?,
+            identity_id: row.get::<_, String>(1)?,
+            reason_label: row.get::<_, Option<String>>(2)?,
+            ttl_seconds: row.get::<_, Option<f64>>(3)?,
+            queued_at: row.get::<_, f64>(4)?,
+        })
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+/// Delete a pending row. Returns true if a row was removed.
+pub fn clear_pending_blackhole(pool: &DbPool, dest_hash: &str, identity_id: &str) -> bool {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    conn.execute(
+        "DELETE FROM pending_blackholes WHERE dest_hash = ?1 AND identity_id = ?2",
+        params![dest_hash, identity_id],
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
 }
 
 pub fn get_message_delivery_method(pool: &DbPool, msg_id: &str) -> Option<String> {
@@ -3389,5 +3536,101 @@ mod peers_snapshot_tests {
             .unwrap();
         assert_eq!(last_seen, 200.0);
         assert_eq!(announce_count, 0);
+    }
+}
+
+#[cfg(test)]
+mod pending_blackhole_tests {
+    use super::*;
+    use r2d2_sqlite::SqliteConnectionManager;
+
+    fn test_pool() -> DbPool {
+        let mgr = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(1).build(mgr).unwrap();
+        init_schema(&pool).unwrap();
+        pool
+    }
+
+    #[test]
+    fn enqueue_then_list_then_clear_round_trip() {
+        let pool = test_pool();
+        assert!(enqueue_pending_blackhole(
+            &pool,
+            "deadbeef",
+            "me",
+            Some("test"),
+            Some(3600.0)
+        ));
+        let by_dest = list_pending_blackholes_by_dest(&pool, "deadbeef");
+        assert_eq!(by_dest.len(), 1);
+        assert_eq!(by_dest[0].identity_id, "me");
+        assert_eq!(by_dest[0].reason_label.as_deref(), Some("test"));
+        assert_eq!(by_dest[0].ttl_seconds, Some(3600.0));
+
+        let by_id = list_pending_blackholes_for_identity(&pool, "me");
+        assert_eq!(by_id.len(), 1);
+        assert_eq!(by_id[0].dest_hash, "deadbeef");
+
+        assert!(clear_pending_blackhole(&pool, "deadbeef", "me"));
+        assert!(list_pending_blackholes_by_dest(&pool, "deadbeef").is_empty());
+        // Idempotent: second clear returns false.
+        assert!(!clear_pending_blackhole(&pool, "deadbeef", "me"));
+    }
+
+    #[test]
+    fn enqueue_replaces_existing_row_for_same_key() {
+        let pool = test_pool();
+        assert!(enqueue_pending_blackhole(&pool, "abc", "me", None, None));
+        assert!(enqueue_pending_blackhole(
+            &pool,
+            "abc",
+            "me",
+            Some("rate_limit"),
+            Some(60.0)
+        ));
+        let rows = list_pending_blackholes_by_dest(&pool, "abc");
+        assert_eq!(rows.len(), 1, "key (dest, identity) is primary so REPLACE collapses");
+        assert_eq!(rows[0].reason_label.as_deref(), Some("rate_limit"));
+        assert_eq!(rows[0].ttl_seconds, Some(60.0));
+    }
+
+    #[test]
+    fn list_by_dest_returns_all_local_identities() {
+        let pool = test_pool();
+        assert!(enqueue_pending_blackhole(&pool, "shared", "alice", None, None));
+        assert!(enqueue_pending_blackhole(&pool, "shared", "bob", None, None));
+        let rows = list_pending_blackholes_by_dest(&pool, "shared");
+        assert_eq!(rows.len(), 2);
+        let ids: std::collections::HashSet<_> = rows.iter().map(|r| r.identity_id.clone()).collect();
+        assert!(ids.contains("alice"));
+        assert!(ids.contains("bob"));
+    }
+
+    #[test]
+    fn migration_from_v27_creates_pending_blackholes_table() {
+        // Build a pre-fix DB at version 27, then run init_schema and confirm
+        // the migration runs and the table is queryable.
+        let mgr = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(1).build(mgr).unwrap();
+        let conn = pool.get().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (27);",
+        )
+        .unwrap();
+        drop(conn);
+
+        init_schema(&pool).unwrap();
+
+        let conn = pool.get().unwrap();
+        let v: i64 = conn
+            .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        // Table is queryable.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pending_blackholes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 }

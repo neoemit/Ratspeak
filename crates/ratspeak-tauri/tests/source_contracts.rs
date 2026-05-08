@@ -337,7 +337,12 @@ fn message_composer_send_preserves_preexisting_focus_state() {
     assert!(lxmf.contains("function _captureLxmfSendFocusState()"));
     assert!(lxmf.contains("function _consumeLxmfSendFocusState(input)"));
     assert!(lxmf.contains("function _finishLxmfComposerSend(input, shouldRestoreFocus)"));
-    assert!(lxmf.contains("sendBtn.addEventListener('pointerdown'"));
+    // Send button uses split touchstart/mousedown handlers with non-passive
+    // preventDefault to keep the soft keyboard up while the long-press timer
+    // runs. Both wire `_captureLxmfSendFocusState` so the existing focus-
+    // restore pathway in sendLxmfMessage stays valid.
+    assert!(lxmf.contains("sendBtn.addEventListener('touchstart'"));
+    assert!(lxmf.contains("sendBtn.addEventListener('mousedown'"));
     assert!(lxmf.contains("_captureLxmfSendFocusState();"));
     assert!(
         send_function

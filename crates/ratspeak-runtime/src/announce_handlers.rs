@@ -115,6 +115,14 @@ async fn register_with_retry(
 
 /// `lxmf.delivery` per-event processing: activity tracking + peer batch emit.
 async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandlerEvent) {
+    // Pending-blackhole sweep: the announce already carries an identity hash
+    // recovered from the validated payload, so we can escalate any queued
+    // network-block requests for this dest immediately. No-op when nothing is
+    // queued for this dest hash.
+    if let Some(id_hash) = event.identity_hash {
+        crate::blackhole::escalate_pending_if_present(state, event.destination_hash, id_hash).await;
+    }
+
     let hash_hex = hex::encode(event.destination_hash);
     let display_name = event
         .app_data

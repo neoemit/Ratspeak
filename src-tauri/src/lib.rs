@@ -217,6 +217,7 @@ pub fn run() {
             ratspeak_tauri::commands::contacts::unblock_contact,
             ratspeak_tauri::commands::contacts::get_blackhole,
             ratspeak_tauri::commands::contacts::clear_system_blackholes,
+            ratspeak_tauri::commands::contacts::purge_unverified_blackholes,
             ratspeak_tauri::commands::contacts::check_contact_status,
             ratspeak_tauri::commands::system::dismiss_alert,
             ratspeak_tauri::commands::network::enable_network_log,

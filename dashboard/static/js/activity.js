@@ -313,11 +313,23 @@ function renderSystemDrops(entries) {
     var card = document.getElementById('system-drops-card');
     var summary = document.getElementById('system-drops-summary');
     var list = document.getElementById('system-drops-list');
+    var purgeBtn = document.getElementById('system-drops-purge-unverified-btn');
     if (!card || !summary || !list) return;
 
-    var systemEntries = (entries || []).filter(function(e) { return e.reason !== 'Manual'; });
+    var allEntries = entries || [];
+    var systemEntries = allEntries.filter(function(e) { return e.reason !== 'Manual'; });
+    // Unverified manual entries \u2014 pre-fix garbage or identities pruned from
+    // recent_announces. Count separately so the user has a clear path to clean
+    // them up via "Purge unverified".
+    var unverifiedManual = allEntries.filter(function(e) {
+        return e.reason === 'Manual' && e.verified === false;
+    });
 
-    if (systemEntries.length === 0) {
+    if (purgeBtn) {
+        purgeBtn.style.display = unverifiedManual.length > 0 ? '' : 'none';
+    }
+
+    if (systemEntries.length === 0 && unverifiedManual.length === 0) {
         card.style.display = 'none';
         return;
     }
@@ -327,11 +339,15 @@ function renderSystemDrops(entries) {
         var label = REASON_LABELS[e.reason] || e.reason || 'unknown';
         counts[label] = (counts[label] || 0) + 1;
     });
+    if (unverifiedManual.length > 0) {
+        counts['unverified manual'] = unverifiedManual.length;
+    }
     var summaryParts = Object.keys(counts).sort().map(function(k) { return counts[k] + ' ' + k; });
-    summary.textContent = systemEntries.length + ' \u00B7 ' + summaryParts.join(', ');
+    var totalShown = systemEntries.length + unverifiedManual.length;
+    summary.textContent = totalShown + ' \u00B7 ' + summaryParts.join(', ');
 
     var html = '';
-    systemEntries.forEach(function(e) {
+    var renderRow = function(e, extraPill) {
         var hashShort = (e.hash || '').substring(0, 16);
         var label = REASON_LABELS[e.reason] || e.reason || 'unknown';
         var pillClass = 'system-drops-pill system-drops-pill-' + (e.reason || 'unknown').toLowerCase();
@@ -341,11 +357,16 @@ function renderSystemDrops(entries) {
         } else {
             expiry = 'no expiry';
         }
-        html += '<div class="system-drops-row">' +
+        return '<div class="system-drops-row">' +
             '<span class="system-drops-hash" title="' + escapeHtml(e.hash || '') + '">' + escapeHtml(hashShort) + '\u2026</span>' +
             '<span class="' + pillClass + '">' + escapeHtml(label) + '</span>' +
+            (extraPill || '') +
             '<span class="system-drops-expiry">' + escapeHtml(expiry) + '</span>' +
         '</div>';
+    };
+    systemEntries.forEach(function(e) { html += renderRow(e); });
+    unverifiedManual.forEach(function(e) {
+        html += renderRow(e, '<span class="system-drops-pill system-drops-pill-unverified" title="No announce backs this identity">unverified</span>');
     });
     list.innerHTML = html;
     card.style.display = '';
@@ -395,6 +416,33 @@ function initSystemDrops() {
             }).then(function(ok) {
                 if (!ok) return;
                 RS.invoke('clear_system_blackholes').catch(function() {});
+            });
+        });
+    }
+
+    var purgeBtn = document.getElementById('system-drops-purge-unverified-btn');
+    if (purgeBtn) {
+        // Drops Manual blackhole entries whose identity is not currently
+        // backed by a known announce. Useful after pre-fix builds populated
+        // the table with LXMF-dest-hash bytes that can never match an
+        // announcer. Also removes legit-but-unseen entries — warn the user.
+        purgeBtn.addEventListener('click', function() {
+            if (typeof rsConfirm !== 'function') return;
+            rsConfirm({
+                message: 'Remove network blocks with no recent announce evidence? This cleans up pre-fix garbage entries but may also drop blocks for contacts you have not heard from in a long time.',
+                confirmText: 'Purge',
+                danger: true
+            }).then(function(ok) {
+                if (!ok) return;
+                RS.invoke('purge_unverified_blackholes').then(function(resp) {
+                    if (typeof showToast !== 'function') return;
+                    var n = (resp && resp.purged) | 0;
+                    if (n === 0) {
+                        showToast('Nothing to purge — all blocks are verified.', 'toast-info', 3000);
+                    } else {
+                        showToast('Purged ' + n + ' unverified entr' + (n === 1 ? 'y' : 'ies') + '.', 'toast-green', 3000);
+                    }
+                }).catch(function() {});
             });
         });
     }

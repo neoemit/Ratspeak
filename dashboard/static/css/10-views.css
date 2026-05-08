@@ -1031,6 +1031,13 @@
     color: var(--accent);
     border-color: var(--accent-border);
 }
+/* Pre-fix or pruned identities — flagged in the row so the user can decide
+   whether to "Purge unverified" them. */
+.system-drops-pill-unverified {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    border-color: var(--border);
+}
 .system-drops-expiry {
     font-family: var(--font-mono);
     color: var(--text-muted);

@@ -7,6 +7,7 @@
 #![warn(clippy::await_holding_lock)]
 
 pub mod announce_handlers;
+pub mod blackhole;
 pub mod helpers;
 pub mod identity_prune;
 pub mod lxmf;

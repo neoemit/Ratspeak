@@ -91,7 +91,8 @@ pub(crate) fn blackhole_reason_display(
     reason_label.unwrap_or_else(|| reason.as_str()).to_string()
 }
 
-// Each entry: `hash`, `reason`, `created`, `expires_in` (null = permanent).
+// Each entry: `hash`, `reason`, `created`, `expires_in` (null = permanent),
+// `verified` (false means we have no announce backing this identity).
 pub(crate) async fn snapshot_blackhole(state: &AppState) -> Vec<Value> {
     use rns_transport::messages::{TransportQuery, TransportQueryResponse};
     let entries = match transport_query(state, TransportQuery::GetBlackholedIdentities).await {
@@ -112,9 +113,44 @@ pub(crate) async fn snapshot_blackhole(state: &AppState) -> Vec<Value> {
                 "reason": reason,
                 "created": e.created,
                 "expires_in": expires_in,
+                "verified": e.verified,
             })
         })
         .collect()
+}
+
+/// Resolve a 16-byte hex blob (LXMF dest hash OR identity hash) to the canonical
+/// identity hash via rsReticulum's `recent_announces`. Returns `None` when the
+/// input is neither a known destination nor a known identity.
+pub(crate) async fn resolve_identity_hash(
+    state: &AppState,
+    input: [u8; 16],
+) -> Option<[u8; 16]> {
+    use rns_transport::messages::{TransportQuery, TransportQueryResponse};
+    match transport_query(state, TransportQuery::ResolveIdentityHash { input }).await {
+        Some(TransportQueryResponse::HashResult(opt)) => opt,
+        _ => None,
+    }
+}
+
+/// Batch lookup: which of the given LXMF dest hashes belong to a currently
+/// blackholed identity? Returns the set of hex-encoded dest hashes that are
+/// blocked at the transport layer. The actor handles the dest→identity→
+/// blackhole composition so callers compare dest hashes against dest hashes.
+pub(crate) async fn filter_blackholed_dests(
+    state: &AppState,
+    dests: Vec<[u8; 16]>,
+) -> std::collections::HashSet<String> {
+    use rns_transport::messages::{TransportQuery, TransportQueryResponse};
+    if dests.is_empty() {
+        return Default::default();
+    }
+    match transport_query(state, TransportQuery::FilterBlackholedDests { dests }).await {
+        Some(TransportQueryResponse::BlackholedDests(v)) => {
+            v.into_iter().map(|d| rns_crypto::hex_encode(&d)).collect()
+        }
+        _ => Default::default(),
+    }
 }
 
 /// Broadcast `blackhole_update` after any mutation.
