@@ -1,11 +1,11 @@
 var currentView = 'dashboard';
-var VIEWS = ['dashboard', 'message', 'contacts', 'peers', 'network', 'games', 'settings'];
+var VIEWS = ['dashboard', 'message', 'contacts', 'identity', 'peers', 'network', 'games', 'settings'];
 
 // Tab-bar destinations use replaceState; MORE_VIEWS live under the hamburger.
-var TAB_VIEWS = ['peers', 'message', 'contacts', 'network', 'games', 'settings'];
-var MORE_VIEWS = ['network', 'games', 'settings'];
+var TAB_VIEWS = ['peers', 'message', 'contacts', 'identity', 'network', 'games', 'settings'];
+var MORE_VIEWS = ['identity', 'network', 'games', 'settings'];
 var MOBILE_TAB_SLOTS = ['peers', 'message', 'contacts', 'more'];
-var DEFAULT_MORE_VIEW = 'network';
+var DEFAULT_MORE_VIEW = 'identity';
 var _lastMoreView = DEFAULT_MORE_VIEW;
 try {
     var _savedMoreView = localStorage.getItem('ratspeak_more_view');
@@ -22,7 +22,6 @@ function _viewForMobileTabSlot(slot) {
 
 // Legacy hashes that predate the current view names.
 var VIEW_ALIASES = {
-    'identity': 'settings',
     'eventlog': 'dashboard',
     'propagation': 'network'
 };
@@ -299,9 +298,10 @@ function _fireViewLifecycle(viewId) {
     }
 
     if (viewId === 'settings') {
-        if (typeof loadIdentities === 'function') loadIdentities();
         if (typeof initThemeToggle === 'function') initThemeToggle();
     }
+
+    if (viewId === 'identity' && typeof loadIdentities === 'function') loadIdentities();
 
     if (viewId === 'games' && typeof gamesTabLoad === 'function') gamesTabLoad();
     if (viewId === 'peers' && typeof initPeersView === 'function') requestAnimationFrame(initPeersView);
@@ -415,7 +415,7 @@ function showAboutModal() {
                 '<button class="modal-close" id="about-modal-close">&times;</button>' +
             '</div>' +
             '<div class="modal-body about-modal-body">' +
-                '<p class="font-600 about-modal-title">Ratspeak <span class="mono text-muted-color about-modal-version">v1.0.6</span></p>' +
+                '<p class="font-600 about-modal-title">Ratspeak <span class="mono text-muted-color about-modal-version">v1.0.7</span></p>' +
                 '<p>Real-time dashboard for Reticulum mesh networks. Encrypted messaging, dynamic node management, and network health monitoring.</p>' +
                 '<p class="about-modal-link-row">' +
                     '<a href="https://ratspeak.org" target="_blank" rel="noopener" class="text-link">ratspeak.org</a>' +

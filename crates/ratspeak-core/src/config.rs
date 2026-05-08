@@ -63,6 +63,30 @@ impl DashboardConfig {
         std::fs::create_dir_all(&d).ok();
         d
     }
+
+    pub fn identity_profile_dir(&self, identity_hash: &str) -> PathBuf {
+        let d = self.identities_dir().join(identity_hash);
+        std::fs::create_dir_all(&d).ok();
+        d
+    }
+
+    pub fn identity_files_dir(&self, identity_hash: &str) -> PathBuf {
+        let d = self.identity_profile_dir(identity_hash).join("files");
+        std::fs::create_dir_all(&d).ok();
+        d
+    }
+
+    pub fn identity_rns_config_dir(&self, identity_hash: &str) -> PathBuf {
+        let d = self.identity_profile_dir(identity_hash).join("reticulum");
+        std::fs::create_dir_all(&d).ok();
+        d
+    }
+
+    pub fn identity_cache_dir(&self, identity_hash: &str) -> PathBuf {
+        let d = self.identity_profile_dir(identity_hash).join("cache");
+        std::fs::create_dir_all(&d).ok();
+        d
+    }
 }
 
 #[cfg(test)]
@@ -84,5 +108,45 @@ mod tests {
         assert_eq!(config.data_dir, data_root.join(".ratspeak"));
         assert_eq!(config.rns_config_dir, data_root.join(".ratspeak/reticulum"));
         assert!(config.uses_app_private_rns_config_dir());
+    }
+
+    #[test]
+    fn identity_profile_paths_live_under_identity_dir() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let data_root = std::env::temp_dir().join(format!(
+            "ratspeak-config-identity-test-{}-{nanos}",
+            std::process::id()
+        ));
+        let config = DashboardConfig::from_env_and_defaults(data_root.clone());
+        let hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        assert_eq!(
+            config.identity_profile_dir(hash),
+            data_root.join(".ratspeak/identities").join(hash)
+        );
+        assert_eq!(
+            config.identity_files_dir(hash),
+            data_root
+                .join(".ratspeak/identities")
+                .join(hash)
+                .join("files")
+        );
+        assert_eq!(
+            config.identity_rns_config_dir(hash),
+            data_root
+                .join(".ratspeak/identities")
+                .join(hash)
+                .join("reticulum")
+        );
+        assert_eq!(
+            config.identity_cache_dir(hash),
+            data_root
+                .join(".ratspeak/identities")
+                .join(hash)
+                .join("cache")
+        );
     }
 }

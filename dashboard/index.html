@@ -42,7 +42,7 @@
         </div>
     </div>
     <div class="header-right">
-        <button class="header-identity-pill hidden" id="header-identity-pill" title="Click to copy your LXMF address" aria-label="Copy LXMF address">
+        <button class="header-identity-pill hidden" id="header-identity-pill" title="Open Identity" aria-label="Open Identity">
             <span class="header-identity-icon" id="header-identity-icon"></span>
             <span class="header-identity-hash" id="header-identity-hash"></span>
             <svg class="header-identity-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
@@ -80,6 +80,10 @@
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             <span class="nav-label">Contacts</span>
         </a>
+        <a class="nav-item" data-view="identity" href="#identity" title="Identity">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="M12 12l9-9"/><path d="M16 4l4 4"/><path d="M14 6l4 4"/></svg>
+            <span class="nav-label">Identity</span>
+        </a>
         <a class="nav-item" data-view="games" href="#games" title="Games">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11h4M8 9v4"/><line x1="15" y1="12" x2="15.01" y2="12"/><line x1="18" y1="10" x2="18.01" y2="10"/><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"/></svg>
             <span class="nav-label">Games</span>
@@ -97,7 +101,7 @@
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             <span class="nav-label">Settings</span>
         </a>
-        <div class="sidebar-identity sidebar-identity--profile" id="sidebar-identity" title="Open Identity settings" role="button" tabindex="0">
+        <div class="sidebar-identity sidebar-identity--profile" id="sidebar-identity" title="Open Identity" role="button" tabindex="0">
             <span class="sidebar-identity-icon" id="sidebar-identity-icon"></span>
             <div class="sidebar-identity-meta">
                 <div class="sidebar-identity-name" id="sidebar-identity-name"></div>
@@ -137,6 +141,10 @@
     <div class="bottom-sheet bottom-sheet--mobile-only" id="bottom-sheet">
         <div class="bottom-sheet-handle"></div>
         <div class="bottom-sheet-items">
+            <a class="bottom-sheet-item" data-view="identity">
+                <svg viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="5.5"/><path d="M12 12l9-9"/><path d="M16 4l4 4"/><path d="M14 6l4 4"/></svg>
+                Identity
+            </a>
             <a class="bottom-sheet-item" data-view="games">
                 <svg viewBox="0 0 24 24"><path d="M6 11h4M8 9v4"/><line x1="15" y1="12" x2="15.01" y2="12"/><line x1="18" y1="10" x2="18.01" y2="10"/><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"/></svg>
                 Games
@@ -214,6 +222,7 @@
                             <div class="setup-divider"></div>
                             <p>Let's get started by generating your cryptographic key and unique identity to use in the network.</p>
                             <button class="nr-btn nr-btn-lg w-full" id="setup-generate-btn">Create Identity</button>
+                            <button class="nr-btn nr-btn-ghost nr-btn-lg w-full mt-3" id="setup-import-identity-btn">Import Identity</button>
                         </div>
                         <div class="setup-step" id="setup-step-generating" style="display:none;">
                             <div class="setup-crypto-anim">
@@ -708,33 +717,50 @@
                 </div>
             </div>
         </div>
+        <input type="file" id="identity-file-input" accept=".rsi,.rniid,.key,.identity,.bin,application/json,application/octet-stream,text/plain" style="display:none;">
 
-        <div class="view" id="view-settings">
-            <div class="settings-page">
-                <div class="settings-page-inner">
-                    <div class="panel" id="panel-settings-profile">
-                        <div class="panel-header">
-                            Profile
-                            <div class="panel-header-actions">
-                                <button class="panel-header-btn" id="identity-add-btn" title="Create new identity">
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                                </button>
-                                <button class="panel-header-btn panel-header-btn-danger" id="identity-delete-btn" title="Delete active identity">
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                                </button>
-                            </div>
-                        </div>
-                        <div class="panel-body">
-                            <div id="identity-active-card">
-                                <div class="loading-state"><span class="loading-spinner"></span>Loading...</div>
-                            </div>
-                            <div class="divider-flush"></div>
+        <div class="view" id="view-identity">
+            <div class="identity-page">
+                <div class="identity-page-header">
+                    <div class="identity-title-block">
+                        <div class="identity-page-kicker">Identity</div>
+                        <div class="identity-page-title" id="identity-page-title">Identity Management</div>
+                    </div>
+                    <div class="identity-toolbar">
+                        <button class="identity-toolbar-btn" id="identity-import-btn" title="Import identity" aria-label="Import identity">
+                            <svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
+                            <span>Import</span>
+                        </button>
+                        <button class="identity-toolbar-btn identity-toolbar-btn--primary" id="identity-add-btn" title="Create identity" aria-label="Create identity">
+                            <svg viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+                            <span>Create</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="identity-management-grid">
+                    <div class="panel identity-panel-list" id="panel-identity-list">
+                        <div class="panel-header">Identities</div>
+                        <div class="panel-body identity-list-body">
                             <div id="identity-list">
                                 <div class="loading-state p-6"><span class="loading-spinner"></span>Loading...</div>
                             </div>
                         </div>
                     </div>
+                    <div class="panel identity-panel-active" id="panel-identity-active">
+                        <div class="panel-header">Identity Detail</div>
+                        <div class="panel-body">
+                            <div id="identity-active-card">
+                                <div class="loading-state"><span class="loading-spinner"></span>Loading...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
+        <div class="view" id="view-settings">
+            <div class="settings-page">
+                <div class="settings-page-inner">
                     <div class="panel" id="panel-settings-appearance">
                         <div class="panel-header">Appearance</div>
                         <div class="panel-body">
@@ -876,7 +902,6 @@
                     </div>
                 </div>
             </div>
-            <input type="file" id="identity-file-input" accept=".key,.identity,.bin" style="display:none;">
         </div>
 
     </div>

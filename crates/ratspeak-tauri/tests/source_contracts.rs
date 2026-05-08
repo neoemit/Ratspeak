@@ -569,6 +569,142 @@ fn mobile_tab_swipe_uses_bottom_bar_slots_without_view_slide_animation() {
 }
 
 #[test]
+fn identity_management_is_first_class_tab() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("index html");
+    assert!(index.contains(r#"data-view="identity""#));
+    assert!(index.contains(r#"id="view-identity""#));
+    assert!(index.contains(r#"id="identity-import-btn""#));
+    assert!(index.contains(r#"id="setup-import-identity-btn""#));
+    assert!(index.contains("application/json,application/octet-stream,text/plain"));
+    assert!(index.contains("title=\"Import identity\""));
+    assert!(index.contains(r#"<path d="M7 10l5 5 5-5"/>"#));
+    assert!(!index.contains("Import identity backup"));
+    assert!(!index.contains(r#"<path d="M7 8l5-5 5 5"/>"#));
+
+    let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    assert!(nav.contains("'identity'"));
+    assert!(nav.contains("var DEFAULT_MORE_VIEW = 'identity';"));
+    assert!(!nav.contains("'identity': 'settings'"));
+
+    let identity_js =
+        read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
+    assert!(identity_js.contains("api_preview_identity_import_base64"));
+    assert!(identity_js.contains("api_export_identity_backup_base64"));
+    assert!(identity_js.contains("api_export_identity_reticulum_base64"));
+    assert!(identity_js.contains("api_export_identity_reticulum_base32"));
+    assert!(identity_js.contains("Export Private Identity"));
+    assert!(identity_js.contains("function exportIdentityBackup(hash)"));
+    assert!(identity_js.contains(r#"<path d="M7 14l5-5 5 5"/>"#));
+    assert!(!identity_js.contains(r#"<path d="M7 16l5 5 5-5"/>"#));
+    assert!(identity_js.contains("function identityImportFormatChoices()"));
+    assert!(identity_js.contains("function identityExportFormatChoices()"));
+    assert!(identity_js.contains("Reticulum Identity Key"));
+    assert!(identity_js.contains("Reticulum Base32 Key"));
+    assert!(identity_js.contains("reticulum-base32"));
+    assert!(!identity_js.contains("NomadNet"));
+    assert!(!identity_js.contains("Sideband"));
+    assert!(identity_js.contains("function resetPendingIdentityImport()"));
+    assert!(identity_js.contains("fileInput.addEventListener('cancel'"));
+    assert!(identity_js.contains("function openIdentityBackupWithAndroid()"));
+    assert!(identity_js.contains("window.RatspeakAndroid.importIdentityBackup();"));
+    assert!(
+        identity_js.contains(
+            "function handleImportBackupPayload(fileName, fileSize, b64, expectedFormat)"
+        )
+    );
+    assert!(identity_js.contains("var fromSetup = !!window._identityImportFromSetup;"));
+    assert!(identity_js.contains("var activateHtml = fromSetup ? ''"));
+    assert!(identity_js.contains("completeSetupAfterIdentityImport(data);"));
+    assert!(identity_js.contains("Choose Reticulum Identity Key import"));
+    assert!(identity_js.contains("Choose Ratspeak Identity Backup import"));
+    assert!(identity_js.contains("mimeType: 'application/octet-stream'"));
+    assert!(identity_js.contains("function saveIdentityBackupWithAndroid(fileName, backupBase64)"));
+    assert!(
+        identity_js
+            .contains("function saveIdentityDocumentWithAndroid(fileName, dataBase64, mimeType)")
+    );
+    assert!(
+        identity_js
+            .contains("window.RatspeakAndroid.exportIdentityBackup(fileName, backupBase64);")
+    );
+    assert!(
+        identity_js.contains("window.RatspeakAndroid.saveIdentityDocument(fileName, dataBase64")
+    );
+    assert!(!identity_js.contains("Identity backup ready"));
+    assert!(!identity_js.contains("Export Backup"));
+    assert!(identity_js.contains("function openIdentityActions(hash)"));
+    assert!(identity_js.contains("function deleteIdentityByHash(hash)"));
+
+    let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs js");
+    assert!(dialogs_js.contains("built.sheet.addEventListener('keydown'"));
+    assert!(!dialogs_js.contains("built.overlay.addEventListener('keydown'"));
+    assert!(dialogs_js.contains("btn.appendChild(hint);"));
+
+    let index = read_source(root.join("dashboard/index.html")).expect("index html");
+    assert!(index.contains("Identity Management"));
+    assert!(index.contains("Identity Detail"));
+    assert!(!index.contains("id=\"identity-export-btn\""));
+    assert!(!index.contains("identity-panel-actions"));
+
+    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+    assert!(views_css.contains(".identity-page-header"));
+    assert!(views_css.contains(".identity-management-grid"));
+    assert!(views_css.contains(".identity-detail-hero"));
+    assert!(views_css.contains(".identity-address-row"));
+    assert!(views_css.contains(".identity-detail-actions"));
+
+    let responsive_css =
+        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
+    assert!(responsive_css.contains(".identity-toolbar-btn span"));
+    assert!(responsive_css.contains("display: none;"));
+
+    let modals_css =
+        read_source(root.join("dashboard/static/css/08-modals.css")).expect("modals css");
+    assert!(modals_css.contains(".rs-dialog-choice"));
+    assert!(modals_css.contains("flex-direction: column;"));
+    assert!(modals_css.contains(".rs-dialog-choice-hint"));
+
+    let android_activity = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .expect("android main activity");
+    assert!(
+        android_activity
+            .contains("fun exportIdentityBackup(fileName: String, backupBase64: String)")
+    );
+    assert!(android_activity.contains(
+        "fun saveIdentityDocument(fileName: String, dataBase64: String, mimeType: String)"
+    ));
+    assert!(android_activity.contains("fun importIdentityBackup()"));
+    assert!(android_activity.contains("Intent.ACTION_CREATE_DOCUMENT"));
+    assert!(android_activity.contains("?: \"application/octet-stream\""));
+    assert!(android_activity.contains("launchIdentityDocumentSave(safeName, bytes, mimeType)"));
+    assert!(android_activity.contains("Intent.ACTION_OPEN_DOCUMENT"));
+    assert!(android_activity.contains("contentResolver.openOutputStream(uri)"));
+    assert!(android_activity.contains("contentResolver.openInputStream(uri)"));
+    assert!(android_activity.contains("MAX_IDENTITY_IMPORT_BYTES"));
+    assert!(android_activity.contains("_onAndroidIdentityExportResult"));
+    assert!(android_activity.contains("_onAndroidIdentityImportResult"));
+
+    let setup_js = read_source(root.join("dashboard/static/js/setup.js")).expect("setup js");
+    assert!(setup_js.contains("function completeSetupAfterIdentityImport()"));
+    assert!(setup_js.contains("runConnectingProgress();"));
+
+    let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+    assert!(tauri_lib.contains("api_export_identity_reticulum_base64"));
+    assert!(tauri_lib.contains("api_export_identity_reticulum_base32"));
+
+    let identity_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/identity.rs"))
+        .expect("identity command source");
+    assert!(identity_rs.contains("identity duplicate check db task panicked"));
+    assert!(identity_rs.contains("Identity already exists"));
+    assert!(identity_rs.contains("base32-private-key"));
+    assert!(identity_rs.contains("api_export_identity_reticulum_base64"));
+    assert!(identity_rs.contains("api_export_identity_reticulum_base32"));
+}
+
+#[test]
 fn network_activity_opt_in_is_session_local() {
     let source =
         read_source(repo_root().join("dashboard/static/js/activity.js")).expect("activity js");

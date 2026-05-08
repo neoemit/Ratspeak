@@ -960,10 +960,10 @@ RS.listen('clone_warning', function(data) {
     banner.id = 'clone-warning-banner';
     banner.className = 'clone-warning';
     banner.innerHTML = '<span>' + escapeHtml(data.message) + '</span>' +
-        '<button class="nr-btn clone-settings-btn">Go to Settings</button>' +
+        '<button class="nr-btn clone-settings-btn">Go to Identity</button>' +
         '<button class="clone-dismiss" title="Dismiss">&times;</button>';
 
-    banner.querySelector('.clone-settings-btn').addEventListener('click', function() { switchView('settings'); });
+    banner.querySelector('.clone-settings-btn').addEventListener('click', function() { switchView('identity'); });
     banner.querySelector('.clone-dismiss').addEventListener('click', function() { banner.remove(); });
 
     var mainContent = document.querySelector('.main-content');

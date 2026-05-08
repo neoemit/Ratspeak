@@ -205,6 +205,7 @@ pub struct LxmfManager {
 impl LxmfManager {
     pub fn load_or_create(
         data_dir: &Path,
+        preferred_identity_hash: Option<&str>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let ratspeak_dir = data_dir.join(".ratspeak");
         std::fs::create_dir_all(&ratspeak_dir)?;
@@ -213,7 +214,29 @@ impl LxmfManager {
         std::fs::create_dir_all(&identities_dir)?;
 
         let legacy_path = ratspeak_dir.join("identity");
-        let identity = if legacy_path.exists() {
+        let identity = if let Some(hash) = preferred_identity_hash.filter(|h| !h.is_empty()) {
+            let id_file = identities_dir.join(hash).join("identity");
+            if id_file.exists() {
+                tracing::info!(
+                    "Loading active identity from profile: {}",
+                    id_file.display()
+                );
+                Identity::from_file(&id_file)?
+            } else if legacy_path.exists() {
+                let id = Identity::from_file(&legacy_path)?;
+                let legacy_hash = hex::encode(id.hash);
+                if legacy_hash == hash {
+                    let id_dir = identities_dir.join(hash);
+                    std::fs::create_dir_all(&id_dir)?;
+                    id.to_file(&id_dir.join("identity"))?;
+                    id
+                } else {
+                    return Err(format!("active identity file not found for {hash}").into());
+                }
+            } else {
+                return Err(format!("active identity file not found for {hash}").into());
+            }
+        } else if legacy_path.exists() {
             tracing::info!(
                 "Loading identity from legacy path: {}",
                 legacy_path.display()
@@ -527,6 +550,15 @@ impl LxmfManager {
         nickname: &str,
         db_pool: &DbPool,
     ) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
+        Self::import_identity_to_data_dir(&self.data_dir, key_bytes, nickname, db_pool)
+    }
+
+    pub fn import_identity_to_data_dir(
+        ratspeak_dir: &Path,
+        key_bytes: &[u8],
+        nickname: &str,
+        db_pool: &DbPool,
+    ) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
         if key_bytes.len() != 64 {
             return Err("Identity key must be exactly 64 bytes".into());
         }
@@ -535,7 +567,7 @@ impl LxmfManager {
             .map_err(|e| format!("Invalid identity key: {e}"))?;
         let hash_hex = hex::encode(identity.hash);
 
-        let id_dir = self.data_dir.join("identities").join(&hash_hex);
+        let id_dir = ratspeak_dir.join("identities").join(&hash_hex);
         if id_dir.join("identity").exists() {
             return Err("Identity already exists".into());
         }
@@ -557,6 +589,44 @@ impl LxmfManager {
 
         tracing::info!("Imported identity: {}", &hash_hex[..16]);
         Ok((hash_hex, lxmf_hex))
+    }
+
+    pub fn purge_identity_profile(
+        data_root: &Path,
+        hash_hex: &str,
+        cascade: bool,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let id_dir = data_root
+            .join(".ratspeak")
+            .join("identities")
+            .join(hash_hex);
+        if !id_dir.exists() {
+            return Ok(());
+        }
+
+        if cascade {
+            std::fs::remove_dir_all(&id_dir)?;
+            return Ok(());
+        }
+
+        for dir in [
+            "ratchets",
+            "known_identities",
+            "lxmf",
+            "reticulum",
+            "cache",
+            "propagation",
+        ] {
+            let path = id_dir.join(dir);
+            if path.exists() {
+                std::fs::remove_dir_all(path)?;
+            }
+        }
+        let identity_file = id_dir.join("identity");
+        if identity_file.exists() {
+            std::fs::remove_file(identity_file)?;
+        }
+        Ok(())
     }
 
     pub fn export_identity(&self, hash_hex: &str) -> Option<Vec<u8>> {
@@ -1063,7 +1133,11 @@ impl LxmfManager {
     }
 
     pub fn files_dir(&self) -> PathBuf {
-        let d = self.data_dir.join("files");
+        let d = self
+            .data_dir
+            .join("identities")
+            .join(&self.identity_hash)
+            .join("files");
         std::fs::create_dir_all(&d).ok();
         d
     }
@@ -2330,7 +2404,95 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        LxmfManager::load_or_create(&tmp).unwrap()
+        LxmfManager::load_or_create(&tmp, None).unwrap()
+    }
+
+    #[test]
+    fn load_or_create_honors_preferred_identity_hash() {
+        let unique = TEMP_LXMF_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = std::env::temp_dir().join(format!(
+            "ratspeak-lxmf-preferred-test-{}-{}-{unique}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let pool = test_pool();
+        let mgr = LxmfManager::load_or_create(&tmp, None).unwrap();
+        let (second_hash, _) = mgr.create_identity("Second", &pool).unwrap();
+
+        let loaded = LxmfManager::load_or_create(&tmp, Some(&second_hash)).unwrap();
+        assert_eq!(loaded.identity_hash, second_hash);
+    }
+
+    #[test]
+    fn load_or_create_rejects_missing_preferred_identity_hash() {
+        let unique = TEMP_LXMF_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = std::env::temp_dir().join(format!(
+            "ratspeak-lxmf-missing-preferred-test-{}-{}-{unique}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = LxmfManager::load_or_create(&tmp, None).unwrap();
+
+        match LxmfManager::load_or_create(&tmp, Some("missing")) {
+            Ok(_) => panic!("missing preferred identity should fail"),
+            Err(err) => assert!(err.to_string().contains("active identity file not found")),
+        }
+    }
+
+    #[test]
+    fn purge_identity_profile_removes_private_material_but_can_keep_files() {
+        let unique = TEMP_LXMF_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = std::env::temp_dir().join(format!(
+            "ratspeak-lxmf-purge-test-{}-{}-{unique}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mgr = LxmfManager::load_or_create(&tmp, None).unwrap();
+        let id_dir = tmp
+            .join(".ratspeak")
+            .join("identities")
+            .join(&mgr.identity_hash);
+        std::fs::create_dir_all(id_dir.join("files")).unwrap();
+        std::fs::create_dir_all(id_dir.join("reticulum")).unwrap();
+        std::fs::write(id_dir.join("files").join("message.bin"), b"body").unwrap();
+        std::fs::write(id_dir.join("reticulum").join("config"), b"config").unwrap();
+
+        LxmfManager::purge_identity_profile(&tmp, &mgr.identity_hash, false).unwrap();
+
+        assert!(!id_dir.join("identity").exists());
+        assert!(!id_dir.join("reticulum").exists());
+        assert!(id_dir.join("files").join("message.bin").exists());
+    }
+
+    #[test]
+    fn purge_identity_profile_cascade_removes_profile_dir() {
+        let unique = TEMP_LXMF_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = std::env::temp_dir().join(format!(
+            "ratspeak-lxmf-purge-cascade-test-{}-{}-{unique}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mgr = LxmfManager::load_or_create(&tmp, None).unwrap();
+        let id_dir = tmp
+            .join(".ratspeak")
+            .join("identities")
+            .join(&mgr.identity_hash);
+
+        LxmfManager::purge_identity_profile(&tmp, &mgr.identity_hash, true).unwrap();
+
+        assert!(!id_dir.exists());
     }
 
     #[test]

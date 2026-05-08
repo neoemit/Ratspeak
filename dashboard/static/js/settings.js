@@ -208,14 +208,7 @@ function updateHeaderIdentity(hash, displayName) {
         if (!pill._copyWired) {
             pill._copyWired = true;
             pill.addEventListener('click', function() {
-                if (typeof identityList !== 'undefined' && identityList.length > 1 && typeof openIdentitySwitcher === 'function') {
-                    openIdentitySwitcher();
-                } else {
-                    var fullHash = hashEl && hashEl.dataset.full ? hashEl.dataset.full : hash;
-                    navigator.clipboard.writeText(fullHash).then(function() {
-                        showCopyConfirmationToast('Address');
-                    }).catch(function() {});
-                }
+                if (typeof switchView === 'function') switchView('identity');
             });
         }
     }
@@ -232,11 +225,7 @@ function updateHeaderIdentity(hash, displayName) {
             sidebarHash.dataset.full = hash;
         }
         var openSidebarIdentity = function() {
-            if (typeof identityList !== 'undefined' && identityList.length > 1 && typeof openIdentitySwitcher === 'function') {
-                openIdentitySwitcher();
-            } else if (typeof switchView === 'function') {
-                switchView('settings');
-            }
+            if (typeof switchView === 'function') switchView('identity');
         };
         if (!sidebarId._wired) {
             sidebarId._wired = true;
@@ -273,17 +262,7 @@ function updateHeaderIdentity(hash, displayName) {
     if (mobileId && !mobileId._wired) {
         mobileId._wired = true;
         mobileId.addEventListener('click', function() {
-            if (typeof identityList !== 'undefined' && identityList.length > 1 && typeof openIdentitySwitcher === 'function') {
-                openIdentitySwitcher();
-            } else {
-                var hEl = document.getElementById('header-mobile-hash');
-                var fullHash = hEl ? hEl.textContent : '';
-                if (fullHash) {
-                    navigator.clipboard.writeText(fullHash).then(function() {
-                        showCopyConfirmationToast('Address');
-                    }).catch(function() {});
-                }
-            }
+            if (typeof switchView === 'function') switchView('identity');
         });
     }
 }

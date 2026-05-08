@@ -201,6 +201,33 @@ pub async fn restart_rns_lxmf(state: Arc<AppState>) {
     init_rns_lxmf(state, data_dir).await;
 }
 
+fn seed_identity_rns_config_from_app_private(
+    app_config_dir: &std::path::Path,
+    identity_config_dir: &std::path::Path,
+) {
+    let source = app_config_dir.join("config");
+    let target = identity_config_dir.join("config");
+    if target.exists() || !source.exists() || app_config_dir == identity_config_dir {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(identity_config_dir) {
+        tracing::warn!(
+            path = %identity_config_dir.display(),
+            error = %e,
+            "failed to prepare identity Reticulum config directory"
+        );
+        return;
+    }
+    if let Err(e) = std::fs::copy(&source, &target) {
+        tracing::warn!(
+            source = %source.display(),
+            target = %target.display(),
+            error = %e,
+            "failed to seed identity Reticulum config from app-private config"
+        );
+    }
+}
+
 /// Soft-shutdown: stop RNS/LXMF tasks without re-init. App stays open.
 pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) {
     state.emit_to_all("system_status", json!({"status": "stopping"}));
@@ -221,10 +248,7 @@ pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) {
     if let Ok(mut lxmf) = state.lxmf.lock() {
         *lxmf = None;
     }
-    // Clear path cache so contacts go offline immediately on restart.
-    if let Ok(mut cached) = state.known_path_hashes.lock() {
-        cached.clear();
-    }
+    state.clear_identity_scoped_runtime_state();
     tokio::time::sleep(Duration::from_millis(300)).await;
     state.set_startup_stage("stopped");
     state.emit_to_all("system_status", json!({"status": "stopped"}));
@@ -253,8 +277,30 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
     }
 
     state.set_startup_stage("lxmf");
-    match lxmf::LxmfManager::load_or_create(&data_dir) {
+    let preferred_identity_hash = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
+        .await
+        .expect("db task panicked")
+        .and_then(|identity| {
+            identity
+                .get("hash")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        });
+
+    match lxmf::LxmfManager::load_or_create(&data_dir, preferred_identity_hash.as_deref()) {
         Ok(mut mgr) => {
+            if let Some(preferred) = preferred_identity_hash.as_deref()
+                && mgr.identity_hash != preferred
+            {
+                tracing::error!(
+                    loaded = %mgr.identity_hash,
+                    active = %preferred,
+                    "loaded LXMF identity does not match active identity"
+                );
+                state.set_startup_stage("error");
+                return;
+            }
+
             let active = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
                 .await
                 .expect("db task panicked");
@@ -369,7 +415,22 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
     }
 
     state.set_startup_stage("rns");
-    let config_dir = state.config.rns_config_dir.clone();
+    let active_runtime_identity = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|lxmf| lxmf.as_ref().map(|mgr| mgr.identity_hash.clone()));
+    let config_dir = if state.config.uses_app_private_rns_config_dir() {
+        if let Some(identity_hash) = active_runtime_identity.as_deref() {
+            let dir = state.config.identity_rns_config_dir(identity_hash);
+            seed_identity_rns_config_from_app_private(&state.config.rns_config_dir, &dir);
+            dir
+        } else {
+            state.config.rns_config_dir.clone()
+        }
+    } else {
+        state.config.rns_config_dir.clone()
+    };
     if state.config.uses_app_private_rns_config_dir() {
         match rns_config::ensure_app_private_shared_instance_ports(&config_dir) {
             Ok(rns_config::RatspeakRnsPortConfigChange::Created) => {
@@ -402,7 +463,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
     let config_str = config_dir.to_string_lossy().to_string();
 
     // Android sandbox blocks /tmp — keep UDS under data_dir/cache.
-    let socket_dir = data_dir.join("cache");
+    let socket_dir = active_runtime_identity
+        .as_deref()
+        .map(|identity_hash| state.config.identity_cache_dir(identity_hash))
+        .unwrap_or_else(|| data_dir.join("cache"));
     std::fs::create_dir_all(&socket_dir).ok();
     let socket_dir = Some(socket_dir);
 

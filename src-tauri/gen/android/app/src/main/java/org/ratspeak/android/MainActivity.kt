@@ -2,6 +2,7 @@ package org.ratspeak.android
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.bluetooth.BluetoothDevice
@@ -10,11 +11,13 @@ import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.net.ConnectivityManager
@@ -25,8 +28,12 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import android.provider.OpenableColumns
+import android.util.Base64
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -35,12 +42,14 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 
 class MainActivity : TauriActivity() {
     companion object {
         private const val BLE_PERMISSION_REQUEST_CODE = 1001
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1002
         private const val USB_PERMISSION_ACTION = "org.ratspeak.android.USB_PERMISSION"
+        private const val MAX_IDENTITY_IMPORT_BYTES = 1024 * 1024
         // Standard Bluetooth MAC-48 address format: 6 hex octets separated
         // by colons. Used to guard the BLE connect bridge methods before we
         // hand the string to BluetoothAdapter.getRemoteDevice, which throws
@@ -55,8 +64,21 @@ class MainActivity : TauriActivity() {
     private var pendingNavigate: String? = null
     private var usbPermissionReceiver: BroadcastReceiver? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var pendingIdentityExport: PendingIdentityExport? = null
     @Volatile private var lastNetworkType: String = ""
     @Volatile private var serviceMulticastEnabled = false
+
+    private data class PendingIdentityExport(val fileName: String, val bytes: ByteArray)
+
+    private val identityBackupDocumentLauncher: ActivityResultLauncher<Intent> =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            handleIdentityBackupDocumentResult(result.resultCode, result.data)
+        }
+
+    private val identityImportDocumentLauncher: ActivityResultLauncher<Intent> =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            handleIdentityImportDocumentResult(result.resultCode, result.data)
+        }
 
     override fun onWebViewCreate(webView: WebView) {
         super.onWebViewCreate(webView)
@@ -630,12 +652,253 @@ class MainActivity : TauriActivity() {
         }
     }
 
+    private fun sanitizeIdentityBackupFileName(name: String): String {
+        val cleaned = sanitizeIdentityDocumentFileName(name)
+        return if (cleaned.endsWith(".rsi", ignoreCase = true)) cleaned else "$cleaned.rsi"
+    }
+
+    private fun sanitizeIdentityDocumentFileName(name: String): String {
+        return name
+            .replace(Regex("[\\\\/:*?\"<>|\\u0000-\\u001F]"), "_")
+            .trim()
+            .ifEmpty { "identity" }
+    }
+
+    private fun launchIdentityDocumentSave(fileName: String, bytes: ByteArray, mimeType: String?) {
+        handler.post {
+            try {
+                pendingIdentityExport = PendingIdentityExport(fileName, bytes)
+                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = mimeType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+                    putExtra(Intent.EXTRA_TITLE, fileName)
+                }
+                identityBackupDocumentLauncher.launch(intent)
+            } catch (_: ActivityNotFoundException) {
+                pendingIdentityExport = null
+                dispatchIdentityExportResult(false, null, "No file picker available on this device")
+            } catch (e: Throwable) {
+                pendingIdentityExport = null
+                dispatchIdentityExportResult(
+                    false,
+                    null,
+                    e.message ?: "Unable to open save picker"
+                )
+            }
+        }
+    }
+
+    private fun handleIdentityBackupDocumentResult(resultCode: Int, data: Intent?) {
+        val pending = pendingIdentityExport
+        pendingIdentityExport = null
+
+        if (resultCode != Activity.RESULT_OK) {
+            dispatchIdentityExportResult(false, null, "Export cancelled")
+            return
+        }
+
+        val uri = data?.data
+        if (pending == null || uri == null) {
+            dispatchIdentityExportResult(false, null, "No save destination selected")
+            return
+        }
+
+        Thread({
+            try {
+                val stream = contentResolver.openOutputStream(uri)
+                    ?: throw IllegalStateException("Could not open selected destination")
+                stream.use { it.write(pending.bytes) }
+                dispatchIdentityExportResult(true, uri.toString(), null)
+            } catch (e: Throwable) {
+                dispatchIdentityExportResult(
+                    false,
+                    null,
+                    e.message ?: "Failed to write identity backup"
+                )
+            }
+        }, "identity-backup-export").start()
+    }
+
+    private fun dispatchIdentityExportResult(success: Boolean, uri: String?, error: String?) {
+        val json = JSONObject().apply {
+            put("success", success)
+            if (uri != null) put("uri", uri)
+            if (error != null) put("error", error)
+        }
+        handler.post {
+            webViewRef?.evaluateJavascript(
+                "if(typeof window._onAndroidIdentityExportResult==='function')window._onAndroidIdentityExportResult($json);",
+                null
+            )
+        }
+    }
+
+    private fun handleIdentityImportDocumentResult(resultCode: Int, data: Intent?) {
+        if (resultCode != Activity.RESULT_OK) {
+            dispatchIdentityImportResult(false, null, null, null, null, "Import cancelled")
+            return
+        }
+
+        val uri = data?.data
+        if (uri == null) {
+            dispatchIdentityImportResult(false, null, null, null, null, "No identity backup selected")
+            return
+        }
+
+        Thread({
+            try {
+                val bytes = readIdentityImportBytes(uri)
+                val fileName = displayNameForUri(uri) ?: "identity backup"
+                val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                dispatchIdentityImportResult(
+                    true,
+                    fileName,
+                    bytes.size,
+                    b64,
+                    uri.toString(),
+                    null
+                )
+            } catch (e: Throwable) {
+                dispatchIdentityImportResult(
+                    false,
+                    null,
+                    null,
+                    null,
+                    null,
+                    e.message ?: "Failed to read identity backup"
+                )
+            }
+        }, "identity-backup-import").start()
+    }
+
+    private fun readIdentityImportBytes(uri: Uri): ByteArray {
+        val stream = contentResolver.openInputStream(uri)
+            ?: throw IllegalStateException("Could not open selected identity backup")
+        stream.use { input ->
+            val out = ByteArrayOutputStream()
+            val buf = ByteArray(8192)
+            var total = 0
+            while (true) {
+                val read = input.read(buf)
+                if (read < 0) break
+                total += read
+                if (total > MAX_IDENTITY_IMPORT_BYTES) {
+                    throw IllegalStateException("Identity backup is too large")
+                }
+                out.write(buf, 0, read)
+            }
+            return out.toByteArray()
+        }
+    }
+
+    private fun displayNameForUri(uri: Uri): String? {
+        return try {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor ->
+                    if (!cursor.moveToFirst()) return@use null
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) cursor.getString(idx) else null
+                }
+        } catch (_: Throwable) {
+            null
+        } ?: uri.lastPathSegment?.substringAfterLast('/')
+    }
+
+    private fun dispatchIdentityImportResult(
+        success: Boolean,
+        fileName: String?,
+        fileSize: Int?,
+        backupBase64: String?,
+        uri: String?,
+        error: String?
+    ) {
+        val json = JSONObject().apply {
+            put("success", success)
+            if (fileName != null) put("file_name", fileName)
+            if (fileSize != null) put("file_size", fileSize)
+            if (backupBase64 != null) put("backup_base64", backupBase64)
+            if (uri != null) put("uri", uri)
+            if (error != null) put("error", error)
+        }
+        handler.post {
+            webViewRef?.evaluateJavascript(
+                "if(typeof window._onAndroidIdentityImportResult==='function')window._onAndroidIdentityImportResult($json);",
+                null
+            )
+        }
+    }
+
     /**
      * JavaScript interface exposed to the WebView as window.RatspeakAndroid.
      * Provides BLE permission requests and native BLE scanning using modern
      * BluetoothManager API (works on Android 13–16+).
      */
     inner class BlePermissionBridge {
+        @JavascriptInterface
+        fun exportIdentityBackup(fileName: String, backupBase64: String) {
+            val safeName = sanitizeIdentityBackupFileName(fileName)
+            val bytes = try {
+                Base64.decode(backupBase64, Base64.DEFAULT)
+            } catch (_: Throwable) {
+                dispatchIdentityExportResult(false, null, "Invalid identity backup data")
+                return
+            }
+
+            // The payload is a JSON envelope, but the public file type is
+            // Ratspeak's .rsi backup. Android document providers commonly
+            // append ".json" to application/json save targets, producing
+            // confusing .rsi.json names.
+            launchIdentityDocumentSave(safeName, bytes, "application/octet-stream")
+        }
+
+        @JavascriptInterface
+        fun saveIdentityDocument(fileName: String, dataBase64: String, mimeType: String) {
+            val safeName = sanitizeIdentityDocumentFileName(fileName)
+            val bytes = try {
+                Base64.decode(dataBase64, Base64.DEFAULT)
+            } catch (_: Throwable) {
+                dispatchIdentityExportResult(false, null, "Invalid identity export data")
+                return
+            }
+
+            launchIdentityDocumentSave(safeName, bytes, mimeType)
+        }
+
+        @JavascriptInterface
+        fun importIdentityBackup() {
+            handler.post {
+                try {
+                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        // Do not filter by MIME here. Android document providers
+                        // report .rsi files as application/json, octet-stream, or
+                        // vendor-specific types depending on where they were saved.
+                        // The Rust preview/import path validates the bytes.
+                        type = "*/*"
+                    }
+                    identityImportDocumentLauncher.launch(intent)
+                } catch (_: ActivityNotFoundException) {
+                    dispatchIdentityImportResult(
+                        false,
+                        null,
+                        null,
+                        null,
+                        null,
+                        "No file picker available on this device"
+                    )
+                } catch (e: Throwable) {
+                    dispatchIdentityImportResult(
+                        false,
+                        null,
+                        null,
+                        null,
+                        null,
+                        e.message ?: "Unable to open identity backup picker"
+                    )
+                }
+            }
+        }
+
         @JavascriptInterface
         fun requestBlePermissions() {
             if (hasBlePermissions()) {

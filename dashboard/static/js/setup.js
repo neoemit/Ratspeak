@@ -165,6 +165,34 @@ function runConnectingProgress() {
     pollAlive();
 }
 
+function completeSetupAfterIdentityImport() {
+    needsSetup = false;
+    setSetupStep(3);
+
+    var headerExtras = [
+        document.querySelector('.setup-icon'),
+        document.querySelector('.setup-title'),
+        document.querySelector('.setup-subtitle'),
+        document.getElementById('setup-progress-dots')
+    ];
+    var visibleStep = null;
+    document.querySelectorAll('#view-setup .setup-step').forEach(function(step) {
+        if (!visibleStep && step.style.display !== 'none') visibleStep = step;
+    });
+    transitionStep(
+        visibleStep || document.getElementById('setup-step-1'),
+        document.getElementById('setup-step-connecting'),
+        headerExtras
+    );
+
+    // The imported identity is already active when setup has no identity.
+    // Restart the core so the dashboard opens on the imported session.
+    RS.invoke('api_setup_restart').catch(function() {});
+    runConnectingProgress();
+}
+
+window.completeSetupAfterIdentityImport = completeSetupAfterIdentityImport;
+
 // Mobile tap-toggle for .tooltip-trigger; desktop uses CSS hover/focus.
 function initSetupTooltips() {
     if (!isMobile()) return;
@@ -244,6 +272,14 @@ document.addEventListener('DOMContentLoaded', function() {
                         showToast('Request failed: ' + detail, 'toast-red', 5000);
                     }
                 });
+        });
+    }
+
+    var importBtn = document.getElementById('setup-import-identity-btn');
+    if (importBtn) {
+        importBtn.addEventListener('click', function() {
+            window._identityImportFromSetup = true;
+            if (typeof importIdentity === 'function') importIdentity();
         });
     }
 

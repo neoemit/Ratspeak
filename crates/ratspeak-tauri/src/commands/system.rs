@@ -15,7 +15,7 @@ use crate::state::AppState;
 
 #[tauri::command]
 pub async fn api_version() -> AppResult<Value> {
-    Ok(json!({ "version": "1.0.6", "name": "Ratspeak" }))
+    Ok(json!({ "version": "1.0.7", "name": "Ratspeak" }))
 }
 
 #[tauri::command]
@@ -47,7 +47,7 @@ pub async fn api_setup_complete(
 ) -> AppResult<Value> {
     let display_name = sanitize_text(args.display_name.as_deref().unwrap_or(""), 64);
 
-    match crate::lxmf::LxmfManager::load_or_create(&state.config.data_root) {
+    match crate::lxmf::LxmfManager::load_or_create(&state.config.data_root, None) {
         Ok(mgr) => {
             let identity_hash = mgr.identity_hash.clone();
             let lxmf_hash = mgr.lxmf_hash.clone();

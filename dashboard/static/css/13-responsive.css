@@ -696,6 +696,7 @@
     .activity-feed,
     .peers-list-scroll,
     .settings-page,
+    .identity-page,
     .dashboard-page,
     .games-session-list {
         padding-bottom: var(--space-4);
@@ -716,6 +717,7 @@
     .sidebar .nav-item[data-view="dashboard"],
     .sidebar .nav-item[data-view="message"],
     .sidebar .nav-item[data-view="contacts"],
+    .sidebar .nav-item[data-view="identity"],
     .sidebar .nav-item[data-view="network"],
     .sidebar .nav-item[data-view="games"],
     .sidebar .nav-item[data-view="settings"] { display: none; }
@@ -1724,22 +1726,95 @@
         padding: var(--space-3) var(--space-4);
     }
 
-    .identity-active-row {
-        flex-direction: column;
-        align-items: center;
-        text-align: center;
+    .identity-page {
+        padding: var(--space-4) var(--space-4) calc(72px + var(--sab));
     }
-    .identity-avatar svg, .identity-avatar canvas {
-        width: 64px;
-        height: 64px;
+    .identity-page-header {
+        align-items: center;
+        flex-direction: row;
+        padding: 0;
+        margin-bottom: var(--space-4);
+    }
+    .identity-title-block {
+        min-width: 0;
+    }
+    .identity-page-kicker {
+        display: none;
+    }
+    .identity-page-title {
+        font-size: var(--text-xl);
+    }
+    .identity-toolbar {
+        display: flex;
+        justify-content: flex-end;
+        gap: var(--space-2);
+        flex-shrink: 0;
+    }
+    .identity-toolbar-btn {
+        width: var(--touch-target);
+        min-width: 0;
+        justify-content: center;
+        padding: 0;
+    }
+    .identity-toolbar-btn span {
+        display: none;
+    }
+    .identity-management-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: var(--space-4);
+    }
+    .identity-panel-active,
+    .identity-panel-list {
+        grid-column: 1;
+        grid-row: auto;
+    }
+    .identity-panel-active {
+        order: 1;
+    }
+    .identity-panel-list {
+        order: 2;
+    }
+    .identity-detail-hero {
+        align-items: center;
+        gap: var(--space-5);
+        padding-bottom: var(--space-5);
+        text-align: left;
+    }
+    .identity-detail-avatar,
+    .identity-detail-avatar svg {
+        width: 56px;
+        height: 56px;
     }
     .identity-card-nickname {
         font-size: var(--text-xl);
+        margin-bottom: var(--space-2);
+    }
+    .identity-status-row {
+        gap: var(--space-2);
+    }
+    .identity-address-stack,
+    .identity-detail-editor,
+    .identity-detail-actions {
+        margin-top: var(--space-5);
+    }
+    .identity-address-row {
+        padding: var(--space-4);
+        gap: var(--space-3);
+    }
+    .identity-address-action,
+    .identity-action-icon {
+        width: 30px;
+        height: 30px;
+    }
+    .identity-detail-actions {
+        grid-template-columns: 1fr;
     }
 
     .identity-list-item {
-        min-height: 64px;
-        gap: var(--space-6);
+        min-height: 60px;
+        gap: var(--space-4);
+        padding: var(--space-4);
         margin-left: 0;
         margin-right: 0;
         border-radius: 0;
@@ -1751,11 +1826,23 @@
         width: 40px;
         height: 40px;
     }
+    .identity-list-badges {
+        gap: var(--space-2);
+        justify-content: flex-end;
+        max-width: 116px;
+        flex-wrap: wrap;
+    }
+    .identity-active-badge,
+    .identity-private-badge--list,
+    .identity-select-btn {
+        padding-left: var(--space-3);
+        padding-right: var(--space-3);
+    }
     #panel-identity-active,
     #panel-identity-list {
-        border-radius: 0;
-        border-left: none;
-        border-right: none;
+        border-radius: var(--radius-lg);
+        border: 1px solid var(--border-light);
+        overflow: hidden;
     }
     .view-grid-identity {
         padding-left: 0;
@@ -1980,7 +2067,6 @@
     .eventlog-header { border-bottom: 1px solid var(--border-row); }
     .log-filter { min-height: 40px; display: flex; align-items: center; }
 
-    #panel-identity-active > .panel-header,
     #panel-settings-connections > .panel-header { display: none; }
     #panel-settings-connections > .panel-body { padding: 12px 16px; }
 
@@ -2280,7 +2366,8 @@
     }
 
     #panel-identity-active,
-    #panel-identity-list {
+    #panel-identity-list,
+    #panel-identity-actions {
         background: var(--surface-elevation-1);
         border: 1px solid var(--border-light);
     }
@@ -2298,6 +2385,7 @@
 @media (max-width: 768px) {
     .view-grid-dashboard,
     .settings-page,
+    .identity-page,
     .view-grid-identity,
     .view-grid-network {
         overflow-y: auto;

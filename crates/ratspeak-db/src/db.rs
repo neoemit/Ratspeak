@@ -898,6 +898,14 @@ pub fn get_all_identities(pool: &DbPool) -> Vec<serde_json::Value> {
         .unwrap_or_default()
 }
 
+pub fn get_identity(pool: &DbPool, hash_hex: &str) -> Option<serde_json::Value> {
+    let conn = pool.get().ok()?;
+    let mut stmt = conn
+        .prepare("SELECT * FROM identities WHERE hash = ?1 LIMIT 1")
+        .ok()?;
+    stmt.query_row(params![hash_hex], row_to_identity).ok()
+}
+
 pub fn save_identity(
     pool: &DbPool,
     hash_hex: &str,
@@ -932,11 +940,15 @@ pub fn set_active_identity(pool: &DbPool, hash_hex: &str) -> Result<(), String> 
     let tx = conn.transaction().map_err(|e| format!("begin: {e}"))?;
     tx.execute("UPDATE identities SET is_active = 0", [])
         .map_err(|e| format!("deactivate: {e}"))?;
-    tx.execute(
-        "UPDATE identities SET is_active = 1, last_used = ?1 WHERE hash = ?2",
-        params![now, hash_hex],
-    )
-    .map_err(|e| format!("activate: {e}"))?;
+    let updated = tx
+        .execute(
+            "UPDATE identities SET is_active = 1, last_used = ?1 WHERE hash = ?2",
+            params![now, hash_hex],
+        )
+        .map_err(|e| format!("activate: {e}"))?;
+    if updated != 1 {
+        return Err("identity not found".into());
+    }
     tx.commit().map_err(|e| format!("commit: {e}"))?;
     Ok(())
 }
@@ -2195,6 +2207,35 @@ pub fn clear_all_messages(pool: &DbPool, identity_id: &str) -> Vec<String> {
     file_refs
 }
 
+pub fn get_identity_file_refs(pool: &DbPool, identity_id: &str) -> Vec<String> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    if identity_id.is_empty() {
+        return vec![];
+    }
+    let mut file_refs = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT attachment_stored_name, image_stored_name FROM messages WHERE identity_id = ?1",
+    ) && let Ok(rows) = stmt.query_map(params![identity_id], |row| {
+        Ok((
+            row.get::<_, String>(0).unwrap_or_default(),
+            row.get::<_, String>(1).unwrap_or_default(),
+        ))
+    }) {
+        for r in rows.flatten() {
+            if !r.0.is_empty() {
+                file_refs.push(r.0);
+            }
+            if !r.1.is_empty() {
+                file_refs.push(r.1);
+            }
+        }
+    }
+    file_refs
+}
+
 pub fn clear_all_contacts(pool: &DbPool, identity_id: &str) {
     let conn = match pool.get() {
         Ok(c) => c,
@@ -3107,6 +3148,49 @@ mod migration_tests {
             )
             .unwrap();
         assert_eq!(kept, 1);
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    use r2d2_sqlite::SqliteConnectionManager;
+
+    fn test_pool() -> DbPool {
+        let mgr = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(1).build(mgr).unwrap();
+        init_schema(&pool).unwrap();
+        pool
+    }
+
+    #[test]
+    fn set_active_identity_rejects_missing_without_clearing_current() {
+        let pool = test_pool();
+        save_identity(&pool, "identity-a", "lxmf-a", "A", "A");
+        set_active_identity(&pool, "identity-a").unwrap();
+
+        let err = set_active_identity(&pool, "missing").unwrap_err();
+        assert!(err.contains("identity not found"));
+
+        let active = get_active_identity(&pool).unwrap();
+        assert_eq!(
+            active.get("hash").and_then(|v| v.as_str()),
+            Some("identity-a")
+        );
+    }
+
+    #[test]
+    fn get_identity_returns_requested_row_only() {
+        let pool = test_pool();
+        save_identity(&pool, "identity-a", "lxmf-a", "A", "A");
+        save_identity(&pool, "identity-b", "lxmf-b", "B", "B");
+
+        let found = get_identity(&pool, "identity-b").unwrap();
+        assert_eq!(
+            found.get("hash").and_then(|v| v.as_str()),
+            Some("identity-b")
+        );
+        assert!(get_identity(&pool, "missing").is_none());
     }
 }
 

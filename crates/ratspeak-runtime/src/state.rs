@@ -84,6 +84,8 @@ pub struct AppState {
     /// Lifetime count of `lxmf.propagation` announces with unparseable app_data.
     pub pn_parse_failures: AtomicU64,
     pub native_notifications_enabled: AtomicBool,
+    pub identity_switch_lock: tokio::sync::Mutex<()>,
+    pub identity_session_generation: AtomicU64,
 }
 
 impl AppState {
@@ -167,6 +169,8 @@ impl AppState {
             auto_failure_counts: Mutex::new(HashMap::new()),
             pn_parse_failures: AtomicU64::new(0),
             native_notifications_enabled: AtomicBool::new(initial_notifications_enabled),
+            identity_switch_lock: tokio::sync::Mutex::new(()),
+            identity_session_generation: AtomicU64::new(0),
         }
     }
 
@@ -185,6 +189,63 @@ impl AppState {
     pub fn set_native_notifications_enabled(&self, enabled: bool) {
         self.native_notifications_enabled
             .store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn bump_identity_session_generation(&self) -> u64 {
+        self.identity_session_generation
+            .fetch_add(1, Ordering::SeqCst)
+            + 1
+    }
+
+    pub fn clear_identity_scoped_runtime_state(&self) {
+        if let Ok(mut known) = self.known_path_hashes.lock() {
+            known.clear();
+        }
+        if let Ok(mut history) = self.announce_history.write() {
+            history.clear();
+        }
+        if let Ok(mut alerts) = self.alerts.lock() {
+            alerts.clear();
+        }
+        if let Ok(mut events) = self.event_log.lock() {
+            events.clear();
+        }
+        if let Ok(mut seen) = self.seen_announce_hashes.lock() {
+            seen.clear();
+        }
+        if let Ok(mut times) = self.message_send_times.lock() {
+            times.clear();
+        }
+        if let Ok(mut map) = self.msg_id_map.lock() {
+            map.clear();
+        }
+        if let Ok(mut sessions) = self.lrgp_msg_to_session.lock() {
+            sessions.clear();
+        }
+        if let Ok(mut pn) = self.propagation_node.lock() {
+            *pn = None;
+        }
+        if let Ok(mut stats) = self.last_stats.write() {
+            *stats = None;
+        }
+        if let Ok(mut hub) = self.last_hub_interfaces.write() {
+            *hub = None;
+        }
+        if let Ok(mut nodes) = self.discovered_propagation_nodes.lock() {
+            nodes.clear();
+        }
+        if let Ok(mut node) = self.auto_active_node.write() {
+            *node = None;
+        }
+        if let Ok(mut failures) = self.auto_failure_counts.lock() {
+            failures.clear();
+        }
+        if let Ok(mut last) = self.last_refresh_request_at.lock() {
+            *last = None;
+        }
+        if let Ok(mut last) = self.last_static_probe_at.lock() {
+            *last = None;
+        }
     }
 
     pub fn emit_native_notification(&self, notification: NativeNotification) {

@@ -205,7 +205,7 @@ function _rsShowDialog(cfg, callback) {
     built.footer.appendChild(cancelBtn);
     built.footer.appendChild(confirmBtn);
 
-    built.overlay.addEventListener('keydown', function(e) {
+    built.sheet.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
             e.stopPropagation();
             built.dismiss(resolveValue(false));
@@ -270,16 +270,20 @@ function rsChoice(opts) {
         choicesWrap.className = 'rs-dialog-choices';
         (opts.choices || []).forEach(function(choice) {
             var btn = document.createElement('button');
+            btn.type = 'button';
             btn.className = 'rs-dialog-choice' + (choice.danger ? ' rs-dialog-danger' : '');
-            btn.textContent = choice.label;
+            var label = document.createElement('span');
+            label.className = 'rs-dialog-choice-label';
+            label.textContent = choice.label;
+            btn.appendChild(label);
             btn.addEventListener('click', function() { built.dismiss(choice.value); });
-            choicesWrap.appendChild(btn);
             if (choice.hint) {
-                var hint = document.createElement('div');
+                var hint = document.createElement('span');
                 hint.className = 'rs-dialog-choice-hint';
                 hint.textContent = choice.hint;
-                choicesWrap.appendChild(hint);
+                btn.appendChild(hint);
             }
+            choicesWrap.appendChild(btn);
         });
         built.body.appendChild(choicesWrap);
 
@@ -291,7 +295,7 @@ function rsChoice(opts) {
             built.footer.appendChild(cancelBtn);
         }
 
-        built.overlay.addEventListener('keydown', function(e) {
+        built.sheet.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') { e.stopPropagation(); built.dismiss(null); }
             if (e.key === 'Tab') {
                 var focusable = built.sheet.querySelectorAll('button');
@@ -389,7 +393,7 @@ function rsPromptContact(opts) {
         built.footer.appendChild(cancelBtn);
         built.footer.appendChild(confirmBtn);
 
-        built.overlay.addEventListener('keydown', function(e) {
+        built.sheet.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') { e.stopPropagation(); built.dismiss(null); }
             if (e.key === 'Enter') {
                 if (document.activeElement === nameInput) {
