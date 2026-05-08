@@ -389,7 +389,9 @@ pub async fn unblock_contact(
         if let Some(identity_hash) = resolve_identity_hash(&state, input_bytes).await {
             let resp = transport_query(
                 &state,
-                TransportQuery::UnblackholeIdentity { hash: identity_hash },
+                TransportQuery::UnblackholeIdentity {
+                    hash: identity_hash,
+                },
             )
             .await;
             unblackholed = matches!(resp, Some(TransportQueryResponse::BoolResult(true)));

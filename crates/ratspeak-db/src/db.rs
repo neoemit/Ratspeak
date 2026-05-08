@@ -1292,10 +1292,7 @@ pub fn enqueue_pending_blackhole(
 /// All pending rows for a given dest_hash across local identities. Used by
 /// the announce-handler sweep, which sees the dest hash on the wire and may
 /// have queued escalations under multiple receivers.
-pub fn list_pending_blackholes_by_dest(
-    pool: &DbPool,
-    dest_hash: &str,
-) -> Vec<PendingBlackholeRow> {
+pub fn list_pending_blackholes_by_dest(pool: &DbPool, dest_hash: &str) -> Vec<PendingBlackholeRow> {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return vec![],
@@ -3589,7 +3586,11 @@ mod pending_blackhole_tests {
             Some(60.0)
         ));
         let rows = list_pending_blackholes_by_dest(&pool, "abc");
-        assert_eq!(rows.len(), 1, "key (dest, identity) is primary so REPLACE collapses");
+        assert_eq!(
+            rows.len(),
+            1,
+            "key (dest, identity) is primary so REPLACE collapses"
+        );
         assert_eq!(rows[0].reason_label.as_deref(), Some("rate_limit"));
         assert_eq!(rows[0].ttl_seconds, Some(60.0));
     }
@@ -3597,11 +3598,16 @@ mod pending_blackhole_tests {
     #[test]
     fn list_by_dest_returns_all_local_identities() {
         let pool = test_pool();
-        assert!(enqueue_pending_blackhole(&pool, "shared", "alice", None, None));
-        assert!(enqueue_pending_blackhole(&pool, "shared", "bob", None, None));
+        assert!(enqueue_pending_blackhole(
+            &pool, "shared", "alice", None, None
+        ));
+        assert!(enqueue_pending_blackhole(
+            &pool, "shared", "bob", None, None
+        ));
         let rows = list_pending_blackholes_by_dest(&pool, "shared");
         assert_eq!(rows.len(), 2);
-        let ids: std::collections::HashSet<_> = rows.iter().map(|r| r.identity_id.clone()).collect();
+        let ids: std::collections::HashSet<_> =
+            rows.iter().map(|r| r.identity_id.clone()).collect();
         assert!(ids.contains("alice"));
         assert!(ids.contains("bob"));
     }
@@ -3624,12 +3630,16 @@ mod pending_blackhole_tests {
 
         let conn = pool.get().unwrap();
         let v: i64 = conn
-            .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| row.get(0))
+            .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
         // Table is queryable.
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM pending_blackholes", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM pending_blackholes", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(count, 0);
     }

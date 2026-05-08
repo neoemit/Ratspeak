@@ -122,10 +122,7 @@ pub(crate) async fn snapshot_blackhole(state: &AppState) -> Vec<Value> {
 /// Resolve a 16-byte hex blob (LXMF dest hash OR identity hash) to the canonical
 /// identity hash via rsReticulum's `recent_announces`. Returns `None` when the
 /// input is neither a known destination nor a known identity.
-pub(crate) async fn resolve_identity_hash(
-    state: &AppState,
-    input: [u8; 16],
-) -> Option<[u8; 16]> {
+pub(crate) async fn resolve_identity_hash(state: &AppState, input: [u8; 16]) -> Option<[u8; 16]> {
     use rns_transport::messages::{TransportQuery, TransportQueryResponse};
     match transport_query(state, TransportQuery::ResolveIdentityHash { input }).await {
         Some(TransportQueryResponse::HashResult(opt)) => opt,
