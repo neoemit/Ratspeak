@@ -62,10 +62,21 @@
 
         var scrim = document.createElement('div');
         scrim.className = 'action-popover-scrim';
+        // preventDefault on mousedown/touchstart keeps any prior text-input focused
+        // (and the soft keyboard up). preventDefault on touchstart also suppresses
+        // the synthetic click on iOS/Android, so dismissal must dispatch from touchend.
+        var scrimDismissed = false;
+        function _dismissScrim(e) {
+            if (scrimDismissed) return;
+            scrimDismissed = true;
+            if (e) { e.preventDefault(); e.stopPropagation(); }
+            close();
+        }
         scrim.addEventListener('mousedown', function(e) { e.preventDefault(); });
         scrim.addEventListener('touchstart', function(e) { e.preventDefault(); }, { passive: false });
-        scrim.addEventListener('click', close);
-        scrim.addEventListener('contextmenu', function(e) { e.preventDefault(); close(); });
+        scrim.addEventListener('touchend', _dismissScrim);
+        scrim.addEventListener('click', _dismissScrim);
+        scrim.addEventListener('contextmenu', function(e) { e.preventDefault(); _dismissScrim(); });
 
         var popover = document.createElement('div');
         popover.className = 'action-popover';
@@ -93,16 +104,31 @@
                 btn.classList.add('disabled');
             } else {
                 // preventDefault on mousedown/touchstart keeps any prior text-input
-                // focused (and the soft keyboard up) when this menu item is tapped.
-                btn.addEventListener('mousedown', function(e) { e.preventDefault(); });
-                btn.addEventListener('touchstart', function(e) { e.preventDefault(); }, { passive: false });
-                btn.addEventListener('click', function(e) {
-                    e.stopPropagation();
+                // focused (and the soft keyboard up). preventDefault on touchstart
+                // also suppresses the synthetic click event on Android/iOS, so the
+                // selection must dispatch from touchend in addition to click.
+                var activated = false;
+                function _activate(e) {
+                    if (activated) return;
+                    activated = true;
+                    if (e) { e.preventDefault(); e.stopPropagation(); }
                     close();
                     if (typeof item.onSelect === 'function') {
                         setTimeout(item.onSelect, 0);
                     }
+                }
+                btn.addEventListener('mousedown', function(e) { e.preventDefault(); });
+                btn.addEventListener('touchstart', function(e) { e.preventDefault(); }, { passive: false });
+                btn.addEventListener('touchend', function(e) {
+                    // Slide-off cancel: only fire if the lift point is still over this button.
+                    var t = (e.changedTouches && e.changedTouches[0]) || null;
+                    if (t) {
+                        var hit = document.elementFromPoint(t.clientX, t.clientY);
+                        if (hit !== btn && !btn.contains(hit)) return;
+                    }
+                    _activate(e);
                 });
+                btn.addEventListener('click', _activate);
             }
 
             popover.appendChild(btn);
