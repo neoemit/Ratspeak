@@ -299,6 +299,7 @@ function _fireViewLifecycle(viewId) {
 
     if (viewId === 'settings') {
         if (typeof initThemeToggle === 'function') initThemeToggle();
+        if (typeof initSettingsSectionNav === 'function') initSettingsSectionNav();
     }
 
     if (viewId === 'identity' && typeof loadIdentities === 'function') loadIdentities();

@@ -760,9 +760,43 @@
         </div>
 
         <div class="view" id="view-settings">
-            <div class="settings-page">
-                <div class="settings-page-inner">
-                    <div class="panel" id="panel-settings-appearance">
+            <div class="settings-page settings-detail-mode">
+                <div class="settings-page-shell">
+                    <aside class="settings-sidebar-panel" aria-label="Settings sections">
+                        <div class="settings-sidebar-header">
+                            <span class="settings-sidebar-title">Settings</span>
+                        </div>
+                        <nav class="settings-nav" id="settings-section-nav">
+                            <button class="settings-nav-item active" type="button" aria-current="page" data-settings-panel="panel-settings-appearance" data-settings-title="Appearance" data-settings-desc="Theme and visual preferences.">
+                                <span class="settings-nav-label">Appearance</span>
+                            </button>
+                            <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-network" data-settings-title="Network" data-settings-desc="Transport behavior and announce cadence.">
+                                <span class="settings-nav-label">Network</span>
+                            </button>
+                            <button class="settings-nav-item" type="button" id="settings-nav-notifications" style="display:none;" data-settings-panel="panel-settings-notifications" data-settings-title="Notifications" data-settings-desc="Desktop notification delivery.">
+                                <span class="settings-nav-label">Notifications</span>
+                            </button>
+                            <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-offline-inbox" data-settings-title="Offline Inbox" data-settings-desc="Relay node status and offline message storage.">
+                                <span class="settings-nav-label">Offline Inbox</span>
+                            </button>
+                            <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-blocked" data-settings-title="Blocked Users" data-settings-desc="Blocked contacts and delivery filters.">
+                                <span class="settings-nav-label">Blocked Users</span>
+                            </button>
+                            <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-system" data-settings-title="System Data" data-settings-desc="Cache, deletion, and reset actions.">
+                                <span class="settings-nav-label">System Data</span>
+                            </button>
+                        </nav>
+                    </aside>
+                    <section class="settings-detail-pane" aria-labelledby="settings-detail-title">
+                        <div class="settings-detail-header">
+                            <div>
+                                <span class="settings-detail-eyebrow">Ratspeak</span>
+                                <h2 id="settings-detail-title">Appearance</h2>
+                            </div>
+                            <p id="settings-detail-desc">Theme and visual preferences.</p>
+                        </div>
+                        <div class="settings-page-inner settings-detail-panels">
+                            <div class="panel settings-panel settings-panel-selected" id="panel-settings-appearance">
                         <div class="panel-header">Appearance</div>
                         <div class="panel-body">
                             <div class="settings-row">
@@ -785,7 +819,7 @@
                         </div>
                     </div>
 
-                    <div class="panel" id="panel-settings-network">
+                            <div class="panel settings-panel" id="panel-settings-network">
                         <div class="panel-header">Network</div>
                         <div class="panel-body">
                             <div class="settings-row">
@@ -805,7 +839,7 @@
                         </div>
                     </div>
 
-                    <div class="panel" id="panel-settings-notifications" style="display:none;">
+                            <div class="panel settings-panel" id="panel-settings-notifications" style="display:none;">
                         <div class="panel-header">Notifications</div>
                         <div class="panel-body">
                             <div class="settings-row" style="border-bottom:none;">
@@ -821,7 +855,7 @@
                         </div>
                     </div>
 
-                    <div class="panel" id="panel-settings-offline-inbox">
+                            <div class="panel settings-panel" id="panel-settings-offline-inbox">
                         <div class="panel-header">
                             Offline Inbox
                             <span class="panel-header-dot" id="settings-relay-dot"></span>
@@ -838,7 +872,7 @@
                         </div>
                     </div>
 
-                    <div class="panel" id="panel-settings-blocked">
+                            <div class="panel settings-panel" id="panel-settings-blocked">
                         <div class="panel-header">Blocked Users</div>
                         <div class="panel-body">
                             <div class="settings-row" style="border-bottom:none;">
@@ -851,7 +885,7 @@
                         </div>
                     </div>
 
-                    <div class="panel" id="panel-settings-system">
+                            <div class="panel settings-panel" id="panel-settings-system">
                         <div class="panel-header">System Data</div>
                         <div class="panel-body system-panel-body">
 
@@ -929,7 +963,9 @@
                             </div>
 
                         </div>
-                    </div>
+                            </div>
+                        </div>
+                    </section>
                 </div>
             </div>
         </div>

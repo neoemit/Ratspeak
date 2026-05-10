@@ -1,5 +1,6 @@
 function openSettings() {
     switchView('settings');
+    initSettingsSectionNav();
     // Re-seal every System Data subsection on each visit. The collapse IS the
     // safety feature for destructive ops — a stale-open Delete Data section
     // from a previous visit would defeat it.
@@ -30,6 +31,109 @@ function handleSystemSubsectionKey(e) {
         e.preventDefault();
         toggleSystemSubsection(e.currentTarget);
     }
+}
+
+var SETTINGS_DEFAULT_PANEL_ID = 'panel-settings-appearance';
+var _settingsSectionNavBound = false;
+var _settingsSectionResizeBound = false;
+
+function _settingsDetailModeActive() {
+    return !!(window.matchMedia && window.matchMedia('(min-width: 769px)').matches);
+}
+
+function _settingsPanelAvailable(panel) {
+    return !!(panel && !panel.hidden && panel.style.display !== 'none');
+}
+
+function _settingsFirstAvailablePanelId() {
+    var items = document.querySelectorAll('.settings-nav-item[data-settings-panel]');
+    for (var i = 0; i < items.length; i++) {
+        var panelId = items[i].dataset.settingsPanel;
+        if (_settingsPanelAvailable(document.getElementById(panelId))) return panelId;
+    }
+    return SETTINGS_DEFAULT_PANEL_ID;
+}
+
+function syncSettingsNavVisibility() {
+    var activeHidden = false;
+    document.querySelectorAll('.settings-nav-item[data-settings-panel]').forEach(function(item) {
+        var panel = document.getElementById(item.dataset.settingsPanel);
+        var available = _settingsPanelAvailable(panel);
+        item.style.display = available ? '' : 'none';
+        if (!available && item.classList.contains('active')) activeHidden = true;
+    });
+    if (activeHidden) {
+        selectSettingsSection(_settingsFirstAvailablePanelId(), { skipStore: true });
+    }
+}
+
+function selectSettingsSection(panelId, opts) {
+    opts = opts || {};
+    var panel = document.getElementById(panelId);
+    if (!_settingsPanelAvailable(panel)) {
+        panelId = _settingsFirstAvailablePanelId();
+        panel = document.getElementById(panelId);
+    }
+    if (!panel) return;
+
+    var detailMode = _settingsDetailModeActive();
+    document.querySelectorAll('.settings-panel').forEach(function(el) {
+        var selected = el.id === panelId;
+        el.classList.toggle('settings-panel-selected', selected);
+        if (detailMode) {
+            el.setAttribute('aria-hidden', selected ? 'false' : 'true');
+        } else {
+            el.removeAttribute('aria-hidden');
+        }
+    });
+
+    document.querySelectorAll('.settings-nav-item[data-settings-panel]').forEach(function(item) {
+        var selected = item.dataset.settingsPanel === panelId;
+        item.classList.toggle('active', selected);
+        if (selected) item.setAttribute('aria-current', 'page');
+        else item.removeAttribute('aria-current');
+    });
+
+    var activeItem = document.querySelector('.settings-nav-item[data-settings-panel="' + panelId + '"]');
+    var title = document.getElementById('settings-detail-title');
+    var desc = document.getElementById('settings-detail-desc');
+    if (activeItem) {
+        if (title) title.textContent = activeItem.dataset.settingsTitle || activeItem.textContent.trim();
+        if (desc) desc.textContent = activeItem.dataset.settingsDesc || '';
+    }
+
+    if (!opts.skipStore) {
+        try { localStorage.setItem('ratspeak_settings_section', panelId); } catch(e) {}
+    }
+}
+
+function initSettingsSectionNav() {
+    var nav = document.getElementById('settings-section-nav');
+    if (!nav) return;
+
+    if (!_settingsSectionNavBound) {
+        nav.querySelectorAll('.settings-nav-item[data-settings-panel]').forEach(function(item) {
+            item.addEventListener('click', function() {
+                selectSettingsSection(item.dataset.settingsPanel);
+            });
+        });
+        _settingsSectionNavBound = true;
+    }
+
+    if (!_settingsSectionResizeBound) {
+        window.addEventListener('resize', function() {
+            var active = document.querySelector('.settings-nav-item.active[data-settings-panel]');
+            selectSettingsSection(active ? active.dataset.settingsPanel : _settingsFirstAvailablePanelId(), { skipStore: true });
+        });
+        _settingsSectionResizeBound = true;
+    }
+
+    syncSettingsNavVisibility();
+    var selected = SETTINGS_DEFAULT_PANEL_ID;
+    try {
+        selected = localStorage.getItem('ratspeak_settings_section') || selected;
+    } catch(e) {}
+    selectSettingsSection(selected, { skipStore: true });
 }
 
 function loadSettingsInterfaces() {
@@ -476,6 +580,7 @@ RS.listen('auto_announce_updated', function(data) {
     var _isMobile = (typeof isMobile === 'function') ? isMobile() : !!window.__RATSPEAK_MOBILE__;
     if (_isMobile) return;
     _notifPanel.style.display = '';
+    if (typeof syncSettingsNavVisibility === 'function') syncSettingsNavVisibility();
     RS.invoke('api_notification_settings').then(function(data) {
         if (!data || data.enabled === undefined) return;
         _notifToggle.checked = !!data.enabled;
@@ -801,7 +906,10 @@ function initThemeToggle() {
     }
 }
 
-document.addEventListener('DOMContentLoaded', initThemeToggle);
+document.addEventListener('DOMContentLoaded', function() {
+    initThemeToggle();
+    initSettingsSectionNav();
+});
 
 function updateBlockedCount() {
     RS.invoke('api_blocked_contacts').then(function(list) {

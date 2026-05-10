@@ -939,6 +939,29 @@
         grid-template-columns: 1fr;
         height: auto;
     }
+    .settings-page {
+        padding: var(--space-6);
+    }
+    .settings-page-shell {
+        width: 100%;
+        min-height: 0;
+        display: block;
+        margin: 0;
+    }
+    .settings-sidebar-panel,
+    .settings-detail-header {
+        display: none;
+    }
+    .settings-detail-pane {
+        display: block;
+    }
+    .settings-page-inner {
+        max-width: none;
+        margin: 0;
+    }
+    .settings-detail-mode .settings-panel {
+        display: flex;
+    }
     .view-grid-settings .panel-body {
         padding: var(--space-5) var(--space-6);
     }
