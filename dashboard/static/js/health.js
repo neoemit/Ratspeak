@@ -1,6 +1,35 @@
 var announceCache = [];
 var interfaceHistory = {};  // name -> [{t, txb, rxb}, ...]
 
+function isAutoInterfacePeer(iface) {
+    var name = (iface && iface.name) || '';
+    var typeName = (iface && iface.type) || '';
+    return name.indexOf('AutoInterfacePeer[') === 0 || typeName.indexOf('AutoInterfacePeer') >= 0;
+}
+
+function isAutoInterfaceAggregate(iface) {
+    var name = (iface && iface.name) || '';
+    var typeName = (iface && iface.type) || '';
+    if (isAutoInterfacePeer(iface)) return false;
+    return name.indexOf('AutoInterface[') === 0 || typeName === 'AutoInterface';
+}
+
+function interfaceStatsWithoutAutoPeerDoubleCount(ifaces) {
+    var list = Array.isArray(ifaces) ? ifaces : [];
+    var hasAutoAggregate = list.some(isAutoInterfaceAggregate);
+    if (!hasAutoAggregate) return list;
+    return list.filter(function(iface) { return !isAutoInterfacePeer(iface); });
+}
+
+function interfaceStatsTotals(ifaces) {
+    var totals = { txb: 0, rxb: 0 };
+    interfaceStatsWithoutAutoPeerDoubleCount(ifaces).forEach(function(iface) {
+        totals.txb += iface.txb || 0;
+        totals.rxb += iface.rxb || 0;
+    });
+    return totals;
+}
+
 function renderCockpitStats(stats) {
     var container = document.getElementById('cockpit-stats');
     if (container) {
@@ -10,13 +39,12 @@ function renderCockpitStats(stats) {
             linkCount = stats.transport.link_count || 0;
             pathCount = stats.transport.path_count || 0;
         }
-        var txTotal = 0, rxTotal = 0;
-        ifaces.forEach(function(i) { txTotal += i.txb || 0; rxTotal += i.rxb || 0; });
+        var totals = interfaceStatsTotals(ifaces);
         container.innerHTML =
             '<div class="cockpit-stat"><span class="cockpit-stat-value">' + linkCount + '</span><span class="cockpit-stat-label">Links</span></div>' +
             '<div class="cockpit-stat"><span class="cockpit-stat-value">' + pathCount + '</span><span class="cockpit-stat-label">Paths</span></div>' +
-            '<div class="cockpit-stat"><span class="cockpit-stat-value">' + prettySize(txTotal) + '</span><span class="cockpit-stat-label">TX</span></div>' +
-            '<div class="cockpit-stat"><span class="cockpit-stat-value">' + prettySize(rxTotal) + '</span><span class="cockpit-stat-label">RX</span></div>';
+            '<div class="cockpit-stat"><span class="cockpit-stat-value">' + prettySize(totals.txb) + '</span><span class="cockpit-stat-label">TX</span></div>' +
+            '<div class="cockpit-stat"><span class="cockpit-stat-value">' + prettySize(totals.rxb) + '</span><span class="cockpit-stat-label">RX</span></div>';
     }
 }
 
@@ -173,6 +201,11 @@ function friendlyInterfaceName(name, typeName, role) {
     if (alias) return alias;
     var sharedLabel = sharedInterfaceLabel(role);
     if (sharedLabel) return sharedLabel;
+    if (name.indexOf('AutoInterfacePeer[') === 0) {
+        var peerMatch = name.match(/^AutoInterfacePeer\[([^\/\]]+)(?:\/([^\]]+))?\]/);
+        if (peerMatch && peerMatch[2]) return peerMatch[1] + ' peer';
+        return 'Local peer';
+    }
     var clientMatch = name.match(/^TCP to (.+):(\d+)$/);
     if (clientMatch) return clientMatch[1] + ':' + clientMatch[2];
     var serverMatch = name.match(/^TCP Server :(\d+)$/);
@@ -244,7 +277,7 @@ function openInterfaceEdit(ifaceType, ifaceName) {
 
 // Runs on every stats_update — rates need a continuous series even off-tab.
 function updateInterfaceHistory(stats) {
-    var ifaces = (stats && stats.interfaces) ? stats.interfaces : [];
+    var ifaces = interfaceStatsWithoutAutoPeerDoubleCount((stats && stats.interfaces) ? stats.interfaces : []);
     if (ifaces.length === 0) return;
     var currentIfaceNames = {};
     ifaces.forEach(function(iface) {
@@ -271,7 +304,7 @@ function renderInterfaceCards(stats) {
     var settingsView = document.getElementById('view-settings');
     if (settingsView && !settingsView.classList.contains('active')) return;
 
-    var ifaces = (stats && stats.interfaces) ? stats.interfaces : [];
+    var ifaces = interfaceStatsWithoutAutoPeerDoubleCount((stats && stats.interfaces) ? stats.interfaces : []);
     if (ifaces.length === 0) {
         var msg = (lastStats && lastStats.connected === false)
             ? '<div class="inline-warning">Connecting to hub node...</div>'
@@ -497,14 +530,10 @@ function renderNetworkOverview(data) {
     var txEl = document.getElementById('net-stat-tx');
     var rxEl = document.getElementById('net-stat-rx');
 
-    var totalTx = 0, totalRx = 0;
     var ifaces = (data.interface_stats && data.interface_stats.interfaces) ? data.interface_stats.interfaces : [];
-    for (var i = 0; i < ifaces.length; i++) {
-        totalTx += ifaces[i].txb || 0;
-        totalRx += ifaces[i].rxb || 0;
-    }
-    if (txEl) txEl.textContent = prettySize(totalTx);
-    if (rxEl) rxEl.textContent = prettySize(totalRx);
+    var totals = interfaceStatsTotals(ifaces);
+    if (txEl) txEl.textContent = prettySize(totals.txb);
+    if (rxEl) rxEl.textContent = prettySize(totals.rxb);
 }
 
 function renderNetworkPulse(data) {
@@ -697,7 +726,7 @@ function _renderConnectionsFromCache() {
         // Live transport stats are primary; config data only enriches.
         var allIfaces = [];
         if (lastStats && lastStats.interface_stats && lastStats.interface_stats.interfaces) {
-            lastStats.interface_stats.interfaces.forEach(function(li) {
+            interfaceStatsWithoutAutoPeerDoubleCount(lastStats.interface_stats.interfaces).forEach(function(li) {
                 if (!isUserFacingInterface(li)) return;
                 var configMatch = null;
                 Object.keys(configByName).forEach(function(cn) {

@@ -88,16 +88,21 @@ function updateConnectionBar(data) {
     var totalContacts = view.length;
 
     var ifaces = data.interface_stats && data.interface_stats.interfaces ? data.interface_stats.interfaces : [];
-    var totalTx = 0, totalRx = 0;
-    ifaces.forEach(function(i) { totalTx += (i.txb || 0); totalRx += (i.rxb || 0); });
+    var totals = (typeof interfaceStatsTotals === 'function')
+        ? interfaceStatsTotals(ifaces)
+        : ifaces.reduce(function(acc, i) {
+            acc.txb += i.txb || 0;
+            acc.rxb += i.rxb || 0;
+            return acc;
+        }, { txb: 0, rxb: 0 });
 
     var statsEl = document.getElementById('conn-bar-stats');
     if (statsEl) {
         statsEl.innerHTML =
             '<span class="conn-bar-stat conn-bar-stat-paths" title="' + (pathSummary.truncated ? 'Showing a capped path-table summary' : 'Known paths') + '">' + pathSummary.label + ' <span class="conn-bar-stat-label">paths</span></span>' +
             '<span class="conn-bar-stat">' + reachableCount + ' <span class="conn-bar-stat-label">recent</span></span>' +
-            '<span class="conn-bar-stat">' + prettySize(totalTx) + ' <span class="conn-bar-stat-label">tx</span></span>' +
-            '<span class="conn-bar-stat">' + prettySize(totalRx) + ' <span class="conn-bar-stat-label">rx</span></span>';
+            '<span class="conn-bar-stat">' + prettySize(totals.txb) + ' <span class="conn-bar-stat-label">tx</span></span>' +
+            '<span class="conn-bar-stat">' + prettySize(totals.rxb) + ' <span class="conn-bar-stat-label">rx</span></span>';
     }
 
     var bentoPathCount = document.getElementById('bento-path-count');

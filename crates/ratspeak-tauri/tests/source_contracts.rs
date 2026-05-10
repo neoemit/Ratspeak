@@ -226,6 +226,12 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
     let health_js = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
     assert!(health_js.contains("networkAnnounceBtn.dataset.announcePending = '1'"));
     assert!(health_js.contains("networkAnnounceBtn.dataset.announcePending !== '1'"));
+    assert!(health_js.contains("function interfaceStatsWithoutAutoPeerDoubleCount"));
+    assert!(health_js.contains("AutoInterfacePeer["));
+
+    let connections_js =
+        read_source(root.join("dashboard/static/js/connections.js")).expect("connections js");
+    assert!(connections_js.contains("interfaceStatsTotals(ifaces)"));
 
     let network_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/network.rs"))
         .expect("network command source");
