@@ -137,6 +137,30 @@
         </a>
     </nav>
 
+    <div class="lxst-call-strip lxst-call-global" id="lxst-call-global" hidden aria-live="polite">
+        <div class="lxst-call-strip-indicator" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65a2 2 0 0 1-.45 2.11L8.09 9.69a16 16 0 0 0 6.22 6.22l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92z"/></svg>
+        </div>
+        <div class="lxst-call-strip-main">
+            <span class="lxst-call-strip-title" id="lxst-call-global-title"></span>
+            <span class="lxst-call-strip-status" id="lxst-call-global-status"></span>
+        </div>
+        <div class="lxst-call-strip-actions">
+            <button class="lxst-call-action lxst-call-action-answer" id="lxst-call-global-answer-btn" type="button" title="Answer call" aria-label="Answer call">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 2 16 8 22 8"/><line x1="22" y1="2" x2="16" y2="8"/><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65a2 2 0 0 1-.45 2.11L8.09 9.69a16 16 0 0 0 6.22 6.22l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92z"/></svg>
+                <span>Answer</span>
+            </button>
+            <button class="lxst-call-action" id="lxst-call-global-reject-btn" type="button" title="Reject call" aria-label="Reject call">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.1 13.9a16 16 0 0 0 4.21 2.01l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
+                <span>Reject</span>
+            </button>
+            <button class="lxst-call-action lxst-call-action-hangup" id="lxst-call-global-hangup-btn" type="button" title="Hang up" aria-label="Hang up">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.1 13.9a16 16 0 0 0 4.21 2.01l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
+                <span>Hang up</span>
+            </button>
+        </div>
+    </div>
+
     <div class="bottom-sheet-overlay bottom-sheet-overlay--mobile-only" id="bottom-sheet-overlay"></div>
     <div class="bottom-sheet bottom-sheet--mobile-only" id="bottom-sheet">
         <div class="bottom-sheet-handle"></div>
@@ -429,15 +453,27 @@
                                 </button>
                             </div>
                         </div>
-                        <div class="lxst-call-strip" id="lxst-call-strip" hidden>
+                        <div class="lxst-call-strip" id="lxst-call-strip" hidden aria-live="polite">
+                            <div class="lxst-call-strip-indicator" aria-hidden="true">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65a2 2 0 0 1-.45 2.11L8.09 9.69a16 16 0 0 0 6.22 6.22l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92z"/></svg>
+                            </div>
                             <div class="lxst-call-strip-main">
                                 <span class="lxst-call-strip-title" id="lxst-call-strip-title"></span>
                                 <span class="lxst-call-strip-status" id="lxst-call-strip-status"></span>
                             </div>
                             <div class="lxst-call-strip-actions">
-                                <button class="lxst-call-action lxst-call-action-answer" id="lxst-call-answer-btn" type="button">Answer</button>
-                                <button class="lxst-call-action" id="lxst-call-reject-btn" type="button">Reject</button>
-                                <button class="lxst-call-action lxst-call-action-hangup" id="lxst-call-hangup-btn" type="button">Hang up</button>
+                                <button class="lxst-call-action lxst-call-action-answer" id="lxst-call-answer-btn" type="button" title="Answer call" aria-label="Answer call">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 2 16 8 22 8"/><line x1="22" y1="2" x2="16" y2="8"/><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65a2 2 0 0 1-.45 2.11L8.09 9.69a16 16 0 0 0 6.22 6.22l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92z"/></svg>
+                                    <span>Answer</span>
+                                </button>
+                                <button class="lxst-call-action" id="lxst-call-reject-btn" type="button" title="Reject call" aria-label="Reject call">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.1 13.9a16 16 0 0 0 4.21 2.01l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
+                                    <span>Reject</span>
+                                </button>
+                                <button class="lxst-call-action lxst-call-action-hangup" id="lxst-call-hangup-btn" type="button" title="Hang up" aria-label="Hang up">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.1 13.9a16 16 0 0 0 4.21 2.01l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
+                                    <span>Hang up</span>
+                                </button>
                             </div>
                         </div>
                         <div class="lxmf-messages" id="lxmf-messages">
@@ -776,9 +812,43 @@
         </div>
 
         <div class="view" id="view-settings">
-            <div class="settings-page">
-                <div class="settings-page-inner">
-                    <div class="panel" id="panel-settings-appearance">
+            <div class="settings-page settings-detail-mode">
+                <div class="settings-page-shell">
+                    <aside class="settings-sidebar-panel" aria-label="Settings sections">
+                        <div class="settings-sidebar-header">
+                            <span class="settings-sidebar-title">Settings</span>
+                        </div>
+                        <nav class="settings-nav" id="settings-section-nav">
+                            <button class="settings-nav-item active" type="button" aria-current="page" data-settings-panel="panel-settings-appearance" data-settings-title="Appearance" data-settings-desc="Theme and visual preferences.">
+                                <span class="settings-nav-label">Appearance</span>
+                            </button>
+                            <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-network" data-settings-title="Network" data-settings-desc="Transport behavior and announce cadence.">
+                                <span class="settings-nav-label">Network</span>
+                            </button>
+                            <button class="settings-nav-item" type="button" id="settings-nav-notifications" style="display:none;" data-settings-panel="panel-settings-notifications" data-settings-title="Notifications" data-settings-desc="Desktop notification delivery.">
+                                <span class="settings-nav-label">Notifications</span>
+                            </button>
+                            <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-offline-inbox" data-settings-title="Offline Inbox" data-settings-desc="Relay node status and offline message storage.">
+                                <span class="settings-nav-label">Offline Inbox</span>
+                            </button>
+                            <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-blocked" data-settings-title="Blocked Users" data-settings-desc="Blocked contacts and delivery filters.">
+                                <span class="settings-nav-label">Blocked Users</span>
+                            </button>
+                            <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-system" data-settings-title="System Data" data-settings-desc="Cache, deletion, and reset actions.">
+                                <span class="settings-nav-label">System Data</span>
+                            </button>
+                        </nav>
+                    </aside>
+                    <section class="settings-detail-pane" aria-labelledby="settings-detail-title">
+                        <div class="settings-detail-header">
+                            <div>
+                                <span class="settings-detail-eyebrow">Ratspeak</span>
+                                <h2 id="settings-detail-title">Appearance</h2>
+                            </div>
+                            <p id="settings-detail-desc">Theme and visual preferences.</p>
+                        </div>
+                        <div class="settings-page-inner settings-detail-panels">
+                            <div class="panel settings-panel settings-panel-selected" id="panel-settings-appearance">
                         <div class="panel-header">Appearance</div>
                         <div class="panel-body">
                             <div class="settings-row">
@@ -801,7 +871,7 @@
                         </div>
                     </div>
 
-                    <div class="panel" id="panel-settings-network">
+                            <div class="panel settings-panel" id="panel-settings-network">
                         <div class="panel-header">Network</div>
                         <div class="panel-body">
                             <div class="settings-row">
@@ -821,7 +891,7 @@
                         </div>
                     </div>
 
-                    <div class="panel" id="panel-settings-notifications" style="display:none;">
+                            <div class="panel settings-panel" id="panel-settings-notifications" style="display:none;">
                         <div class="panel-header">Notifications</div>
                         <div class="panel-body">
                             <div class="settings-row" style="border-bottom:none;">
@@ -837,7 +907,7 @@
                         </div>
                     </div>
 
-                    <div class="panel" id="panel-settings-offline-inbox">
+                            <div class="panel settings-panel" id="panel-settings-offline-inbox">
                         <div class="panel-header">
                             Offline Inbox
                             <span class="panel-header-dot" id="settings-relay-dot"></span>
@@ -854,7 +924,7 @@
                         </div>
                     </div>
 
-                    <div class="panel" id="panel-settings-blocked">
+                            <div class="panel settings-panel" id="panel-settings-blocked">
                         <div class="panel-header">Blocked Users</div>
                         <div class="panel-body">
                             <div class="settings-row" style="border-bottom:none;">
@@ -867,7 +937,7 @@
                         </div>
                     </div>
 
-                    <div class="panel" id="panel-settings-system">
+                            <div class="panel settings-panel" id="panel-settings-system">
                         <div class="panel-header">System Data</div>
                         <div class="panel-body system-panel-body">
 
@@ -945,7 +1015,9 @@
                             </div>
 
                         </div>
-                    </div>
+                            </div>
+                        </div>
+                    </section>
                 </div>
             </div>
         </div>
@@ -1229,6 +1301,7 @@
 <script src="/static/js/toasts.js"></script>
 <script src="/static/js/dialogs.js"></script>
 <script src="/static/js/action_popover.js"></script>
+<script src="/static/js/ui_shared.js"></script>
 <script src="/static/js/events.js"></script>
 <script src="/static/js/activity.js"></script>
 <script src="/static/js/health.js"></script>

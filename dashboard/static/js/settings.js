@@ -1,5 +1,6 @@
 function openSettings() {
     switchView('settings');
+    initSettingsSectionNav();
     // Re-seal every System Data subsection on each visit. The collapse IS the
     // safety feature for destructive ops — a stale-open Delete Data section
     // from a previous visit would defeat it.
@@ -30,6 +31,109 @@ function handleSystemSubsectionKey(e) {
         e.preventDefault();
         toggleSystemSubsection(e.currentTarget);
     }
+}
+
+var SETTINGS_DEFAULT_PANEL_ID = 'panel-settings-appearance';
+var _settingsSectionNavBound = false;
+var _settingsSectionResizeBound = false;
+
+function _settingsDetailModeActive() {
+    return !!(window.matchMedia && window.matchMedia('(min-width: 769px)').matches);
+}
+
+function _settingsPanelAvailable(panel) {
+    return !!(panel && !panel.hidden && panel.style.display !== 'none');
+}
+
+function _settingsFirstAvailablePanelId() {
+    var items = document.querySelectorAll('.settings-nav-item[data-settings-panel]');
+    for (var i = 0; i < items.length; i++) {
+        var panelId = items[i].dataset.settingsPanel;
+        if (_settingsPanelAvailable(document.getElementById(panelId))) return panelId;
+    }
+    return SETTINGS_DEFAULT_PANEL_ID;
+}
+
+function syncSettingsNavVisibility() {
+    var activeHidden = false;
+    document.querySelectorAll('.settings-nav-item[data-settings-panel]').forEach(function(item) {
+        var panel = document.getElementById(item.dataset.settingsPanel);
+        var available = _settingsPanelAvailable(panel);
+        item.style.display = available ? '' : 'none';
+        if (!available && item.classList.contains('active')) activeHidden = true;
+    });
+    if (activeHidden) {
+        selectSettingsSection(_settingsFirstAvailablePanelId(), { skipStore: true });
+    }
+}
+
+function selectSettingsSection(panelId, opts) {
+    opts = opts || {};
+    var panel = document.getElementById(panelId);
+    if (!_settingsPanelAvailable(panel)) {
+        panelId = _settingsFirstAvailablePanelId();
+        panel = document.getElementById(panelId);
+    }
+    if (!panel) return;
+
+    var detailMode = _settingsDetailModeActive();
+    document.querySelectorAll('.settings-panel').forEach(function(el) {
+        var selected = el.id === panelId;
+        el.classList.toggle('settings-panel-selected', selected);
+        if (detailMode) {
+            el.setAttribute('aria-hidden', selected ? 'false' : 'true');
+        } else {
+            el.removeAttribute('aria-hidden');
+        }
+    });
+
+    document.querySelectorAll('.settings-nav-item[data-settings-panel]').forEach(function(item) {
+        var selected = item.dataset.settingsPanel === panelId;
+        item.classList.toggle('active', selected);
+        if (selected) item.setAttribute('aria-current', 'page');
+        else item.removeAttribute('aria-current');
+    });
+
+    var activeItem = document.querySelector('.settings-nav-item[data-settings-panel="' + panelId + '"]');
+    var title = document.getElementById('settings-detail-title');
+    var desc = document.getElementById('settings-detail-desc');
+    if (activeItem) {
+        if (title) title.textContent = activeItem.dataset.settingsTitle || activeItem.textContent.trim();
+        if (desc) desc.textContent = activeItem.dataset.settingsDesc || '';
+    }
+
+    if (!opts.skipStore) {
+        try { localStorage.setItem('ratspeak_settings_section', panelId); } catch(e) {}
+    }
+}
+
+function initSettingsSectionNav() {
+    var nav = document.getElementById('settings-section-nav');
+    if (!nav) return;
+
+    if (!_settingsSectionNavBound) {
+        nav.querySelectorAll('.settings-nav-item[data-settings-panel]').forEach(function(item) {
+            item.addEventListener('click', function() {
+                selectSettingsSection(item.dataset.settingsPanel);
+            });
+        });
+        _settingsSectionNavBound = true;
+    }
+
+    if (!_settingsSectionResizeBound) {
+        window.addEventListener('resize', function() {
+            var active = document.querySelector('.settings-nav-item.active[data-settings-panel]');
+            selectSettingsSection(active ? active.dataset.settingsPanel : _settingsFirstAvailablePanelId(), { skipStore: true });
+        });
+        _settingsSectionResizeBound = true;
+    }
+
+    syncSettingsNavVisibility();
+    var selected = SETTINGS_DEFAULT_PANEL_ID;
+    try {
+        selected = localStorage.getItem('ratspeak_settings_section') || selected;
+    } catch(e) {}
+    selectSettingsSection(selected, { skipStore: true });
 }
 
 function loadSettingsInterfaces() {
@@ -99,85 +203,12 @@ function renderSettingsIfaceSection(parent, title, interfaces, ifaceType) {
     section.appendChild(titleEl);
 
     interfaces.forEach(function(iface) {
-        var row = document.createElement('div');
-        row.className = 'hub-iface-row';
-
-        var statusDot = document.createElement('span');
-        statusDot.className = 'hub-iface-status';
-        statusDot.dataset.ifaceName = iface.name;
-        var liveData = getInterfaceLiveStatus(iface.name);
-        if (liveData) {
-            statusDot.classList.add(liveData.online ? 'up' : 'down');
-            statusDot.title = liveData.online ? 'Connected' : 'Disconnected';
-        } else {
-            statusDot.classList.add('unknown');
-            statusDot.title = 'Waiting for status...';
+        if (RS.ui && typeof RS.ui.createInterfaceRow === 'function') {
+            section.appendChild(RS.ui.createInterfaceRow(iface, ifaceType, {
+                editable: true,
+                disconnectBle: true
+            }));
         }
-
-        var nameSpan = document.createElement('span');
-        nameSpan.className = 'hub-iface-name';
-        nameSpan.textContent = iface.name;
-        nameSpan.title = iface.name;
-
-        var detailSpan = document.createElement('span');
-        detailSpan.className = 'hub-iface-detail';
-        detailSpan.textContent = getIfaceDetailText(iface, ifaceType);
-
-        var actions = document.createElement('span');
-        actions.style.display = 'flex';
-        actions.style.gap = '4px';
-        actions.style.flexShrink = '0';
-
-        var isBleRnode = ifaceType === 'rnode' && (iface.port || '').indexOf('ble://') === 0;
-        var isDisconnectable = isBleRnode;
-
-        if (typeof isEditableInterfaceType === 'function' && isEditableInterfaceType(ifaceType)) {
-            var editBtn = document.createElement('button');
-            editBtn.className = 'nr-btn-sm nr-btn-muted';
-            editBtn.textContent = 'Edit';
-            editBtn.title = ifaceType === 'rnode' ? 'Edit radio settings' : 'Edit interface';
-            editBtn.addEventListener('click', function() {
-                if (typeof openInterfaceEditModal === 'function') {
-                    openInterfaceEditModal(ifaceType, iface.name, iface);
-                }
-            });
-            actions.appendChild(editBtn);
-        }
-
-        var removeBtn = document.createElement('button');
-        removeBtn.className = 'danger-btn-sm';
-        removeBtn.textContent = isDisconnectable ? 'Disconnect' : 'Remove';
-        removeBtn.title = isDisconnectable ? 'Disconnect this device' : 'Remove this interface';
-        removeBtn.addEventListener('click', function() {
-            var msg, confirmText, evtType;
-            if (isBleRnode) {
-                msg = 'Disconnect BLE LoRa radio "' + iface.name + '"?';
-                confirmText = 'Disconnect';
-                evtType = 'ble_rnode';
-            } else {
-                msg = 'Remove "' + iface.name + '"?';
-                confirmText = 'Remove';
-                evtType = ifaceType;
-            }
-            rsConfirm({ message: msg, danger: true, confirmText: confirmText }).then(function(ok) {
-                if (ok) {
-                    if (evtType === 'ble_rnode') {
-                        RS.invoke('disconnect_ble_rnode', { name: iface.name }).catch(function(err) {
-                            showToast((err && err.message) || 'Failed to disconnect BLE LoRa radio', 'toast-red', 8000);
-                        });
-                    } else {
-                        removeHubInterface(ifaceType, iface.name);
-                    }
-                }
-            });
-        });
-        actions.appendChild(removeBtn);
-
-        row.appendChild(statusDot);
-        row.appendChild(nameSpan);
-        row.appendChild(detailSpan);
-        row.appendChild(actions);
-        section.appendChild(row);
     });
 
     parent.appendChild(section);
@@ -341,52 +372,28 @@ RS.listen('lxmf_identity', function(data) {
     }
 });
 
-var _transportLabels = { auto: 'AUTO', on: 'ON', off: 'OFF' };
-
 function applyTransportModePayload(data) {
-    var mode = (data && data.mode) || 'off';
-    var badge = document.getElementById('transport-mode-select');
-    if (badge) {
-        badge.textContent = _transportLabels[mode] || mode.toUpperCase();
-        badge.setAttribute('data-value', mode);
-    }
-    if (data && data.suppressed) {
-        showToast('Transport Mode is handled by the shared instance on this device.', 'toast-yellow', 5000);
+    if (RS.ui && typeof RS.ui.applyTransportModePayload === 'function') {
+        RS.ui.applyTransportModePayload('transport-mode-select', data, { toastSuppressed: true });
     }
 }
 
 var _settingsTransportBadge = document.getElementById('transport-mode-select');
 if (_settingsTransportBadge) {
     function _openTransportChoice() {
-        rsChoice({
-            title: 'Transport Mode',
-            message: 'Relay packets for other nodes on the network.',
-            choices: [
-                { label: 'AUTO', value: 'auto', hint: 'Enables only on suitable non-LoRa interfaces.' },
-                { label: 'ON', value: 'on', hint: 'Always relay packets.' },
-                { label: 'OFF', value: 'off', hint: 'Never relay packets.' }
-            ]
-        }).then(function(mode) {
-            if (!mode) return;
-            _settingsTransportBadge.textContent = _transportLabels[mode] || mode;
-            _settingsTransportBadge.setAttribute('data-value', mode);
-
-            var networkType = 'unknown';
-            if (navigator.connection && navigator.connection.type) {
-                networkType = navigator.connection.type;
-            } else if (navigator.connection && navigator.connection.effectiveType) {
-                networkType = navigator.connection.effectiveType;
-            }
-            RS.invoke('set_transport_mode', { args: { mode: mode, network_type: networkType } }).catch(function(err) {
-                showToast((err && err.message) || 'Failed to update transport mode', 'toast-red', 8000);
-            });
-        });
+        if (RS.ui && typeof RS.ui.openTransportModeChoice === 'function') {
+            RS.ui.openTransportModeChoice(_settingsTransportBadge);
+        }
     }
 
-    _settingsTransportBadge.addEventListener('click', _openTransportChoice);
-    _settingsTransportBadge.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _openTransportChoice(); }
-    });
+    if (RS.ui && typeof RS.ui.bindTransportChoice === 'function') {
+        RS.ui.bindTransportChoice(_settingsTransportBadge);
+    } else {
+        _settingsTransportBadge.addEventListener('click', _openTransportChoice);
+        _settingsTransportBadge.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _openTransportChoice(); }
+        });
+    }
 }
 
 // Network-change detection is native (NetworkCallback / NWPathMonitor invoking
@@ -476,6 +483,7 @@ RS.listen('auto_announce_updated', function(data) {
     var _isMobile = (typeof isMobile === 'function') ? isMobile() : !!window.__RATSPEAK_MOBILE__;
     if (_isMobile) return;
     _notifPanel.style.display = '';
+    if (typeof syncSettingsNavVisibility === 'function') syncSettingsNavVisibility();
     RS.invoke('api_notification_settings').then(function(data) {
         if (!data || data.enabled === undefined) return;
         _notifToggle.checked = !!data.enabled;
@@ -801,7 +809,10 @@ function initThemeToggle() {
     }
 }
 
-document.addEventListener('DOMContentLoaded', initThemeToggle);
+document.addEventListener('DOMContentLoaded', function() {
+    initThemeToggle();
+    initSettingsSectionNav();
+});
 
 function updateBlockedCount() {
     RS.invoke('api_blocked_contacts').then(function(list) {

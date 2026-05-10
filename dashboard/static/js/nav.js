@@ -277,35 +277,50 @@ function switchView(viewId, opts) {
     }
 }
 
-function _fireViewLifecycle(viewId) {
-    clearViewDirty(viewId);
-    if (viewId === 'dashboard') {
+var VIEW_LIFECYCLE = {
+    dashboard: function() {
         if (typeof _connectionsThrottleTimer !== 'undefined' && _connectionsThrottleTimer) clearTimeout(_connectionsThrottleTimer);
         if (typeof _connectionsRenderScheduled !== 'undefined') _connectionsRenderScheduled = false;
         if (typeof _connectionsThrottleTimer !== 'undefined') _connectionsThrottleTimer = null;
         requestAnimationFrame(function() {
             if (typeof refreshConnectionsTable === 'function') refreshConnectionsTable();
         });
-    }
+        if (typeof renderDashboardRecentMessages === 'function') renderDashboardRecentMessages();
+        if (typeof renderDashboardSummaries === 'function' && typeof lastStats !== 'undefined' && lastStats) renderDashboardSummaries(lastStats);
+    },
 
-    if (viewId === 'network') {
+    network: function() {
         requestAnimationFrame(function() {
             if (typeof lastStats !== 'undefined' && lastStats) {
                 if (typeof renderNetworkOverview === 'function') renderNetworkOverview(lastStats);
+                if (typeof renderNetworkPulse === 'function') renderNetworkPulse(lastStats);
             }
             if (typeof loadSettingsInterfacesWithRetry === 'function') loadSettingsInterfacesWithRetry(1);
         });
-    }
+        if (typeof loadIdentities === 'function') loadIdentities();
+        if (typeof renderMergedConnections === 'function') renderMergedConnections();
+        if (typeof renderNetworkContactList === 'function') renderNetworkContactList();
+        if (typeof renderPropagationStatus === 'function') renderPropagationStatus('net-propagation-status');
+    },
 
-    if (viewId === 'settings') {
+    settings: function() {
         if (typeof initThemeToggle === 'function') initThemeToggle();
-    }
+        if (typeof initSettingsSectionNav === 'function') initSettingsSectionNav();
+    },
 
-    if (viewId === 'identity' && typeof loadIdentities === 'function') loadIdentities();
+    identity: function() {
+        if (typeof loadIdentities === 'function') loadIdentities();
+    },
 
-    if (viewId === 'games' && typeof gamesTabLoad === 'function') gamesTabLoad();
-    if (viewId === 'peers' && typeof initPeersView === 'function') requestAnimationFrame(initPeersView);
-    if (viewId === 'message') {
+    games: function() {
+        if (typeof gamesTabLoad === 'function') gamesTabLoad();
+    },
+
+    peers: function() {
+        if (typeof initPeersView === 'function') requestAnimationFrame(initPeersView);
+    },
+
+    message: function() {
         // Cache-first; only re-fetch on stuck error state or empty initial load.
         var _convList = document.getElementById('lxmf-conversations-list');
         var _convStuck = _convList && (_convList.textContent || '').indexOf('Couldn') !== -1;
@@ -320,19 +335,9 @@ function _fireViewLifecycle(viewId) {
             loadConversations();
         }
         if (typeof renderMsgProfileStrip === 'function') requestAnimationFrame(renderMsgProfileStrip);
-    }
+    },
 
-    if (viewId === 'network') {
-        if (typeof loadIdentities === 'function') loadIdentities();
-        if (typeof renderNetworkPulse === 'function' && typeof lastStats !== 'undefined' && lastStats) {
-            requestAnimationFrame(function() { renderNetworkPulse(lastStats); });
-        }
-        if (typeof renderMergedConnections === 'function') renderMergedConnections();
-        if (typeof renderNetworkContactList === 'function') renderNetworkContactList();
-        if (typeof renderPropagationStatus === 'function') renderPropagationStatus('net-propagation-status');
-    }
-
-    if (viewId === 'contacts') {
+    contacts: function() {
         if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
         // Re-fetch if contacts_update event was missed.
         if (typeof lxmfContacts !== 'undefined' && lxmfContacts.length === 0) {
@@ -345,11 +350,12 @@ function _fireViewLifecycle(viewId) {
             }).catch(function() {});
         }
     }
+};
 
-    if (viewId === 'dashboard') {
-        if (typeof renderDashboardRecentMessages === 'function') renderDashboardRecentMessages();
-        if (typeof renderDashboardSummaries === 'function' && typeof lastStats !== 'undefined' && lastStats) renderDashboardSummaries(lastStats);
-    }
+function _fireViewLifecycle(viewId) {
+    clearViewDirty(viewId);
+    var handler = VIEW_LIFECYCLE[viewId];
+    if (handler) handler();
 }
 
 function _initHistoryNavigation() {

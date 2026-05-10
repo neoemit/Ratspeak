@@ -54,6 +54,79 @@ function _voiceStatusLabel(status) {
     }
 }
 
+function _voiceIcon(name, size) {
+    var dim = size || 18;
+    var attrs = 'width="' + dim + '" height="' + dim + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
+    if (name === 'phone-off') {
+        return '<svg ' + attrs + '><path d="M10.1 13.9a16 16 0 0 0 4.21 2.01l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65"/><line x1="2" y1="2" x2="22" y2="22"/></svg>';
+    }
+    if (name === 'phone-incoming') {
+        return '<svg ' + attrs + '><polyline points="16 2 16 8 22 8"/><line x1="22" y1="2" x2="16" y2="8"/><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65a2 2 0 0 1-.45 2.11L8.09 9.69a16 16 0 0 0 6.22 6.22l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92z"/></svg>';
+    }
+    return '<svg ' + attrs + '><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65a2 2 0 0 1-.45 2.11L8.09 9.69a16 16 0 0 0 6.22 6.22l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92z"/></svg>';
+}
+
+function _voicePrimaryActionLabel() {
+    if (_voiceIncomingMatchesContact()) return 'Answer call';
+    if (_voiceActiveMatchesContact()) {
+        var active = lxstVoiceState.active;
+        return active && active.status === 'established' ? 'Hang up' : 'Cancel call';
+    }
+    return 'Start call';
+}
+
+function _voicePrimaryActionIcon() {
+    if (_voiceIncomingMatchesContact()) return _voiceIcon('phone-incoming', 18);
+    if (_voiceActiveMatchesContact()) return _voiceIcon('phone-off', 18);
+    return _voiceIcon('phone', 18);
+}
+
+function _voiceRunPrimaryAction(hash) {
+    if (_voiceIncomingMatchesContact()) return _voiceAnswerCall();
+    if (_voiceActiveMatchesContact()) return _voiceHangupCall();
+    return _voiceStartCall(hash);
+}
+
+function _voiceAudioLabel() {
+    if (!lxstVoiceState.audioRunning) return '';
+    if (lxstVoiceState.audioMicrophone && lxstVoiceState.audioSpeaker) return 'audio active';
+    if (!lxstVoiceState.audioMicrophone && lxstVoiceState.audioSpeaker) return 'listen only';
+    if (lxstVoiceState.audioMicrophone && !lxstVoiceState.audioSpeaker) return 'microphone only';
+    return 'audio starting';
+}
+
+function _voiceRenderCallSurface(ids) {
+    var surface = document.getElementById(ids.surface);
+    if (!surface) return;
+    var active = lxstVoiceState.active;
+    var incoming = lxstVoiceState.incoming;
+    var titleEl = document.getElementById(ids.title);
+    var statusEl = document.getElementById(ids.status);
+    var answerBtn = document.getElementById(ids.answer);
+    var rejectBtn = document.getElementById(ids.reject);
+    var hangupBtn = document.getElementById(ids.hangup);
+    var peer = active || incoming;
+
+    surface.hidden = !peer;
+    surface.classList.toggle('is-incoming', !!incoming && !active);
+    surface.classList.toggle('is-active', !!(active && active.status === 'established'));
+    surface.classList.toggle('is-connecting', !!(active && active.status !== 'established'));
+    if (!peer) return;
+
+    if (titleEl) titleEl.textContent = _voicePeerName(peer.remote_identity);
+    if (statusEl) {
+        var status = active ? _voiceStatusLabel(active.status) : 'Incoming call';
+        var audioLabel = active ? _voiceAudioLabel() : '';
+        if (audioLabel) status += ' - ' + audioLabel;
+        statusEl.textContent = status;
+    }
+
+    var showIncomingActions = !!incoming && !active;
+    if (answerBtn) answerBtn.style.display = showIncomingActions ? '' : 'none';
+    if (rejectBtn) rejectBtn.style.display = showIncomingActions ? '' : 'none';
+    if (hangupBtn) hangupBtn.style.display = active ? '' : 'none';
+}
+
 function _voicePeerName(hash) {
     if (!hash) return 'Unknown caller';
     if (typeof _conversationNameInfo === 'function') {
@@ -151,8 +224,9 @@ function renderVoiceUi() {
         callBtn.classList.toggle('is-connecting', isConnecting);
         callBtn.classList.toggle('is-hangup', !!activeMatches && active && active.status === 'established');
         callBtn.disabled = !!active && !activeMatches;
-        callBtn.title = activeMatches ? 'Hang up' : 'Start call';
+        callBtn.title = callBtn.disabled ? 'Call in progress' : _voicePrimaryActionLabel();
         callBtn.setAttribute('aria-label', callBtn.title);
+        callBtn.innerHTML = callBtn.disabled ? _voiceIcon('phone', 18) : _voicePrimaryActionIcon();
     }
 
     var statusEl = document.getElementById('lxmf-chat-header-status');
@@ -168,33 +242,22 @@ function renderVoiceUi() {
         _voiceRestoreHeaderStatus();
     }
 
-    var strip = document.getElementById('lxst-call-strip');
-    if (strip) {
-        var stripTitle = document.getElementById('lxst-call-strip-title');
-        var stripStatus = document.getElementById('lxst-call-strip-status');
-        var answerBtn = document.getElementById('lxst-call-answer-btn');
-        var rejectBtn = document.getElementById('lxst-call-reject-btn');
-        var hangupBtn = document.getElementById('lxst-call-hangup-btn');
-        var stripPeer = active || incoming;
-        strip.hidden = !stripPeer;
-        if (stripPeer) {
-            if (stripTitle) stripTitle.textContent = _voicePeerName(stripPeer.remote_identity);
-            if (stripStatus) {
-                var status = active ? _voiceStatusLabel(active.status) : 'Incoming call';
-                if (active && lxstVoiceState.audioRunning) {
-                    var audioParts = [];
-                    if (lxstVoiceState.audioMicrophone) audioParts.push('mic');
-                    if (lxstVoiceState.audioSpeaker) audioParts.push('speaker');
-                    status += ' - ' + (audioParts.length ? audioParts.join(' and ') : 'audio') + ' active';
-                }
-                stripStatus.textContent = status;
-            }
-            var showIncomingActions = !!incoming && !active;
-            if (answerBtn) answerBtn.style.display = showIncomingActions ? '' : 'none';
-            if (rejectBtn) rejectBtn.style.display = showIncomingActions ? '' : 'none';
-            if (hangupBtn) hangupBtn.style.display = active ? '' : 'none';
-        }
-    }
+    _voiceRenderCallSurface({
+        surface: 'lxst-call-strip',
+        title: 'lxst-call-strip-title',
+        status: 'lxst-call-strip-status',
+        answer: 'lxst-call-answer-btn',
+        reject: 'lxst-call-reject-btn',
+        hangup: 'lxst-call-hangup-btn'
+    });
+    _voiceRenderCallSurface({
+        surface: 'lxst-call-global',
+        title: 'lxst-call-global-title',
+        status: 'lxst-call-global-status',
+        answer: 'lxst-call-global-answer-btn',
+        reject: 'lxst-call-global-reject-btn',
+        hangup: 'lxst-call-global-hangup-btn'
+    });
 
     renderVoiceIncomingSheet();
 }
@@ -202,33 +265,54 @@ function renderVoiceUi() {
 function renderVoiceIncomingSheet() {
     var incoming = lxstVoiceState.incoming;
     var existing = document.getElementById('lxst-incoming-call-overlay');
+    var sheet = document.getElementById('lxst-incoming-call-sheet');
     if (!incoming) {
         if (existing) existing.remove();
+        if (sheet) sheet.remove();
         return;
     }
-    if (!existing) {
+    if (!existing || !sheet) {
+        if (existing) existing.remove();
+        if (sheet) sheet.remove();
         existing = document.createElement('div');
         existing.id = 'lxst-incoming-call-overlay';
-        existing.className = 'lxst-incoming-call-overlay';
-        existing.innerHTML =
-            '<div class="lxst-incoming-call-sheet" role="dialog" aria-modal="true">' +
+        existing.className = 'bottom-sheet-overlay active lxst-incoming-call-overlay';
+        sheet = document.createElement('div');
+        sheet.id = 'lxst-incoming-call-sheet';
+        sheet.className = 'bottom-sheet open lxst-incoming-call-sheet';
+        sheet.setAttribute('role', 'dialog');
+        sheet.setAttribute('aria-modal', 'true');
+        sheet.setAttribute('aria-labelledby', 'lxst-incoming-call-title');
+        sheet.innerHTML =
+            '<div class="bottom-sheet-handle"></div>' +
+            '<div class="bottom-sheet-header lxst-incoming-call-header">' +
+                '<div class="bottom-sheet-title" id="lxst-incoming-call-title">Incoming call</div>' +
+            '</div>' +
+            '<div class="bottom-sheet-body lxst-incoming-call-body">' +
                 '<div class="lxst-incoming-call-peer">' +
                     '<div class="lxst-incoming-call-avatar" id="lxst-incoming-call-avatar"></div>' +
                     '<div>' +
-                        '<span class="lxst-incoming-call-title">Incoming call</span>' +
+                        '<span class="lxst-incoming-call-label">Ringing</span>' +
                         '<span class="lxst-incoming-call-name" id="lxst-incoming-call-name"></span>' +
                     '</div>' +
                 '</div>' +
-                '<div class="lxst-incoming-call-actions">' +
-                    '<button class="lxst-call-action lxst-incoming-call-reject" id="lxst-incoming-call-reject" type="button">Reject</button>' +
-                    '<button class="lxst-call-action lxst-call-action-answer" id="lxst-incoming-call-answer" type="button">Answer</button>' +
-                '</div>' +
+            '</div>' +
+            '<div class="bottom-sheet-footer lxst-incoming-call-actions">' +
+                '<button class="lxst-call-action lxst-incoming-call-reject" id="lxst-incoming-call-reject" type="button" title="Reject call" aria-label="Reject call">' + _voiceIcon('phone-off', 18) + '<span>Reject</span></button>' +
+                '<button class="lxst-call-action lxst-call-action-answer" id="lxst-incoming-call-answer" type="button" title="Answer call" aria-label="Answer call">' + _voiceIcon('phone-incoming', 18) + '<span>Answer</span></button>' +
             '</div>';
         document.body.appendChild(existing);
+        document.body.appendChild(sheet);
         var answer = document.getElementById('lxst-incoming-call-answer');
         var reject = document.getElementById('lxst-incoming-call-reject');
         if (answer) answer.addEventListener('click', _voiceAnswerCall);
         if (reject) reject.addEventListener('click', _voiceRejectCall);
+        sheet.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                _voiceRejectCall();
+            }
+        });
     }
     var avatar = document.getElementById('lxst-incoming-call-avatar');
     var name = document.getElementById('lxst-incoming-call-name');
@@ -236,6 +320,9 @@ function renderVoiceIncomingSheet() {
         avatar.innerHTML = identityAvatar(incoming.remote_identity, 44);
     }
     if (name) name.textContent = _voicePeerName(incoming.remote_identity);
+    if (sheet && typeof sheet.focus === 'function') {
+        sheet.setAttribute('tabindex', '-1');
+    }
 }
 
 function _voiceHandleUpdate(data) {
@@ -2900,88 +2987,73 @@ function closeFabContactPicker() {
     });
 })();
 
-function openChatHeaderDropdown() {
+function openChatHeaderDropdown(triggerEl) {
     if (!lxmfActiveContact) return;
 
     var chatHeader = document.getElementById('lxmf-chat-header');
     if (!chatHeader) return;
 
-    // Toggle: second open closes the dropdown.
-    var existing = document.querySelector('.chat-header-dropdown');
-    if (existing) { existing.remove(); return; }
-
     var contact = lxmfContacts.find(function(c) { return c.hash === lxmfActiveContact; });
-    var dd = document.createElement('div');
-    dd.className = 'chat-header-dropdown';
+    var menuTrigger = triggerEl || document.getElementById('chat-header-menu-btn') || chatHeader;
+    var currentName = contact ? contact.display_name : '';
+    var items = [];
 
     if (lxstVoiceState.available) {
-        var callItem = document.createElement('div');
-        callItem.className = 'hash-dropdown-item';
-        callItem.textContent = 'Call';
-        callItem.addEventListener('click', function(ev) {
-            ev.stopPropagation();
-            dd.remove();
-            _voiceStartCall(lxmfActiveContact);
+        var callInOtherConversation = !!(lxstVoiceState.active && !_voiceActiveMatchesContact());
+        items.push({
+            label: callInOtherConversation ? 'Call in Progress' : _voicePrimaryActionLabel(),
+            icon: callInOtherConversation ? _voiceIcon('phone', 18) : _voicePrimaryActionIcon(),
+            danger: _voiceActiveMatchesContact(),
+            disabled: callInOtherConversation,
+            onSelect: function() { _voiceRunPrimaryAction(lxmfActiveContact); }
         });
-        dd.appendChild(callItem);
     }
 
-    var renameItem = document.createElement('div');
-    renameItem.className = 'hash-dropdown-item';
-    renameItem.textContent = contact ? 'Rename Contact' : 'Add Contact';
-    renameItem.addEventListener('click', function(ev) {
-        ev.stopPropagation();
-        dd.remove();
-        var currentName = contact ? contact.display_name : '';
-        rsPrompt({ message: contact ? 'New name:' : 'Contact name:', defaultValue: currentName || '', placeholder: 'Display name' }).then(function(newName) {
-            if (newName !== null) {
-                RS.invoke('add_contact', { args: { hash: lxmfActiveContact, display_name: newName.trim() || null } }).catch(function() {});
+    items.push(
+        {
+            label: contact ? 'Rename Contact' : 'Add Contact',
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+            onSelect: function() {
+                rsPrompt({ message: contact ? 'New name:' : 'Contact name:', defaultValue: currentName || '', placeholder: 'Display name' }).then(function(newName) {
+                    if (newName !== null) {
+                        RS.invoke('add_contact', { args: { hash: lxmfActiveContact, display_name: newName.trim() || null } }).catch(function() {});
+                    }
+                });
             }
-        });
-    });
-    dd.appendChild(renameItem);
+        },
+        {
+            label: 'About',
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>',
+            onSelect: function() { showContactAbout(lxmfActiveContact); }
+        },
+        {
+            label: 'Copy LXMF Hash',
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+            onSelect: function() {
+                if (!lxmfActiveContact) return;
+                navigator.clipboard.writeText(lxmfActiveContact).then(function() {
+                    showCopyConfirmationToast('Hash');
+                }).catch(function() {
+                    showToast('Could not copy', 'toast-orange', 1500);
+                });
+            }
+        },
+        {
+            label: 'Delete Conversation',
+            danger: true,
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>',
+            onSelect: function() {
+                var name = _conversationNameInfo(lxmfActiveContact, null, false).name;
+                showConversationDeleteDialog(lxmfActiveContact, name);
+            }
+        }
+    );
 
-    var aboutItem = document.createElement('div');
-    aboutItem.className = 'hash-dropdown-item';
-    aboutItem.textContent = 'About';
-    aboutItem.addEventListener('click', function(ev) {
-        ev.stopPropagation();
-        dd.remove();
-        showContactAbout(lxmfActiveContact);
-    });
-    dd.appendChild(aboutItem);
-
-    var copyItem = document.createElement('div');
-    copyItem.className = 'hash-dropdown-item';
-    copyItem.textContent = 'Copy LXMF Hash';
-    copyItem.addEventListener('click', function(ev) {
-        ev.stopPropagation();
-        dd.remove();
-        if (!lxmfActiveContact) return;
-        navigator.clipboard.writeText(lxmfActiveContact).then(function() {
-            showCopyConfirmationToast('Hash');
-        }).catch(function() {
-            showToast('Could not copy', 'toast-orange', 1500);
-        });
-    });
-    dd.appendChild(copyItem);
-
-    var sep = document.createElement('div');
-    sep.className = 'hash-dropdown-separator';
-    dd.appendChild(sep);
-
-    var deleteItem = document.createElement('div');
-    deleteItem.className = 'hash-dropdown-item hash-dropdown-item-danger';
-    deleteItem.textContent = 'Delete Conversation';
-    deleteItem.addEventListener('click', function(ev) {
-        ev.stopPropagation();
-        dd.remove();
-        var name = _conversationNameInfo(lxmfActiveContact, null, false).name;
-        showConversationDeleteDialog(lxmfActiveContact, name);
-    });
-    dd.appendChild(deleteItem);
-
-    chatHeader.appendChild(dd);
+    if (RS.ui && typeof RS.ui.openActionMenu === 'function') {
+        RS.ui.openActionMenu(menuTrigger, items, { title: 'Conversation' });
+    } else if (typeof actionPopover === 'function') {
+        actionPopover(menuTrigger, items);
+    }
 }
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -3002,19 +3074,21 @@ document.addEventListener('DOMContentLoaded', function() {
     var lxstCallBtn = document.getElementById('lxst-call-btn');
     if (lxstCallBtn) {
         lxstCallBtn.addEventListener('click', function() {
-            if (lxstVoiceState.active && _voiceActiveMatchesContact()) {
-                _voiceHangupCall();
-            } else if (lxmfActiveContact) {
-                _voiceStartCall(lxmfActiveContact);
-            }
+            if (lxmfActiveContact) _voiceRunPrimaryAction(lxmfActiveContact);
         });
     }
-    var lxstAnswerBtn = document.getElementById('lxst-call-answer-btn');
-    if (lxstAnswerBtn) lxstAnswerBtn.addEventListener('click', _voiceAnswerCall);
-    var lxstRejectBtn = document.getElementById('lxst-call-reject-btn');
-    if (lxstRejectBtn) lxstRejectBtn.addEventListener('click', _voiceRejectCall);
-    var lxstHangupBtn = document.getElementById('lxst-call-hangup-btn');
-    if (lxstHangupBtn) lxstHangupBtn.addEventListener('click', _voiceHangupCall);
+    ['lxst-call-answer-btn', 'lxst-call-global-answer-btn'].forEach(function(id) {
+        var btn = document.getElementById(id);
+        if (btn) btn.addEventListener('click', _voiceAnswerCall);
+    });
+    ['lxst-call-reject-btn', 'lxst-call-global-reject-btn'].forEach(function(id) {
+        var btn = document.getElementById(id);
+        if (btn) btn.addEventListener('click', _voiceRejectCall);
+    });
+    ['lxst-call-hangup-btn', 'lxst-call-global-hangup-btn'].forEach(function(id) {
+        var btn = document.getElementById(id);
+        if (btn) btn.addEventListener('click', _voiceHangupCall);
+    });
     RS.invoke('voice_status').then(function(status) {
         lxstVoiceState.available = true;
         lxstVoiceState.running = !!(status && status.running);
@@ -3364,7 +3438,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (chatHeaderMenuBtn) {
         chatHeaderMenuBtn.addEventListener('click', function(e) {
             e.stopPropagation();
-            openChatHeaderDropdown();
+            openChatHeaderDropdown(e.currentTarget);
         });
     }
 
@@ -3373,23 +3447,16 @@ document.addEventListener('DOMContentLoaded', function() {
     if (contactAvatar) {
         contactAvatar.addEventListener('click', function(e) {
             e.stopPropagation();
-            openChatHeaderDropdown();
+            openChatHeaderDropdown(e.currentTarget);
         });
     }
     var headerInfo = chatHeader ? chatHeader.querySelector('.lxmf-chat-header-info') : null;
     if (headerInfo) {
         headerInfo.addEventListener('click', function(e) {
             e.stopPropagation();
-            openChatHeaderDropdown();
+            openChatHeaderDropdown(e.currentTarget);
         });
     }
-
-    document.addEventListener('click', function(e) {
-        if (!e.target.closest('.lxmf-chat-header')) {
-            var dropdown = document.querySelector('.chat-header-dropdown');
-            if (dropdown) dropdown.remove();
-        }
-    });
 
     if (lxmfContacts.length > 0) {
         RS.invoke('check_contact_status').catch(function() {});
