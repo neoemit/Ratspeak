@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.ratspeak.desktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  <name>Ratspeak</name>
+  <summary>Ratspeak: An all-in-one Reticulum &amp; LXMF client in Rust.</summary>
+  <description>
+    <p>https://github.com/ratspeak/Ratspeak</p>
+  </description>
+  <developer_name>Ratspeak Contributors</developer_name>
+  <developer id="org.ratspeak">
+    <name>Ratspeak Contributors</name>
+  </developer>
+  <url type="homepage">https://github.com/ratspeak/Ratspeak</url>
+  <launchable type="desktop-id">Ratspeak.desktop</launchable>
+  <icon type="stock">ratspeak</icon>
+  <categories>
+    <category>Network</category>
+    <category>Chat</category>
+    <category>InstantMessaging</category>
+  </categories>
+  <provides>
+    <binary>ratspeak</binary>
+  </provides>
+</component>

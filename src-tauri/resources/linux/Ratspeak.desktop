@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name={{name}}
+Comment={{comment}}
+Exec={{exec}}
+Icon={{icon}}
+Terminal=false
+Categories={{categories}}Chat;InstantMessaging;
+StartupNotify=true
+StartupWMClass={{exec}}
+X-GNOME-UsesNotifications=true
+{{#if mime_type}}
+MimeType={{mime_type}}
+{{/if}}

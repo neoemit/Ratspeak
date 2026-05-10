@@ -28,6 +28,129 @@ fn read_source(path: impl AsRef<Path>) -> std::io::Result<String> {
 }
 
 #[test]
+fn linux_package_metadata_is_explicit_for_app_stores() {
+    let root = repo_root();
+    let summary = "Ratspeak: An all-in-one Reticulum & LXMF client in Rust.";
+    let homepage = "https://github.com/ratspeak/Ratspeak";
+    let metainfo_path = "resources/linux/org.ratspeak.desktop.metainfo.xml";
+    let desktop_template_path = "resources/linux/Ratspeak.desktop";
+
+    let cargo_toml = read_source(root.join("src-tauri/Cargo.toml")).expect("tauri Cargo.toml");
+    assert!(cargo_toml.contains(&format!("description = \"{summary}\"")));
+    assert!(cargo_toml.contains(&format!("homepage = \"{homepage}\"")));
+    assert!(cargo_toml.contains(&format!("repository = \"{homepage}\"")));
+    assert!(
+        !cargo_toml.contains("Ratspeak \u{2014}"),
+        "Linux package descriptions must stay ASCII-clean for app-store display"
+    );
+
+    let tauri_config = read_source(root.join("src-tauri/tauri.conf.json")).expect("tauri config");
+    let tauri_config: serde_json::Value =
+        serde_json::from_str(&tauri_config).expect("valid tauri config json");
+    let bundle = tauri_config
+        .get("bundle")
+        .and_then(|value| value.as_object())
+        .expect("bundle config");
+    assert_eq!(
+        bundle.get("publisher").and_then(|value| value.as_str()),
+        Some("Ratspeak Contributors")
+    );
+    assert_eq!(
+        bundle.get("homepage").and_then(|value| value.as_str()),
+        Some(homepage)
+    );
+    assert_eq!(
+        bundle
+            .get("shortDescription")
+            .and_then(|value| value.as_str()),
+        Some(summary)
+    );
+    assert_eq!(
+        bundle
+            .get("longDescription")
+            .and_then(|value| value.as_str()),
+        Some(homepage)
+    );
+    assert_eq!(
+        bundle.get("category").and_then(|value| value.as_str()),
+        Some("SocialNetworking")
+    );
+
+    let icons = bundle
+        .get("icon")
+        .and_then(|value| value.as_array())
+        .expect("bundle icons");
+    for expected in [
+        "icons/32x32.png",
+        "icons/64x64.png",
+        "icons/128x128.png",
+        "icons/icon.png",
+    ] {
+        assert!(
+            icons.iter().any(|value| value.as_str() == Some(expected)),
+            "Linux bundles must include {expected} for hicolor/app-store icon lookup"
+        );
+    }
+
+    let linux = bundle
+        .get("linux")
+        .and_then(|value| value.as_object())
+        .expect("linux bundle config");
+    for target in ["deb", "rpm"] {
+        let config = linux
+            .get(target)
+            .and_then(|value| value.as_object())
+            .expect("linux package target config");
+        assert_eq!(
+            config
+                .get("desktopTemplate")
+                .and_then(|value| value.as_str()),
+            Some(desktop_template_path)
+        );
+        let files = config
+            .get("files")
+            .and_then(|value| value.as_object())
+            .expect("linux package custom files");
+        assert_eq!(
+            files
+                .get("/usr/share/metainfo/org.ratspeak.desktop.metainfo.xml")
+                .and_then(|value| value.as_str()),
+            Some(metainfo_path)
+        );
+    }
+    let appimage_files = linux
+        .get("appimage")
+        .and_then(|value| value.get("files"))
+        .and_then(|value| value.as_object())
+        .expect("appimage custom files");
+    assert_eq!(
+        appimage_files
+            .get("/usr/share/metainfo/org.ratspeak.desktop.metainfo.xml")
+            .and_then(|value| value.as_str()),
+        Some(metainfo_path)
+    );
+
+    let desktop =
+        read_source(root.join("src-tauri/resources/linux/Ratspeak.desktop")).expect("desktop");
+    assert!(desktop.contains("Name={{name}}"));
+    assert!(desktop.contains("Comment={{comment}}"));
+    assert!(desktop.contains("Icon={{icon}}"));
+    assert!(desktop.contains("Categories={{categories}}Chat;InstantMessaging;"));
+    assert!(desktop.contains("StartupNotify=true"));
+
+    let metainfo = read_source(root.join("src-tauri").join(metainfo_path)).expect("metainfo");
+    assert!(metainfo.contains("<name>Ratspeak</name>"));
+    assert!(metainfo.contains(
+        "<summary>Ratspeak: An all-in-one Reticulum &amp; LXMF client in Rust.</summary>"
+    ));
+    assert!(metainfo.contains("<p>https://github.com/ratspeak/Ratspeak</p>"));
+    assert!(metainfo.contains("<developer_name>Ratspeak Contributors</developer_name>"));
+    assert!(metainfo.contains("<url type=\"homepage\">https://github.com/ratspeak/Ratspeak</url>"));
+    assert!(metainfo.contains("<launchable type=\"desktop-id\">Ratspeak.desktop</launchable>"));
+    assert!(metainfo.contains("<icon type=\"stock\">ratspeak</icon>"));
+}
+
+#[test]
 fn ratspeak_commands_use_current_rns_handle_not_process_singleton() {
     let root = repo_root();
     for rel in [

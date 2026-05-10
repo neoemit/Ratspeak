@@ -9,21 +9,37 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Ratspeak Contributors",
+    "homepage": "https://github.com/ratspeak/Ratspeak",
+    "category": "SocialNetworking",
+    "shortDescription": "Ratspeak: An all-in-one Reticulum & LXMF client in Rust.",
+    "longDescription": "https://github.com/ratspeak/Ratspeak",
     "icon": [
       "icons/32x32.png",
+      "icons/64x64.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
+      "icons/icon.png",
       "icons/icon.icns",
       "icons/icon.ico"
     ],
     "linux": {
-      "deb": {
+      "appimage": {
         "files": {
+          "/usr/share/metainfo/org.ratspeak.desktop.metainfo.xml": "resources/linux/org.ratspeak.desktop.metainfo.xml"
+        }
+      },
+      "deb": {
+        "desktopTemplate": "resources/linux/Ratspeak.desktop",
+        "files": {
+          "/usr/share/metainfo/org.ratspeak.desktop.metainfo.xml": "resources/linux/org.ratspeak.desktop.metainfo.xml",
           "/usr/lib/udev/rules.d/99-ratspeak.rules": "resources/linux/99-ratspeak.rules"
         }
       },
       "rpm": {
+        "desktopTemplate": "resources/linux/Ratspeak.desktop",
         "files": {
+          "/usr/share/metainfo/org.ratspeak.desktop.metainfo.xml": "resources/linux/org.ratspeak.desktop.metainfo.xml",
           "/usr/lib/udev/rules.d/99-ratspeak.rules": "resources/linux/99-ratspeak.rules"
         }
       }
