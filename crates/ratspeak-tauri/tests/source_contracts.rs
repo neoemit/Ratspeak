@@ -855,19 +855,27 @@ fn transport_mode_defaults_and_auto_policy_are_explicit() {
     let settings_js =
         read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
     let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
+    let ui_shared_js =
+        read_source(root.join("dashboard/static/js/ui_shared.js")).expect("ui shared js");
     let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
         .expect("interfaces source");
 
     assert!(index.contains(r#"id="transport-mode-select">OFF</button>"#));
-    assert!(settings_js.contains("Enables only on suitable non-LoRa interfaces."));
+    assert!(ui_shared_js.contains("Enables only on suitable non-LoRa interfaces."));
+    assert!(ui_shared_js.contains("RS.ui.applyTransportModePayload"));
+    assert!(ui_shared_js.contains("RS.ui.openTransportModeChoice"));
+    assert!(ui_shared_js.contains("RS.ui.bindTransportChoice"));
     assert!(settings_js.contains("function applyTransportModePayload"));
+    assert!(settings_js.contains("RS.ui.applyTransportModePayload"));
+    assert!(settings_js.contains("RS.ui.bindTransportChoice"));
     assert!(
         settings_js.contains(
             "if (ifaces && ifaces.transport) applyTransportModePayload(ifaces.transport);"
         )
     );
-    assert!(modals_js.contains("Enables only on suitable non-LoRa interfaces."));
     assert!(modals_js.contains("function applyModalTransportModePayload"));
+    assert!(modals_js.contains("RS.ui.applyTransportModePayload"));
+    assert!(modals_js.contains("RS.ui.bindTransportChoice"));
     assert!(modals_js.contains(
         "if (ifaces && ifaces.transport) applyModalTransportModePayload(ifaces.transport);"
     ));
