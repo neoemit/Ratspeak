@@ -48,6 +48,7 @@ class MainActivity : TauriActivity() {
     companion object {
         private const val BLE_PERMISSION_REQUEST_CODE = 1001
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1002
+        private const val MEDIA_PERMISSION_REQUEST_CODE = 1003
         private const val USB_PERMISSION_ACTION = "org.ratspeak.android.USB_PERMISSION"
         private const val MAX_IDENTITY_IMPORT_BYTES = 1024 * 1024
         // Standard Bluetooth MAC-48 address format: 6 hex octets separated
@@ -65,6 +66,9 @@ class MainActivity : TauriActivity() {
     private var usbPermissionReceiver: BroadcastReceiver? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var pendingIdentityExport: PendingIdentityExport? = null
+    private var pendingMediaRequestId: String? = null
+    private var pendingMediaRequestAudio = false
+    private var pendingMediaRequestCamera = false
     @Volatile private var lastNetworkType: String = ""
     @Volatile private var serviceMulticastEnabled = false
 
@@ -422,6 +426,21 @@ class MainActivity : TauriActivity() {
         }
     }
 
+    private fun getMediaPermissions(audio: Boolean, camera: Boolean): Array<String> {
+        val permissions = mutableListOf<String>()
+        if (camera) permissions.add(Manifest.permission.CAMERA)
+        if (audio) permissions.add(Manifest.permission.RECORD_AUDIO)
+        return permissions.toTypedArray()
+    }
+
+    private fun hasMediaPermissions(audio: Boolean, camera: Boolean): Boolean {
+        val permissions = getMediaPermissions(audio, camera)
+        if (permissions.isEmpty()) return true
+        return permissions.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<out String>,
@@ -444,6 +463,17 @@ class MainActivity : TauriActivity() {
             // and will silently fail until the user re-grants via system
             // settings. Future work: expose a settings toggle and re-prompt
             // through shouldShowRequestPermissionRationale().
+        } else if (requestCode == MEDIA_PERMISSION_REQUEST_CODE) {
+            val requestId = pendingMediaRequestId ?: ""
+            val audio = pendingMediaRequestAudio
+            val camera = pendingMediaRequestCamera
+            pendingMediaRequestId = null
+            pendingMediaRequestAudio = false
+            pendingMediaRequestCamera = false
+            val granted = grantResults.isNotEmpty() && grantResults.all {
+                it == PackageManager.PERMISSION_GRANTED
+            }
+            dispatchMediaPermissionResult(requestId, audio, camera, granted, null)
         }
     }
 
@@ -925,6 +955,30 @@ class MainActivity : TauriActivity() {
             return this@MainActivity.hasBlePermissions()
         }
 
+        @JavascriptInterface
+        fun hasMediaPermissions(audio: Boolean, camera: Boolean): Boolean {
+            return this@MainActivity.hasMediaPermissions(audio, camera)
+        }
+
+        @JavascriptInterface
+        fun requestMediaPermissions(audio: Boolean, camera: Boolean, requestId: String) {
+            val permissions = getMediaPermissions(audio, camera)
+            if (permissions.isEmpty() || this@MainActivity.hasMediaPermissions(audio, camera)) {
+                dispatchMediaPermissionResult(requestId, audio, camera, true, null)
+                return
+            }
+            handler.post {
+                pendingMediaRequestId = requestId
+                pendingMediaRequestAudio = audio
+                pendingMediaRequestCamera = camera
+                ActivityCompat.requestPermissions(
+                    this@MainActivity,
+                    permissions,
+                    MEDIA_PERMISSION_REQUEST_CODE
+                )
+            }
+        }
+
         /**
          * Start a native BLE scan. Results are delivered via window._onNativeBleScanResult(data).
          * This uses BluetoothManager (modern API), not the deprecated getDefaultAdapter().
@@ -1219,6 +1273,28 @@ class MainActivity : TauriActivity() {
         handler.post {
             webViewRef?.evaluateJavascript(
                 "if(typeof window._onUsbPermissionResult==='function')window._onUsbPermissionResult($json);",
+                null
+            )
+        }
+    }
+
+    private fun dispatchMediaPermissionResult(
+        requestId: String,
+        audio: Boolean,
+        camera: Boolean,
+        granted: Boolean,
+        error: String?
+    ) {
+        val json = JSONObject().apply {
+            put("request_id", requestId)
+            put("audio", audio)
+            put("camera", camera)
+            put("granted", granted)
+            if (error != null) put("error", error)
+        }
+        handler.post {
+            webViewRef?.evaluateJavascript(
+                "if(typeof window._onAndroidMediaPermissionResult==='function')window._onAndroidMediaPermissionResult($json);",
                 null
             )
         }

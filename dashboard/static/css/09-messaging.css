@@ -490,6 +490,7 @@
     border-bottom: 1px solid var(--border-row);
     background: var(--surface-elevation-1);
     flex-shrink: 0;
+    cursor: pointer;
 }
 .lxst-call-strip[hidden] {
     display: none;

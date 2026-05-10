@@ -80,6 +80,85 @@ window.RS.invoke = function(name, args) {
     });
 };
 
+var _rsAndroidMediaPermissionSeq = 0;
+var _rsAndroidMediaPermissionWaiters = {};
+
+window._onAndroidMediaPermissionResult = function(data) {
+    data = data || {};
+    var requestId = data.request_id || '';
+    var waiter = _rsAndroidMediaPermissionWaiters[requestId];
+    if (!waiter) return;
+    delete _rsAndroidMediaPermissionWaiters[requestId];
+    waiter(!!data.granted);
+};
+
+function _rsStopMediaStream(stream) {
+    if (!stream || typeof stream.getTracks !== 'function') return;
+    stream.getTracks().forEach(function(track) {
+        try { track.stop(); } catch (_) {}
+    });
+}
+
+function _rsAndroidMediaPermission(audio, camera) {
+    return new Promise(function(resolve) {
+        if (!hasAndroidBridge()
+            || typeof window.RatspeakAndroid.hasMediaPermissions !== 'function'
+            || typeof window.RatspeakAndroid.requestMediaPermissions !== 'function') {
+            resolve(null);
+            return;
+        }
+        try {
+            if (window.RatspeakAndroid.hasMediaPermissions(!!audio, !!camera)) {
+                resolve(true);
+                return;
+            }
+            var requestId = 'media-' + Date.now() + '-' + (++_rsAndroidMediaPermissionSeq);
+            _rsAndroidMediaPermissionWaiters[requestId] = resolve;
+            window.RatspeakAndroid.requestMediaPermissions(!!audio, !!camera, requestId);
+            setTimeout(function() {
+                if (!_rsAndroidMediaPermissionWaiters[requestId]) return;
+                delete _rsAndroidMediaPermissionWaiters[requestId];
+                resolve(false);
+            }, 30000);
+        } catch (err) {
+            window.RS.diag('warn', '[media] Android permission bridge failed:', err);
+            resolve(null);
+        }
+    });
+}
+
+function _rsBrowserMediaPermission(audio, camera) {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+        return Promise.resolve(null);
+    }
+    var constraints = {};
+    if (audio) constraints.audio = true;
+    if (camera) constraints.video = true;
+    if (!constraints.audio && !constraints.video) return Promise.resolve(true);
+    return navigator.mediaDevices.getUserMedia(constraints).then(function(stream) {
+        _rsStopMediaStream(stream);
+        return true;
+    }).catch(function(err) {
+        window.RS.diag('warn', '[media] getUserMedia permission probe failed:', err);
+        return false;
+    });
+}
+
+window.RS.mediaPermissions = {
+    ensure: function(opts) {
+        opts = opts || {};
+        var audio = !!opts.audio;
+        var camera = !!opts.camera;
+        if (!audio && !camera) return Promise.resolve(true);
+        return _rsAndroidMediaPermission(audio, camera).then(function(androidGranted) {
+            if (androidGranted !== null) return androidGranted;
+            return _rsBrowserMediaPermission(audio, camera).then(function(browserGranted) {
+                return browserGranted !== false;
+            });
+        });
+    }
+};
+
 function pathCountSummary(stats) {
     stats = stats || {};
     var visible = Array.isArray(stats.path_table) ? stats.path_table.length : 0;

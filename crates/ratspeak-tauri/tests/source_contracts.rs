@@ -523,6 +523,7 @@ fn message_camera_and_photo_attachment_flow_is_native_and_previewed() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
     assert!(index.contains(r#"id="lxmf-camera-input" accept="image/*" capture="environment""#));
+    assert!(index.contains(r#"id="lxmf-video-input" accept="video/*" capture="environment""#));
     assert!(
         !index.contains(r#"id="lxmf-camera-input" accept="image/*,video/*""#),
         "Camera action must request still-image capture instead of the generic media picker"
@@ -530,9 +531,14 @@ fn message_camera_and_photo_attachment_flow_is_native_and_previewed() {
 
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
     assert!(lxmf.contains("function triggerCameraAttachment()"));
+    assert!(lxmf.contains("function triggerVideoAttachment()"));
     assert!(lxmf.contains("var input = document.getElementById('lxmf-camera-input');"));
+    assert!(lxmf.contains("var input = document.getElementById('lxmf-video-input');"));
     assert!(
         lxmf.contains("{ label: 'Camera', icon: ICON_CAMERA, onSelect: triggerCameraAttachment }")
+    );
+    assert!(
+        lxmf.contains("{ label: 'Video', icon: ICON_VIDEO, onSelect: triggerVideoAttachment }")
     );
     assert!(lxmf.contains("function _pendingAttachmentName(file)"));
     assert!(lxmf.contains("pending-file-thumbnail"));
@@ -547,6 +553,56 @@ fn message_camera_and_photo_attachment_flow_is_native_and_previewed() {
     assert!(messaging_css.contains(".pending-file-thumbnail img"));
     assert!(messaging_css.contains("object-fit: cover;"));
     assert!(messaging_css.contains(".pending-file-copy"));
+}
+
+#[test]
+fn voice_and_capture_paths_preflight_media_permissions() {
+    let root = repo_root();
+    let manifest = read_source(root.join("src-tauri/gen/android/app/src/main/AndroidManifest.xml"))
+        .expect("android manifest");
+    assert!(manifest.contains("android.permission.CAMERA"));
+    assert!(manifest.contains("android.permission.RECORD_AUDIO"));
+    assert!(manifest.contains("android.hardware.camera.any"));
+    assert!(manifest.contains("android.hardware.microphone"));
+
+    let activity = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .expect("main activity");
+    assert!(activity.contains("MEDIA_PERMISSION_REQUEST_CODE"));
+    assert!(activity.contains("fun hasMediaPermissions(audio: Boolean, camera: Boolean): Boolean"));
+    assert!(activity.contains(
+        "fun requestMediaPermissions(audio: Boolean, camera: Boolean, requestId: String)"
+    ));
+    assert!(activity.contains("window._onAndroidMediaPermissionResult"));
+
+    let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
+    assert!(state_js.contains("window.RS.mediaPermissions"));
+    assert!(state_js.contains("window.RatspeakAndroid.requestMediaPermissions"));
+    assert!(state_js.contains("navigator.mediaDevices.getUserMedia"));
+
+    let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    assert!(lxmf.contains("function _voiceEnsureMicrophonePermission()"));
+    assert!(lxmf.contains("return _voiceEnsureMicrophonePermission().then(function()"));
+    assert!(lxmf.contains("_ensureAttachmentMediaPermission({ camera: true })"));
+    assert!(lxmf.contains("_ensureAttachmentMediaPermission({ camera: true, audio: true })"));
+}
+
+#[test]
+fn active_call_surface_is_navigable_and_shows_elapsed_duration() {
+    let root = repo_root();
+    let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    assert!(lxmf.contains("function _voiceElapsedLabel()"));
+    assert!(lxmf.contains("Math.max(1"));
+    assert!(lxmf.contains("minutes + ':' + (seconds < 10 ? '0' : '') + seconds"));
+    assert!(lxmf.contains("function _voiceWireCallSurfaceNavigation(id)"));
+    assert!(lxmf.contains("_voiceOpenActiveConversation();"));
+    assert!(lxmf.contains("_voiceWireCallSurfaceNavigation('lxst-call-strip')"));
+    assert!(lxmf.contains("_voiceWireCallSurfaceNavigation('lxst-call-global')"));
+
+    let messaging_css =
+        read_source(root.join("dashboard/static/css/09-messaging.css")).expect("css");
+    assert!(messaging_css.contains("cursor: pointer;"));
 }
 
 #[test]

@@ -38,8 +38,11 @@ var lxstVoiceState = {
     audioSpeaker: false,
     lastAudioWarningKey: null,
     lastDialHash: null,
-    lastError: null
+    lastError: null,
+    establishedAtMs: null,
+    establishedLinkId: null
 };
+var _voiceElapsedTimer = null;
 
 function _voiceStatusLabel(status) {
     switch (status) {
@@ -95,6 +98,81 @@ function _voiceAudioLabel() {
     return 'audio starting';
 }
 
+function _voiceElapsedLabel() {
+    var active = lxstVoiceState.active;
+    if (!active || active.status !== 'established' || !lxstVoiceState.establishedAtMs) return '';
+    var elapsed = Math.max(1, Math.floor((Date.now() - lxstVoiceState.establishedAtMs) / 1000) + 1);
+    var minutes = Math.floor(elapsed / 60);
+    var seconds = elapsed % 60;
+    return minutes + ':' + (seconds < 10 ? '0' : '') + seconds;
+}
+
+function _voiceActiveStatusLabel(active) {
+    var status = _voiceStatusLabel(active.status);
+    var elapsed = _voiceElapsedLabel();
+    if (elapsed) status += ' - ' + elapsed;
+    return status;
+}
+
+function _voiceSyncElapsedTimer() {
+    var active = lxstVoiceState.active;
+    var shouldRun = !!(active && active.status === 'established' && lxstVoiceState.establishedAtMs);
+    if (shouldRun && !_voiceElapsedTimer) {
+        _voiceElapsedTimer = setInterval(renderVoiceUi, 1000);
+    } else if (!shouldRun && _voiceElapsedTimer) {
+        clearInterval(_voiceElapsedTimer);
+        _voiceElapsedTimer = null;
+    }
+}
+
+function _voiceTrackEstablished(active) {
+    if (!active || active.status !== 'established') {
+        lxstVoiceState.establishedAtMs = null;
+        lxstVoiceState.establishedLinkId = null;
+        _voiceSyncElapsedTimer();
+        return;
+    }
+    if (lxstVoiceState.establishedLinkId !== active.link_id || !lxstVoiceState.establishedAtMs) {
+        lxstVoiceState.establishedLinkId = active.link_id;
+        lxstVoiceState.establishedAtMs = Date.now();
+    }
+    _voiceSyncElapsedTimer();
+}
+
+function _voiceEnsureMicrophonePermission() {
+    if (!window.RS || !RS.mediaPermissions || typeof RS.mediaPermissions.ensure !== 'function') {
+        return Promise.resolve(true);
+    }
+    return RS.mediaPermissions.ensure({ audio: true }).then(function(granted) {
+        if (!granted) {
+            _voiceNotify('Microphone unavailable or permission denied; call will be listen only');
+        }
+        return true;
+    });
+}
+
+function _voiceActiveConversationHash() {
+    var call = lxstVoiceState.active || lxstVoiceState.incoming;
+    if (!call) return null;
+    return lxstVoiceState.lastDialHash || call.remote_identity || null;
+}
+
+function _voiceOpenActiveConversation() {
+    var hash = _voiceActiveConversationHash();
+    if (!hash || typeof openConversationWith !== 'function') return;
+    openConversationWith(hash);
+}
+
+function _voiceWireCallSurfaceNavigation(id) {
+    var surface = document.getElementById(id);
+    if (!surface || surface._voiceSurfaceNavigationBound) return;
+    surface._voiceSurfaceNavigationBound = true;
+    surface.addEventListener('click', function(e) {
+        if (e.target && e.target.closest && e.target.closest('button')) return;
+        _voiceOpenActiveConversation();
+    });
+}
+
 function _voiceRenderCallSurface(ids) {
     var surface = document.getElementById(ids.surface);
     if (!surface) return;
@@ -115,7 +193,7 @@ function _voiceRenderCallSurface(ids) {
 
     if (titleEl) titleEl.textContent = _voicePeerName(peer.remote_identity);
     if (statusEl) {
-        var status = active ? _voiceStatusLabel(active.status) : 'Incoming call';
+        var status = active ? _voiceActiveStatusLabel(active) : 'Incoming call';
         var audioLabel = active ? _voiceAudioLabel() : '';
         if (audioLabel) status += ' - ' + audioLabel;
         statusEl.textContent = status;
@@ -167,24 +245,28 @@ function _voiceRestoreHeaderStatus() {
 
 function _voiceStartCall(hash) {
     if (!lxstVoiceState.available || !hash) return Promise.resolve();
-    lxstVoiceState.lastDialHash = hash;
-    renderVoiceUi();
-    return RS.invoke('voice_call', { args: { hash: hash } }).then(function(result) {
-        if (result && result.requested_hash) lxstVoiceState.lastDialHash = result.requested_hash;
+    return _voiceEnsureMicrophonePermission().then(function() {
+        lxstVoiceState.lastDialHash = hash;
         renderVoiceUi();
-    }).catch(function(err) {
-        lxstVoiceState.lastDialHash = null;
-        _voiceNotify((err && err.message) || 'Could not start call');
-        renderVoiceUi();
+        return RS.invoke('voice_call', { args: { hash: hash } }).then(function(result) {
+            if (result && result.requested_hash) lxstVoiceState.lastDialHash = result.requested_hash;
+            renderVoiceUi();
+        }).catch(function(err) {
+            lxstVoiceState.lastDialHash = null;
+            _voiceNotify((err && err.message) || 'Could not start call');
+            renderVoiceUi();
+        });
     });
 }
 
 function _voiceAnswerCall() {
-    return RS.invoke('voice_answer').then(function() {
-        lxstVoiceState.incoming = null;
-        renderVoiceUi();
-    }).catch(function(err) {
-        _voiceNotify((err && err.message) || 'Could not answer call');
+    return _voiceEnsureMicrophonePermission().then(function() {
+        return RS.invoke('voice_answer').then(function() {
+            lxstVoiceState.incoming = null;
+            renderVoiceUi();
+        }).catch(function(err) {
+            _voiceNotify((err && err.message) || 'Could not answer call');
+        });
     });
 }
 
@@ -205,6 +287,8 @@ function _voiceHangupCall() {
         lxstVoiceState.audioMicrophone = false;
         lxstVoiceState.audioSpeaker = false;
         lxstVoiceState.lastDialHash = null;
+        lxstVoiceState.establishedAtMs = null;
+        lxstVoiceState.establishedLinkId = null;
         renderVoiceUi();
     });
 }
@@ -231,7 +315,7 @@ function renderVoiceUi() {
 
     var statusEl = document.getElementById('lxmf-chat-header-status');
     if (statusEl && activeMatches) {
-        statusEl.textContent = _voiceStatusLabel(active.status);
+        statusEl.textContent = _voiceActiveStatusLabel(active);
         statusEl.style.display = '';
         statusEl.className = 'lxmf-chat-header-status is-online';
     } else if (statusEl && incomingMatches) {
@@ -260,6 +344,7 @@ function renderVoiceUi() {
     });
 
     renderVoiceIncomingSheet();
+    _voiceSyncElapsedTimer();
 }
 
 function renderVoiceIncomingSheet() {
@@ -343,11 +428,13 @@ function _voiceHandleUpdate(data) {
             role: 'outgoing',
             status: 'calling'
         };
+        _voiceTrackEstablished(lxstVoiceState.active);
     } else if (data.type === 'snapshot') {
         lxstVoiceState.active = data.active_call || null;
         if (data.active_call && data.active_call.status === 'established') {
             lxstVoiceState.incoming = null;
         }
+        _voiceTrackEstablished(lxstVoiceState.active);
         lxstVoiceState.audioRunning = !!(data.audio && data.audio.running);
         lxstVoiceState.audioMicrophone = !!(data.audio && data.audio.microphone);
         lxstVoiceState.audioSpeaker = !!(data.audio && data.audio.speaker);
@@ -377,6 +464,9 @@ function _voiceHandleUpdate(data) {
         lxstVoiceState.audioSpeaker = false;
         lxstVoiceState.lastAudioWarningKey = null;
         lxstVoiceState.lastDialHash = null;
+        lxstVoiceState.establishedAtMs = null;
+        lxstVoiceState.establishedLinkId = null;
+        _voiceTrackEstablished(null);
     } else if (data.type === 'error') {
         lxstVoiceState.lastError = data.message || 'Voice call error';
         _voiceNotify(lxstVoiceState.lastError);
@@ -2164,6 +2254,22 @@ function triggerFileAttachment() {
     if (fileInput) fileInput.click();
 }
 
+function _ensureAttachmentMediaPermission(opts) {
+    opts = opts || {};
+    if (!window.RS || !RS.mediaPermissions || typeof RS.mediaPermissions.ensure !== 'function') {
+        return Promise.resolve(true);
+    }
+    return RS.mediaPermissions.ensure(opts).then(function(granted) {
+        if (!granted) {
+            var message = opts.audio
+                ? 'Camera or microphone permission denied'
+                : 'Camera permission denied';
+            showToast(message, 'toast-orange', 3500);
+        }
+        return granted;
+    });
+}
+
 function triggerPhotosAttachment() {
     var input = document.getElementById('lxmf-photos-input');
     if (input) input.click();
@@ -2171,7 +2277,18 @@ function triggerPhotosAttachment() {
 
 function triggerCameraAttachment() {
     var input = document.getElementById('lxmf-camera-input');
-    if (input) input.click();
+    if (!input) return;
+    _ensureAttachmentMediaPermission({ camera: true }).then(function(granted) {
+        if (granted) input.click();
+    });
+}
+
+function triggerVideoAttachment() {
+    var input = document.getElementById('lxmf-video-input');
+    if (!input) return;
+    _ensureAttachmentMediaPermission({ camera: true, audio: true }).then(function(granted) {
+        if (granted) input.click();
+    });
 }
 
 function _pendingAttachmentName(file) {
@@ -3070,6 +3187,8 @@ document.addEventListener('DOMContentLoaded', function() {
     if (photosInput) photosInput.addEventListener('change', function() { handleFileSelected(this); });
     var cameraInput = document.getElementById('lxmf-camera-input');
     if (cameraInput) cameraInput.addEventListener('change', function() { handleFileSelected(this); });
+    var videoInput = document.getElementById('lxmf-video-input');
+    if (videoInput) videoInput.addEventListener('change', function() { handleFileSelected(this); });
 
     var lxstCallBtn = document.getElementById('lxst-call-btn');
     if (lxstCallBtn) {
@@ -3089,6 +3208,8 @@ document.addEventListener('DOMContentLoaded', function() {
         var btn = document.getElementById(id);
         if (btn) btn.addEventListener('click', _voiceHangupCall);
     });
+    _voiceWireCallSurfaceNavigation('lxst-call-strip');
+    _voiceWireCallSurfaceNavigation('lxst-call-global');
     RS.invoke('voice_status').then(function(status) {
         lxstVoiceState.available = true;
         lxstVoiceState.running = !!(status && status.running);
@@ -3156,6 +3277,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var ICON_EMOJI = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>';
     var ICON_FILE = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
     var ICON_CAMERA = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>';
+    var ICON_VIDEO = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg>';
     var ICON_PHOTOS = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>';
     var ICON_CONTACTS = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>';
     var ICON_NEW = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
@@ -3309,6 +3431,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (isMobile()) {
                 actionPopover(attachBtn, [
                     { label: 'Camera', icon: ICON_CAMERA, onSelect: triggerCameraAttachment },
+                    { label: 'Video', icon: ICON_VIDEO, onSelect: triggerVideoAttachment },
                     { label: 'Photos', icon: ICON_PHOTOS, onSelect: triggerPhotosAttachment },
                     { label: 'File', icon: ICON_FILE, onSelect: triggerFileAttachment },
                 ]);
