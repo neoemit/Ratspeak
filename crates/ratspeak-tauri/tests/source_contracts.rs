@@ -619,6 +619,13 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(voice_rs.contains("TransportQuery::IsBlackholed"));
     assert!(voice_rs.contains("BlackholeReason::RateLimit"));
     assert!(voice_rs.contains("send_ephemeral_opportunistic_message"));
+    assert!(voice_rs.contains("pub async fn announce_if_running(state: &AppState)"));
+    assert!(voice_rs.contains("TelephonyControl::Announce"));
+
+    let runtime_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
+    assert!(runtime_rs.contains("voice::announce_if_running(state).await"));
+    assert!(runtime_rs.contains("LXST telephony announced on all interfaces"));
 
     let ringtone_js =
         read_source(root.join("dashboard/static/js/voice_ringtones.js")).expect("ringtone js");

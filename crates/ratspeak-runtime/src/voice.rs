@@ -221,6 +221,16 @@ pub async fn reject(state: &Arc<AppState>) -> VoiceResult<Value> {
     hangup(state).await
 }
 
+pub async fn announce_if_running(state: &AppState) -> VoiceResult<bool> {
+    let Some(tx) = voice_control_tx(state) else {
+        return Ok(false);
+    };
+    tx.send(TelephonyControl::Announce)
+        .await
+        .map_err(|_| "LXST voice service is not accepting commands".to_string())?;
+    Ok(true)
+}
+
 async fn ensure_voice_service_started(state: &Arc<AppState>) -> VoiceResult<()> {
     if voice_control_tx(state).is_some() {
         Ok(())

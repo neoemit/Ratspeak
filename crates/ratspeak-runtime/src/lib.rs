@@ -1429,6 +1429,46 @@ async fn send_announce_from_state_inner(
             }
         }
     }
+
+    #[cfg(feature = "lxst-voice")]
+    match voice::announce_if_running(state).await {
+        Ok(true) => {
+            report.packets += 1;
+            report.queued += 1;
+            tracing::info!("LXST telephony announce queued");
+            if state
+                .network_log_enabled
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                state.emit_network_event(
+                    "announce",
+                    "LXST telephony announced on all interfaces",
+                    "",
+                    "detailed",
+                );
+            }
+        }
+        Ok(false) => {
+            tracing::debug!("LXST telephony announce skipped: voice service is not running");
+        }
+        Err(e) => {
+            report.packets += 1;
+            report.failed += 1;
+            tracing::warn!("Failed to queue LXST telephony announce: {e}");
+            if state
+                .network_log_enabled
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                state.emit_network_event(
+                    "error",
+                    &format!("LXST telephony announce failed: {e}"),
+                    "",
+                    "essential",
+                );
+            }
+        }
+    }
+
     report
 }
 
