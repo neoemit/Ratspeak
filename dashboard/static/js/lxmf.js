@@ -71,25 +71,65 @@ function _voiceIcon(name, size) {
     return '<svg ' + attrs + '><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65a2 2 0 0 1-.45 2.11L8.09 9.69a16 16 0 0 0 6.22 6.22l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92z"/></svg>';
 }
 
-function _voicePrimaryActionLabel() {
-    if (_voiceIncomingMatchesContact()) return 'Answer call';
-    if (_voiceActiveMatchesContact()) {
+function _voicePrimaryActionLabel(hash) {
+    if (_voiceIncomingMatchesContact(hash)) return 'Answer call';
+    if (_voiceActiveMatchesContact(hash)) {
         var active = lxstVoiceState.active;
         return active && active.status === 'established' ? 'Hang up' : 'Cancel call';
     }
     return 'Start call';
 }
 
-function _voicePrimaryActionIcon() {
-    if (_voiceIncomingMatchesContact()) return _voiceIcon('phone-incoming', 18);
-    if (_voiceActiveMatchesContact()) return _voiceIcon('phone', 18);
+function _voicePrimaryActionIcon(hash) {
+    if (_voiceIncomingMatchesContact(hash)) return _voiceIcon('phone-incoming', 18);
+    if (_voiceActiveMatchesContact(hash)) return _voiceIcon('phone', 18);
     return _voiceIcon('phone', 18);
 }
 
 function _voiceRunPrimaryAction(hash) {
-    if (_voiceIncomingMatchesContact()) return _voiceAnswerCall();
-    if (_voiceActiveMatchesContact()) return _voiceHangupCall();
+    if (_voiceIncomingMatchesContact(hash)) return _voiceAnswerCall();
+    if (_voiceActiveMatchesContact(hash)) return _voiceHangupCall();
     return _voiceStartCall(hash);
+}
+
+function _voiceActionState(hash) {
+    if (!lxstVoiceState.available || !hash) return { available: false };
+    var activeMatches = _voiceActiveMatchesContact(hash);
+    var incomingMatches = _voiceIncomingMatchesContact(hash);
+    var busyElsewhere =
+        (!!lxstVoiceState.active && !activeMatches) ||
+        (!!lxstVoiceState.incoming && !incomingMatches);
+    return {
+        available: true,
+        disabled: busyElsewhere,
+        danger: activeMatches,
+        label: busyElsewhere ? 'Call in Progress' : _voicePrimaryActionLabel(hash),
+        icon: busyElsewhere ? _voiceIcon('phone', 18) : _voicePrimaryActionIcon(hash)
+    };
+}
+
+function voiceActionButtonHtml(id, hash) {
+    var action = _voiceActionState(hash);
+    if (!action.available) return '';
+    var className = action.danger
+        ? 'danger-btn entity-action-btn entity-action-call is-hangup'
+        : 'nr-btn nr-btn-primary entity-action-btn entity-action-call';
+    var disabled = action.disabled ? ' disabled aria-disabled="true"' : '';
+    return '<button type="button" class="' + className + '" id="' + id + '" data-hash="' + escapeHtml(hash) + '"' + disabled + '>' +
+        action.icon +
+        '<span>' + escapeHtml(action.label) + '</span>' +
+    '</button>';
+}
+
+function wireVoiceActionButton(id, beforeAction) {
+    var btn = document.getElementById(id);
+    if (!btn) return;
+    btn.addEventListener('click', function() {
+        if (btn.disabled) return;
+        var hash = btn.dataset.hash;
+        if (typeof beforeAction === 'function') beforeAction();
+        _voiceRunPrimaryAction(hash);
+    });
 }
 
 function _voiceAudioIssueLabel() {
@@ -335,19 +375,21 @@ function _voiceRenderCallSurface(ids) {
     }
 }
 
-function _voiceActiveMatchesContact() {
+function _voiceActiveMatchesContact(hash) {
     var active = lxstVoiceState.active;
-    if (!active || !lxmfActiveContact) return false;
-    return _voicePeerLookupHash(active) === lxmfActiveContact ||
-        active.remote_identity === lxmfActiveContact ||
-        lxstVoiceState.lastDialHash === lxmfActiveContact;
+    var target = hash || lxmfActiveContact;
+    if (!active || !target) return false;
+    return _voicePeerLookupHash(active) === target ||
+        active.remote_identity === target ||
+        lxstVoiceState.lastDialHash === target;
 }
 
-function _voiceIncomingMatchesContact() {
+function _voiceIncomingMatchesContact(hash) {
     var incoming = lxstVoiceState.incoming;
-    if (!incoming || !lxmfActiveContact) return false;
-    return _voicePeerLookupHash(incoming) === lxmfActiveContact ||
-        incoming.remote_identity === lxmfActiveContact;
+    var target = hash || lxmfActiveContact;
+    if (!incoming || !target) return false;
+    return _voicePeerLookupHash(incoming) === target ||
+        incoming.remote_identity === target;
 }
 
 function _voiceNotify(message, className) {
@@ -1773,10 +1815,11 @@ function showContactDetailSheet(hash) {
                     '<span class="contact-detail-field-value">' + escapeHtml(ifaceText) + '</span>' +
                 '</div>' +
             '</div>' +
-            '<div class="contact-detail-actions">' +
-                '<button class="nr-btn" id="cd-message-btn">Message</button>' +
-                '<button class="danger-btn" id="cd-remove-btn">Remove</button>' +
-                '<button class="danger-btn" id="cd-block-btn">Block</button>' +
+            '<div class="contact-detail-actions entity-action-grid">' +
+                voiceActionButtonHtml('cd-call-btn', hash) +
+                '<button class="nr-btn entity-action-btn" id="cd-message-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Message</span></button>' +
+                '<button class="danger-btn entity-action-btn" id="cd-remove-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg><span>Remove</span></button>' +
+                '<button class="danger-btn entity-action-btn" id="cd-block-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg><span>Block</span></button>' +
             '</div>' +
         '</div>';
 
@@ -1841,6 +1884,7 @@ function showContactDetailSheet(hash) {
             if (typeof switchView === 'function') switchView('message');
         }
     });
+    wireVoiceActionButton('cd-call-btn', closeSheet);
 
     document.getElementById('cd-remove-btn').addEventListener('click', function() {
         closeSheet();

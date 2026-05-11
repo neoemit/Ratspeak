@@ -331,6 +331,12 @@ pub async fn api_reset_database(state: State<'_, Arc<AppState>>) -> AppResult<Va
 pub async fn api_identity_reset(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let identity_id = active_identity_id(&state);
 
+    #[cfg(feature = "lxst-voice")]
+    {
+        let app_state = state.inner().clone();
+        crate::voice::shutdown_voice_service(&app_state).await;
+    }
+
     if !identity_id.is_empty() {
         let id1 = identity_id.clone();
         let file_refs = db::spawn_db(state.db.clone(), move |p| db::clear_all_messages(&p, &id1))
@@ -407,6 +413,12 @@ pub async fn dismiss_alert(state: State<'_, Arc<AppState>>, index: i64) -> AppRe
 pub async fn api_factory_reset(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     // Capture config_dir before shutdown wipes RNS.
     let rns_config_dir = active_rns_config_dir(&state);
+
+    #[cfg(feature = "lxst-voice")]
+    {
+        let app_state = state.inner().clone();
+        crate::voice::shutdown_voice_service(&app_state).await;
+    }
 
     // Drop LXMF without save_crypto_state (would rewrite the dir we delete).
     if let Ok(mut lxmf) = state.lxmf.lock() {

@@ -1346,25 +1346,15 @@
     border-color: var(--accent);
 }
 .conn-detail-sheet-actions {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
     gap: var(--space-4);
     margin-top: var(--space-4);
 }
 .conn-detail-sheet-actions .nr-btn,
 .conn-detail-sheet-actions .danger-btn {
-    flex: 1;
     width: auto;
-    white-space: nowrap;
     min-width: 0;
-    text-align: center;
-    padding-left: var(--space-4);
-    padding-right: var(--space-4);
-}
-.conn-detail-sheet-actions svg {
-    width: 15px;
-    height: 15px;
-    flex-shrink: 0;
-    vertical-align: -2px;
 }
 .conn-detail-sheet-expand-hint {
     appearance: none;
