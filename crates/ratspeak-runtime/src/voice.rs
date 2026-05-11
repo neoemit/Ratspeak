@@ -1,21 +1,24 @@
 //! LXST voice service and native audio bridge.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use lxst_core::{CallRole, Profile, RawAudioFrame, SignallingStatus};
+use lxst_core::{CallRole, Profile, RawAudioFrame, SignallingStatus, TELEPHONY_DESTINATION_NAME};
 use lxst_telephony::{
     ActiveCallSnapshot, TelephonyControl, TelephonyRnsEndpoint, TelephonyRuntimeCore,
     TelephonyRuntimeSnapshot, TelephonyService, TelephonyServiceEvent,
 };
 use rns_identity::destination::Destination;
 use rns_identity::identity::Identity;
+use rns_transport::blackhole::BlackholeReason;
+use rns_transport::messages::{TransportMessage, TransportQuery, TransportQueryResponse};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::db;
 use crate::state::AppState;
 
 const AUDIO_FRAME_CHANNEL_DEPTH: usize = 8;
@@ -34,6 +37,11 @@ const VOICE_PROFILE_UPGRADE_LOCKOUT_AFTER_DOWNGRADE: Duration = Duration::from_s
 const VOICE_PROFILE_DROPPED_FRAME_THRESHOLD: usize = 4;
 const VOICE_INITIAL_PROFILE: Profile = Profile::QualityMedium;
 const LXMF_DELIVERY_DESTINATION_NAME: &str = "lxmf.delivery";
+const VOICE_CONTACTS_ONLY_NOTICE: &str = "I'm only accepting calls from contacts.";
+const VOICE_REJECTED_CALL_BLACKHOLE_THRESHOLD: u32 = 10;
+const VOICE_REJECTED_CALL_ATTEMPT_WINDOW: Duration = Duration::from_secs(6 * 60 * 60);
+const VOICE_AUTO_BLACKHOLE_REASON: &str = "LXST call spam guard";
+const VOICE_BLOCKED_CONTACT_BLACKHOLE_REASON: &str = "Blocked contact LXST call";
 
 pub type VoiceResult<T> = Result<T, String>;
 
@@ -229,6 +237,340 @@ async fn send_control(state: &AppState, control: TelephonyControl) -> VoiceResul
         .map_err(|_| "LXST voice service is not accepting commands".to_string())
 }
 
+#[derive(Debug, Clone)]
+struct IncomingCallPolicy {
+    allowed: bool,
+    reason: &'static str,
+    send_contacts_only_notice: bool,
+    auto_blackhole: bool,
+    rejected_attempts: u32,
+    remote_lxmf_destination: String,
+    remote_public_key: Option<[u8; 64]>,
+}
+
+impl IncomingCallPolicy {
+    fn allow(remote_lxmf_destination: String) -> Self {
+        Self {
+            allowed: true,
+            reason: "allowed",
+            send_contacts_only_notice: false,
+            auto_blackhole: false,
+            rejected_attempts: 0,
+            remote_lxmf_destination,
+            remote_public_key: None,
+        }
+    }
+
+    fn reject(
+        reason: &'static str,
+        remote_lxmf_destination: String,
+        remote_public_key: Option<[u8; 64]>,
+        send_contacts_only_notice: bool,
+        rejected_attempts: u32,
+    ) -> Self {
+        Self {
+            allowed: false,
+            reason,
+            send_contacts_only_notice,
+            auto_blackhole: rejected_attempts >= VOICE_REJECTED_CALL_BLACKHOLE_THRESHOLD,
+            rejected_attempts,
+            remote_lxmf_destination,
+            remote_public_key,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct RemoteAnnounceInfo {
+    direct: bool,
+    public_key: Option<[u8; 64]>,
+}
+
+async fn evaluate_incoming_call_policy(
+    state: &Arc<AppState>,
+    remote_identity: [u8; 16],
+) -> IncomingCallPolicy {
+    let remote_lxmf_destination = lxmf_destination_for_identity(remote_identity);
+    let (is_contact, is_blocked_contact) =
+        contact_call_state(state, &remote_lxmf_destination).await;
+
+    if is_network_blackholed(state, remote_identity).await {
+        return IncomingCallPolicy::reject(
+            "network_blackholed",
+            remote_lxmf_destination,
+            None,
+            false,
+            0,
+        );
+    }
+
+    if is_blocked_contact {
+        blackhole_voice_identity(
+            state,
+            remote_identity,
+            BlackholeReason::Manual,
+            Some(VOICE_BLOCKED_CONTACT_BLACKHOLE_REASON.to_string()),
+        )
+        .await;
+        return IncomingCallPolicy::reject(
+            "blocked_contact",
+            remote_lxmf_destination,
+            None,
+            false,
+            0,
+        );
+    }
+
+    let announce_info = remote_announce_info(state, remote_identity).await;
+    let direct = announce_info.direct || cached_zero_hop_path(state, remote_identity);
+    if is_contact || direct {
+        clear_rejected_call_attempts(state, remote_identity);
+        return IncomingCallPolicy::allow(remote_lxmf_destination);
+    }
+
+    let rejected_attempts = record_rejected_call_attempt(state, remote_identity);
+    IncomingCallPolicy::reject(
+        "contacts_only",
+        remote_lxmf_destination,
+        announce_info.public_key,
+        true,
+        rejected_attempts,
+    )
+}
+
+async fn contact_call_state(state: &AppState, remote_lxmf_destination: &str) -> (bool, bool) {
+    let identity_id = crate::helpers::active_identity_id(state);
+    if identity_id.is_empty() {
+        return (false, false);
+    }
+    let dest_for_db = remote_lxmf_destination.to_string();
+    let id_for_db = identity_id.clone();
+    db::spawn_db(state.db.clone(), move |pool| {
+        (
+            db::get_contact(&pool, &dest_for_db, &id_for_db).is_some(),
+            db::is_blocked(&pool, &dest_for_db, &id_for_db),
+        )
+    })
+    .await
+    .unwrap_or((false, false))
+}
+
+async fn is_network_blackholed(state: &AppState, remote_identity: [u8; 16]) -> bool {
+    matches!(
+        transport_query(
+            state,
+            TransportQuery::IsBlackholed {
+                hash: remote_identity,
+            }
+        )
+        .await,
+        Some(TransportQueryResponse::BoolResult(true))
+    )
+}
+
+async fn blackhole_voice_identity(
+    state: &AppState,
+    remote_identity: [u8; 16],
+    reason: BlackholeReason,
+    reason_label: Option<String>,
+) -> bool {
+    let blackholed = matches!(
+        transport_query(
+            state,
+            TransportQuery::BlackholeIdentity {
+                hash: remote_identity,
+                ttl: None,
+                reason,
+                reason_label,
+            }
+        )
+        .await,
+        Some(TransportQueryResponse::Ok)
+    );
+    if blackholed {
+        state.emit_to_all(
+            "blackhole_update",
+            json!({ "identity_hash": hex::encode(remote_identity) }),
+        );
+    }
+    blackholed
+}
+
+async fn remote_announce_info(state: &AppState, remote_identity: [u8; 16]) -> RemoteAnnounceInfo {
+    let Some(TransportQueryResponse::Announces(announces)) =
+        transport_query(state, TransportQuery::GetRecentAnnounces).await
+    else {
+        return RemoteAnnounceInfo::default();
+    };
+
+    let mut info = RemoteAnnounceInfo::default();
+    for announce in announces {
+        let Some(public_key) = announce.public_key else {
+            continue;
+        };
+        if rns_crypto::sha::truncated_hash(&public_key) != remote_identity {
+            continue;
+        }
+        if announce.hops == 0 {
+            info.direct = true;
+        }
+        if info.public_key.is_none() {
+            info.public_key = Some(public_key);
+        }
+        if info.direct && info.public_key.is_some() {
+            break;
+        }
+    }
+    info
+}
+
+fn cached_zero_hop_path(state: &AppState, remote_identity: [u8; 16]) -> bool {
+    let lxmf_destination = lxmf_destination_for_identity(remote_identity);
+    let telephony_destination = hex::encode(Destination::hash_from_name_and_identity(
+        TELEPHONY_DESTINATION_NAME,
+        Some(&remote_identity),
+    ));
+    let Ok(stats_guard) = state.last_stats.read() else {
+        return false;
+    };
+    let Some(stats) = stats_guard.as_ref() else {
+        return false;
+    };
+    [lxmf_destination.as_str(), telephony_destination.as_str()]
+        .iter()
+        .any(|dest| cached_path_hops(stats, dest).is_some_and(|hops| hops == 0))
+}
+
+fn cached_path_hops(stats: &Value, dest: &str) -> Option<u64> {
+    if let Some(hops) = stats
+        .get("path_index")
+        .and_then(|index| index.get(dest))
+        .and_then(|entry| entry.get("hops"))
+        .and_then(|hops| hops.as_u64())
+    {
+        return Some(hops);
+    }
+    stats
+        .get("path_table")
+        .and_then(|table| table.as_array())
+        .and_then(|table| {
+            table.iter().find_map(|entry| {
+                if entry.get("hash").and_then(|hash| hash.as_str()) == Some(dest) {
+                    entry.get("hops").and_then(|hops| hops.as_u64())
+                } else {
+                    None
+                }
+            })
+        })
+}
+
+fn record_rejected_call_attempt(state: &AppState, remote_identity: [u8; 16]) -> u32 {
+    let key = hex::encode(remote_identity);
+    let now = Instant::now();
+    let Ok(mut attempts) = state.lxst_rejected_call_attempts.lock() else {
+        return 1;
+    };
+    let entry = attempts.entry(key).or_insert((0, now));
+    if now.duration_since(entry.1) > VOICE_REJECTED_CALL_ATTEMPT_WINDOW {
+        *entry = (0, now);
+    }
+    entry.0 = entry.0.saturating_add(1);
+    entry.1 = now;
+    entry.0
+}
+
+fn clear_rejected_call_attempts(state: &AppState, remote_identity: [u8; 16]) {
+    if let Ok(mut attempts) = state.lxst_rejected_call_attempts.lock() {
+        attempts.remove(&hex::encode(remote_identity));
+    }
+}
+
+fn spawn_contacts_only_notice(
+    state: Arc<AppState>,
+    remote_identity: [u8; 16],
+    remote_lxmf_destination: String,
+    remote_public_key: Option<[u8; 64]>,
+) {
+    tokio::spawn(async move {
+        request_lxmf_path(&state, &remote_lxmf_destination);
+        if let Some(public_key) = remote_public_key {
+            cache_remote_lxmf_crypto(&state, &remote_lxmf_destination, public_key);
+        }
+        let sent = state
+            .lxmf
+            .lock()
+            .ok()
+            .and_then(|mut lxmf| {
+                lxmf.as_mut().map(|mgr| {
+                    mgr.send_ephemeral_opportunistic_message(
+                        &remote_lxmf_destination,
+                        VOICE_CONTACTS_ONLY_NOTICE,
+                        "",
+                    )
+                })
+            })
+            .unwrap_or(false);
+        if !sent {
+            tracing::debug!(
+                remote_identity = %hex::encode(remote_identity),
+                remote_lxmf_destination = %remote_lxmf_destination,
+                "could not queue LXMF contacts-only call notice"
+            );
+        }
+    });
+}
+
+fn request_lxmf_path(state: &AppState, remote_lxmf_destination: &str) {
+    let Some(dest) = hex_to_array16(remote_lxmf_destination) else {
+        return;
+    };
+    if let Some(tx) = transport_sender(state) {
+        let _ = tx.try_send(TransportMessage::RequestPath {
+            destination_hash: dest,
+        });
+    }
+}
+
+fn cache_remote_lxmf_crypto(state: &AppState, remote_lxmf_destination: &str, public_key: [u8; 64]) {
+    if let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_mut()
+    {
+        mgr.update_remote_crypto(remote_lxmf_destination, &public_key, None);
+    }
+}
+
+async fn transport_query(
+    state: &AppState,
+    query: TransportQuery,
+) -> Option<TransportQueryResponse> {
+    let tx = transport_sender(state)?;
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    tx.send(TransportMessage::Rpc { query, response_tx })
+        .await
+        .ok()?;
+    response_rx.await.ok()
+}
+
+fn transport_sender(
+    state: &AppState,
+) -> Option<mpsc::Sender<rns_transport::messages::TransportMessage>> {
+    state
+        .rns
+        .read()
+        .ok()
+        .and_then(|rns| rns.as_ref().map(|mgr| mgr.handle.transport_tx.clone()))
+}
+
+fn hex_to_array16(value: &str) -> Option<[u8; 16]> {
+    let bytes = hex::decode(value).ok()?;
+    if bytes.len() != 16 {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&bytes);
+    Some(out)
+}
+
 fn voice_control_tx(state: &AppState) -> Option<mpsc::Sender<TelephonyControl>> {
     state
         .lxst_voice
@@ -274,6 +616,7 @@ async fn drive_voice_events(
     let mut audio_failure: Option<VoiceAudioFailure> = None;
     let mut profile_adaptation = VoiceProfileAdaptation::new();
     let mut latest_snapshot: Option<TelephonyRuntimeSnapshot> = None;
+    let mut suppressed_call_links: HashSet<[u8; 16]> = HashSet::new();
 
     while let Some(event) = event_rx.recv().await {
         match event {
@@ -281,6 +624,50 @@ async fn drive_voice_events(
                 link_id,
                 remote_identity,
             } => {
+                let policy = evaluate_incoming_call_policy(&state, remote_identity).await;
+                if !policy.allowed {
+                    suppressed_call_links.insert(link_id);
+                    tracing::info!(
+                        link_id = %hex::encode(link_id),
+                        remote_identity = %hex::encode(remote_identity),
+                        reason = policy.reason,
+                        rejected_attempts = policy.rejected_attempts,
+                        "silently rejecting LXST incoming call"
+                    );
+                    if policy.send_contacts_only_notice {
+                        spawn_contacts_only_notice(
+                            Arc::clone(&state),
+                            remote_identity,
+                            policy.remote_lxmf_destination.clone(),
+                            policy.remote_public_key,
+                        );
+                    }
+                    if let Err(err) = control_tx
+                        .send(TelephonyControl::Hangup {
+                            ring_timeout: false,
+                        })
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %err,
+                            "failed to hang up rejected LXST incoming call"
+                        );
+                    }
+                    if policy.auto_blackhole {
+                        let blackholed = blackhole_voice_identity(
+                            &state,
+                            remote_identity,
+                            BlackholeReason::RateLimit,
+                            Some(VOICE_AUTO_BLACKHOLE_REASON.to_string()),
+                        )
+                        .await;
+                        if blackholed {
+                            clear_rejected_call_attempts(&state, remote_identity);
+                        }
+                    }
+                    continue;
+                }
+
                 let payload = json!({
                     "type": "incoming",
                     "link_id": hex::encode(link_id),
@@ -305,6 +692,9 @@ async fn drive_voice_events(
                 );
             }
             TelephonyServiceEvent::CallTerminated { link_id, reason } => {
+                if suppressed_call_links.remove(&link_id) {
+                    continue;
+                }
                 stop_audio_session(audio_session.take(), &control_tx).await;
                 audio_failure = None;
                 profile_adaptation.reset();
@@ -319,6 +709,14 @@ async fn drive_voice_events(
                 );
             }
             TelephonyServiceEvent::Snapshot(snapshot) => {
+                if snapshot
+                    .active_call
+                    .as_ref()
+                    .is_some_and(|active| suppressed_call_links.contains(&active.link_id))
+                {
+                    latest_snapshot = Some(snapshot);
+                    continue;
+                }
                 latest_snapshot = Some(snapshot.clone());
                 reconcile_audio_session(
                     &state,

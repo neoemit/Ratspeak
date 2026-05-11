@@ -2,6 +2,7 @@
 //! `&DbPool` functions are sync; wrap in `db::spawn_db` from async.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -200,6 +201,7 @@ pub struct LxmfManager {
     completed_propagation_syncs: Vec<[u8; 16]>,
     failed_propagation_syncs: Vec<([u8; 16], String)>,
     downloaded_propagation_messages: Vec<Vec<u8>>,
+    ephemeral_outbound: HashSet<[u8; 32]>,
 }
 
 impl LxmfManager {
@@ -394,6 +396,7 @@ impl LxmfManager {
             completed_propagation_syncs: Vec::new(),
             failed_propagation_syncs: Vec::new(),
             downloaded_propagation_messages: Vec::new(),
+            ephemeral_outbound: HashSet::new(),
         })
     }
 
@@ -829,6 +832,29 @@ impl LxmfManager {
         self.router.send(msg);
 
         Some(msg_id)
+    }
+
+    pub fn send_ephemeral_opportunistic_message(
+        &mut self,
+        dest_hash_hex: &str,
+        content: &str,
+        title: &str,
+    ) -> bool {
+        let mut msg =
+            match self.create_message(dest_hash_hex, content, title, DeliveryMethod::Opportunistic)
+            {
+                Some(msg) => msg,
+                None => return false,
+            };
+        normalize_protocol_delivery_method(&mut msg);
+        if msg.method != DeliveryMethod::Opportunistic || !message_within_resource_limit(&msg) {
+            return false;
+        }
+        if let Some(hash) = msg.hash {
+            self.ephemeral_outbound.insert(hash);
+        }
+        self.router.send(msg);
+        true
     }
 
     /// FIELD_FILE_ATTACHMENTS 0x05 = msgpack `[[filename, bytes]]`.
@@ -1773,6 +1799,9 @@ impl LxmfManager {
                 match result {
                     lxmf_core::link_delivery::DeliveryResult::Complete { msg_hash, .. } => {
                         if let Some(hash) = msg_hash {
+                            if self.ephemeral_outbound.remove(&hash) {
+                                continue;
+                            }
                             // Propagation deposit confirms node-storage, not
                             // recipient delivery — render as `propagated`.
                             // Direct link delivery is end-to-end, so we still
@@ -1792,6 +1821,9 @@ impl LxmfManager {
                     } => {
                         tracing::warn!(reason = %reason, "link delivery failed");
                         if let Some(hash) = msg_hash {
+                            if self.ephemeral_outbound.remove(&hash) {
+                                continue;
+                            }
                             if let Some(prop_hash) = self.in_flight_propagation.remove(&hash) {
                                 self.failed_propagation_deposits
                                     .push((prop_hash, reason.clone()));
@@ -2100,6 +2132,9 @@ impl LxmfManager {
             self.ensure_message_stamp(&mut message);
 
             let msg_hash = message.hash;
+            let is_ephemeral = msg_hash
+                .as_ref()
+                .is_some_and(|hash| self.ephemeral_outbound.contains(hash));
             let dest_hex = hex::encode(dest_hash);
 
             if !is_opportunistic {
@@ -2137,10 +2172,15 @@ impl LxmfManager {
 
                 if let Some(ref mut ld) = self.link_delivery {
                     ld.start_delivery(message, dest_hash, 1);
-                    if let Some(hash) = msg_hash {
+                    if let Some(hash) = msg_hash
+                        && !is_ephemeral
+                    {
                         results.push((hex::encode(hash), "sending_via_link"));
                     }
                 } else if let Some(hash) = msg_hash {
+                    if self.ephemeral_outbound.remove(&hash) {
+                        continue;
+                    }
                     results.push((hex::encode(hash), "failed"));
                 }
                 continue;
@@ -2238,10 +2278,15 @@ impl LxmfManager {
 
                 if let Some(ref mut ld) = self.link_delivery {
                     ld.start_delivery(message, dest_hash, 1);
-                    if let Some(hash) = msg_hash {
+                    if let Some(hash) = msg_hash
+                        && !is_ephemeral
+                    {
                         results.push((hex::encode(hash), "sending_via_link"));
                     }
                 } else if let Some(hash) = msg_hash {
+                    if self.ephemeral_outbound.remove(&hash) {
+                        continue;
+                    }
                     results.push((hex::encode(hash), "failed"));
                 }
                 continue;
@@ -2255,6 +2300,9 @@ impl LxmfManager {
             )) {
                 Ok(()) => {
                     if let Some(hash) = msg_hash {
+                        if self.ephemeral_outbound.remove(&hash) {
+                            continue;
+                        }
                         let msg_id_hex = hex::encode(hash);
                         let (pkt_full_hash, pkt_trunc_hash) = rns_wire::hash::packet_hash_pair(
                             &raw,
@@ -2275,6 +2323,9 @@ impl LxmfManager {
                 Err(e) => {
                     tracing::error!(dest = %dest_hex, error = %e, "transport send failed; message dropped");
                     if let Some(hash) = msg_hash {
+                        if self.ephemeral_outbound.remove(&hash) {
+                            continue;
+                        }
                         results.push((hex::encode(hash), "failed"));
                     }
                 }

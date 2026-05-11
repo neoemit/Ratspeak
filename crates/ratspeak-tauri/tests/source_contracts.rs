@@ -603,6 +603,14 @@ fn voice_and_capture_paths_preflight_media_permissions() {
         read_source(root.join("crates/ratspeak-runtime/src/voice.rs")).expect("voice rs");
     assert!(voice_rs.contains("remote_lxmf_destination"));
     assert!(voice_rs.contains("fn lxmf_destination_for_identity(identity_hash: [u8; 16])"));
+    assert!(voice_rs.contains("const VOICE_CONTACTS_ONLY_NOTICE"));
+    assert!(voice_rs.contains("const VOICE_REJECTED_CALL_BLACKHOLE_THRESHOLD: u32 = 10"));
+    assert!(voice_rs.contains("fn spawn_contacts_only_notice("));
+    assert!(voice_rs.contains("fn cached_zero_hop_path("));
+    assert!(voice_rs.contains("suppressed_call_links.insert(link_id);"));
+    assert!(voice_rs.contains("TransportQuery::IsBlackholed"));
+    assert!(voice_rs.contains("BlackholeReason::RateLimit"));
+    assert!(voice_rs.contains("send_ephemeral_opportunistic_message"));
 
     let ringtone_js =
         read_source(root.join("dashboard/static/js/voice_ringtones.js")).expect("ringtone js");
