@@ -17,6 +17,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioTrack
 import android.net.Uri
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
@@ -43,6 +47,9 @@ import androidx.core.view.WindowInsetsCompat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.sin
 
 class MainActivity : TauriActivity() {
     companion object {
@@ -51,6 +58,15 @@ class MainActivity : TauriActivity() {
         private const val MEDIA_PERMISSION_REQUEST_CODE = 1003
         private const val USB_PERMISSION_ACTION = "org.ratspeak.android.USB_PERMISSION"
         private const val MAX_IDENTITY_IMPORT_BYTES = 1024 * 1024
+        private const val CALL_RINGTONE_SAMPLE_RATE = 44100
+        private const val CALL_RINGTONE_OUTGOING_DOOT_MS = 185L
+        private const val CALL_RINGTONE_INCOMING_DOOT_MS = 145L
+        private const val CALL_RINGTONE_OUTGOING_SPACING_MS = 292L
+        private const val CALL_RINGTONE_INCOMING_SPACING_MS = 225L
+        private const val CALL_RINGTONE_OUTGOING_GROUP_PAUSE_MS = 1780L
+        private const val CALL_RINGTONE_INCOMING_GROUP_PAUSE_MS = 720L
+        private const val CALL_RINGTONE_OUTGOING_FINAL_PAUSE_MS = 1040L
+        private const val CALL_RINGTONE_INCOMING_FINAL_PAUSE_MS = 1280L
         // Standard Bluetooth MAC-48 address format: 6 hex octets separated
         // by colons. Used to guard the BLE connect bridge methods before we
         // hand the string to BluetoothAdapter.getRemoteDevice, which throws
@@ -69,6 +85,14 @@ class MainActivity : TauriActivity() {
     private var pendingMediaRequestId: String? = null
     private var pendingMediaRequestAudio = false
     private var pendingMediaRequestCamera = false
+    private var callRingtoneGeneration = 0
+    private var callRingtoneMode: String? = null
+    private val callRingtoneTracks = mutableListOf<AudioTrack>()
+    private val callRingtoneFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+            handler.post { stopNativeCallRingtone() }
+        }
+    }
     @Volatile private var lastNetworkType: String = ""
     @Volatile private var serviceMulticastEnabled = false
 
@@ -442,6 +466,188 @@ class MainActivity : TauriActivity() {
         return permissions.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
+    }
+
+    private fun normalizedCallRingtoneMode(mode: String): String {
+        return if (mode.equals("incoming", ignoreCase = true)) "incoming" else "outgoing"
+    }
+
+    private fun startNativeCallRingtone(mode: String) {
+        val normalizedMode = normalizedCallRingtoneMode(mode)
+        stopNativeCallRingtone()
+        callRingtoneMode = normalizedMode
+        callRingtoneGeneration++
+        val generation = callRingtoneGeneration
+        requestCallRingtoneAudioFocus()
+        scheduleNativeCallRingtoneSequence(normalizedMode, generation, 0L)
+    }
+
+    private fun stopNativeCallRingtone() {
+        callRingtoneGeneration++
+        callRingtoneMode = null
+        callRingtoneTracks.forEach { track ->
+            try { track.stop() } catch (_: Throwable) {}
+            try { track.release() } catch (_: Throwable) {}
+        }
+        callRingtoneTracks.clear()
+        abandonCallRingtoneAudioFocus()
+    }
+
+    private fun requestCallRingtoneAudioFocus() {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        @Suppress("DEPRECATION")
+        audioManager.requestAudioFocus(
+            callRingtoneFocusListener,
+            AudioManager.STREAM_RING,
+            AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+        )
+    }
+
+    private fun abandonCallRingtoneAudioFocus() {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        @Suppress("DEPRECATION")
+        audioManager.abandonAudioFocus(callRingtoneFocusListener)
+    }
+
+    private fun scheduleNativeCallRingtoneSequence(mode: String, generation: Int, baseDelayMs: Long) {
+        val incoming = mode == "incoming"
+        val groups = if (incoming) intArrayOf(2, 2) else intArrayOf(4, 4, 3, 2, 1, 1, 1)
+        val dootMs = if (incoming) CALL_RINGTONE_INCOMING_DOOT_MS else CALL_RINGTONE_OUTGOING_DOOT_MS
+        val spacingMs = if (incoming) CALL_RINGTONE_INCOMING_SPACING_MS else CALL_RINGTONE_OUTGOING_SPACING_MS
+        val groupPauseMs = if (incoming) {
+            CALL_RINGTONE_INCOMING_GROUP_PAUSE_MS
+        } else {
+            CALL_RINGTONE_OUTGOING_GROUP_PAUSE_MS
+        }
+        val finalPauseMs = if (incoming) {
+            CALL_RINGTONE_INCOMING_FINAL_PAUSE_MS
+        } else {
+            CALL_RINGTONE_OUTGOING_FINAL_PAUSE_MS
+        }
+        var cursorMs = baseDelayMs
+        for ((groupIndex, count) in groups.withIndex()) {
+            for (noteIndex in 0 until count) {
+                val delayMs = cursorMs + noteIndex * spacingMs
+                handler.postDelayed({
+                    if (callRingtoneGeneration == generation && callRingtoneMode == mode) {
+                        playNativeCallDoot(mode, groupIndex, noteIndex, generation)
+                    }
+                }, delayMs)
+            }
+            cursorMs += (count - 1) * spacingMs + dootMs
+            cursorMs += if (groupIndex == groups.lastIndex) {
+                finalPauseMs
+            } else {
+                groupPauseMs
+            }
+        }
+
+        if (mode == "incoming") {
+            handler.postDelayed({
+                if (callRingtoneGeneration == generation && callRingtoneMode == mode) {
+                    scheduleNativeCallRingtoneSequence(mode, generation, 0L)
+                }
+            }, cursorMs)
+        }
+    }
+
+    private fun nativeCallDootFrequency(mode: String, groupIndex: Int, noteIndex: Int): Double {
+        val incoming = mode == "incoming"
+        val root = if (incoming) 587.33 else 523.25
+        val phrase = if (incoming) {
+            doubleArrayOf(1.0, 1.25992)
+        } else {
+            doubleArrayOf(1.0, 1.12246, 1.25992, 1.12246)
+        }
+        val taperLift = maxOf(0, groupIndex - 2) * 0.004
+        return root * phrase[noteIndex % phrase.size] * (1.0 + taperLift)
+    }
+
+    private fun playNativeCallDoot(mode: String, groupIndex: Int, noteIndex: Int, generation: Int) {
+        val incoming = mode == "incoming"
+        val durationMs = if (incoming) CALL_RINGTONE_INCOMING_DOOT_MS else CALL_RINGTONE_OUTGOING_DOOT_MS
+        val volume = if (incoming) 0.25 else 0.18
+        val pcm = buildNativeCallTonePcm(
+            nativeCallDootFrequency(mode, groupIndex, noteIndex),
+            durationMs,
+            volume,
+            if (incoming) 1.006 else 1.001,
+            if (incoming) 10L else 20L,
+            if (incoming) 0.18 else 0.13
+        )
+        val track = try {
+            AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(CALL_RINGTONE_SAMPLE_RATE)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
+                )
+                .setTransferMode(AudioTrack.MODE_STATIC)
+                .setBufferSizeInBytes(pcm.size)
+                .build()
+        } catch (_: Throwable) {
+            return
+        }
+        try {
+            track.write(pcm, 0, pcm.size)
+            callRingtoneTracks.add(track)
+            track.play()
+            handler.postDelayed({
+                callRingtoneTracks.remove(track)
+                try { track.stop() } catch (_: Throwable) {}
+                try { track.release() } catch (_: Throwable) {}
+            }, durationMs + 180L)
+        } catch (_: Throwable) {
+            callRingtoneTracks.remove(track)
+            try { track.release() } catch (_: Throwable) {}
+            if (callRingtoneGeneration == generation) stopNativeCallRingtone()
+        }
+    }
+
+    private fun buildNativeCallTonePcm(
+        freq: Double,
+        durationMs: Long,
+        volume: Double,
+        drift: Double,
+        attackMs: Long,
+        airMix: Double
+    ): ByteArray {
+        val sampleCount = ((CALL_RINGTONE_SAMPLE_RATE * durationMs) / 1000L).toInt()
+        val bytes = ByteArray(sampleCount * 2)
+        val attackSamples = ((CALL_RINGTONE_SAMPLE_RATE * attackMs) / 1000L).toInt().coerceAtLeast(1)
+        val releaseSamples = (CALL_RINGTONE_SAMPLE_RATE * 0.085).toInt().coerceAtLeast(1)
+        for (i in 0 until sampleCount) {
+            val progress = if (sampleCount > 1) i.toDouble() / (sampleCount - 1).toDouble() else 0.0
+            val instantFreq = freq * (1.0 + (drift - 1.0) * progress)
+            val t = i.toDouble() / CALL_RINGTONE_SAMPLE_RATE.toDouble()
+            val phase = (instantFreq * t) % 1.0
+            val triangle = 2.0 * abs(2.0 * phase - 1.0) - 1.0
+            val body = sin(2.0 * PI * instantFreq * t)
+            val air = sin(2.0 * PI * instantFreq * 1.5 * t)
+            val attack = (i.toDouble() / attackSamples.toDouble()).coerceIn(0.0, 1.0)
+            val releaseStart = sampleCount - releaseSamples
+            val release = if (i >= releaseStart) {
+                ((sampleCount - i).toDouble() / releaseSamples.toDouble()).coerceIn(0.0, 1.0)
+            } else {
+                1.0
+            }
+            val envelope = attack * release * release
+            val sample = ((body * 0.60 + triangle * 0.27 + air * airMix) * envelope * volume)
+                .coerceIn(-1.0, 1.0)
+            val shortValue = (sample * Short.MAX_VALUE).toInt().toShort()
+            val offset = i * 2
+            bytes[offset] = (shortValue.toInt() and 0xff).toByte()
+            bytes[offset + 1] = ((shortValue.toInt() shr 8) and 0xff).toByte()
+        }
+        return bytes
     }
 
     override fun onRequestPermissionsResult(
@@ -979,6 +1185,20 @@ class MainActivity : TauriActivity() {
                     permissions,
                     MEDIA_PERMISSION_REQUEST_CODE
                 )
+            }
+        }
+
+        @JavascriptInterface
+        fun playCallRingtone(mode: String) {
+            handler.post {
+                this@MainActivity.startNativeCallRingtone(mode)
+            }
+        }
+
+        @JavascriptInterface
+        fun stopCallRingtone() {
+            handler.post {
+                this@MainActivity.stopNativeCallRingtone()
             }
         }
 

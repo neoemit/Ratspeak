@@ -493,11 +493,21 @@ function _voiceHandleUpdate(data) {
         };
         _voiceTrackEstablished(lxstVoiceState.active);
     } else if (data.type === 'snapshot') {
-        lxstVoiceState.active = data.active_call || null;
-        if (data.active_call && data.active_call.status === 'established') {
-            lxstVoiceState.incoming = null;
+        var snapshotCall = data.active_call || null;
+        if (snapshotCall && snapshotCall.role === 'incoming' && snapshotCall.status !== 'established') {
+            lxstVoiceState.incoming = snapshotCall;
+            lxstVoiceState.active = null;
+            _voiceTrackEstablished(null);
+        } else {
+            lxstVoiceState.active = snapshotCall;
+            if (snapshotCall && snapshotCall.status === 'established') {
+                lxstVoiceState.incoming = null;
+            }
+            if (!snapshotCall) {
+                lxstVoiceState.incoming = null;
+            }
+            _voiceTrackEstablished(lxstVoiceState.active);
         }
-        _voiceTrackEstablished(lxstVoiceState.active);
         lxstVoiceState.audioRunning = !!(data.audio && data.audio.running);
         lxstVoiceState.audioMicrophone = !!(data.audio && data.audio.microphone);
         lxstVoiceState.audioSpeaker = !!(data.audio && data.audio.speaker);
@@ -2803,6 +2813,11 @@ RS.listen('lxmf_step', function(data) {
 RS.listen('voice_call_update', _voiceHandleUpdate);
 RS.listen('voice_incoming_call', function(data) {
     _voiceHandleUpdate(Object.assign({ type: 'incoming' }, data || {}));
+});
+
+document.addEventListener('rs-audio-playback-ready', _voiceSyncRingtone);
+document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) _voiceSyncRingtone();
 });
 
 RS.listen('contact_added', function(data) {

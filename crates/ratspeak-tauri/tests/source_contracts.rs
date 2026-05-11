@@ -576,6 +576,8 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     ));
     assert!(activity.contains("window._onAndroidMediaPermissionResult"));
     assert!(activity.contains("mediaPlaybackRequiresUserGesture = false"));
+    assert!(activity.contains("fun playCallRingtone(mode: String)"));
+    assert!(activity.contains("fun stopCallRingtone()"));
 
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
     assert!(state_js.contains("window.RS.mediaPermissions"));
@@ -596,9 +598,12 @@ fn voice_and_capture_paths_preflight_media_permissions() {
 
     let ringtone_js =
         read_source(root.join("dashboard/static/js/voice_ringtones.js")).expect("ringtone js");
-    assert!(ringtone_js.contains("var GROUPS = [4, 4, 3, 2, 1, 1, 1]"));
-    assert!(ringtone_js.contains("var OUTGOING_ROOT = 392.0"));
-    assert!(ringtone_js.contains("var INCOMING_ROOT = 440.0"));
+    assert!(ringtone_js.contains("var OUTGOING_GROUPS = [4, 4, 3, 2, 1, 1, 1]"));
+    assert!(ringtone_js.contains("var INCOMING_GROUPS = [2, 2]"));
+    assert!(ringtone_js.contains("var OUTGOING_ROOT = 523.25"));
+    assert!(ringtone_js.contains("var INCOMING_ROOT = 587.33"));
+    assert!(ringtone_js.contains("playCallRingtone"));
+    assert!(ringtone_js.contains("stopCallRingtone"));
     assert!(ringtone_js.contains("playTimeoutCue();"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");

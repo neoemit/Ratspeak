@@ -228,7 +228,11 @@ function _rsEnsureAudioPlayback(opts) {
     return Promise.resolve(resume).then(function() {
         _rsPrimeAudioPlayback(ctx);
         _rsAudioPlaybackUnlocked = ctx.state === 'running' || ctx.state === 'interrupted';
-        return _rsAudioPlaybackUnlocked || ctx.state !== 'suspended';
+        var ready = _rsAudioPlaybackUnlocked || ctx.state !== 'suspended';
+        if (ready) {
+            try { document.dispatchEvent(new CustomEvent('rs-audio-playback-ready')); } catch (_) {}
+        }
+        return ready;
     }).catch(function(err) {
         window.RS.diag('warn', '[audio] playback permission/unlock failed:', err);
         return false;
