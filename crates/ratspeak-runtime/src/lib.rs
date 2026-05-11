@@ -797,10 +797,11 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 continue;
                             }
                             if let Ok(mut node) = store_node.lock() {
+                                let min_cost = node.min_stamp_cost();
                                 let mut accepted = 0usize;
                                 let mut rejected = 0usize;
                                 for entry in entries {
-                                    match lxmf_core::stamper::validate_pn_stamp(&entry, 0) {
+                                    match lxmf_core::stamper::validate_pn_stamp(&entry, min_cost) {
                                         Some((_tid, lxmf_data, stamp_value, _stamp_data)) => {
                                             if node.accept_propagated_blob(
                                                 &lxmf_data,
@@ -2627,6 +2628,11 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                 changed = true;
                             }
                         }
+                        mgr.update_lxmf_announce_app_data(
+                            a.dest_hash,
+                            a.name_hash,
+                            a.app_data.as_deref(),
+                        );
                     }
                     if changed {
                         // Persistence is deferred to the periodic tick save;

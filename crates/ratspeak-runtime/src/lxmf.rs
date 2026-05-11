@@ -24,6 +24,7 @@ use crate::db;
 use crate::state::{AppState, DbPool};
 
 const LXMF_APP_NAME: &str = "lxmf.delivery";
+const LXMF_PROPAGATION_APP_NAME: &str = "lxmf.propagation";
 const MAX_LXMF_RESOURCE_BYTES: usize = rns_protocol::resource::MAX_RESOURCE_SIZE;
 const OPPORTUNISTIC_MAX_CONTENT_BYTES: usize = 295;
 
@@ -1668,6 +1669,27 @@ impl LxmfManager {
         }
     }
 
+    pub fn update_lxmf_announce_app_data(
+        &mut self,
+        dest_hash: [u8; 16],
+        name_hash: [u8; 10],
+        app_data: Option<&[u8]>,
+    ) {
+        let Some(app_data) = app_data else {
+            return;
+        };
+
+        if name_hash == rns_identity::name_hash::name_hash(LXMF_PROPAGATION_APP_NAME) {
+            if let Some(pn) = lxmf_core::handlers::parse_pn_announce_data(app_data) {
+                self.router.set_stamp_cost(dest_hash, pn.stamp_cost);
+            }
+        } else if name_hash == rns_identity::name_hash::name_hash(LXMF_APP_NAME)
+            && let Some(cost) = lxmf_core::handlers::stamp_cost_from_app_data(app_data)
+        {
+            self.router.set_stamp_cost(dest_hash, cost);
+        }
+    }
+
     /// Prefers ratchet pubkey, falls back to identity pubkey.
     pub fn encrypt_for_destination(
         &self,
@@ -2042,6 +2064,27 @@ impl LxmfManager {
                 prop = %prop_hex,
                 attempts = message.delivery_attempts,
                 "cannot propagate LXMF before propagation node identity is known; requesting path"
+            );
+            self.router.send(message);
+            return;
+        }
+
+        if self.router.get_stamp_cost(&prop_hash).is_none() {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            message.delivery_attempts += 1;
+            message.last_delivery_attempt = now;
+            if let Some(ref tx) = self.router.transport_tx {
+                let _ = tx.try_send(TransportMessage::RequestPath {
+                    destination_hash: prop_hash,
+                });
+            }
+            tracing::warn!(
+                prop = %prop_hex,
+                attempts = message.delivery_attempts,
+                "cannot propagate LXMF before propagation node stamp cost is known; requesting path"
             );
             self.router.send(message);
             return;
@@ -2423,6 +2466,7 @@ async fn pull_identity_from_announces(
             if let Some(ref pk) = a.public_key {
                 mgr.update_remote_crypto(&hex::encode(a.dest_hash), pk, a.ratchet.as_ref());
             }
+            mgr.update_lxmf_announce_app_data(a.dest_hash, a.name_hash, a.app_data.as_deref());
         }
         if mgr.is_destination_known(dest_hash_hex) {
             tracing::debug!(dest = %dest_hash_hex, "identity key cached from announce data");
@@ -2741,6 +2785,88 @@ mod tests {
         assert!(
             matches!(rx.try_recv(), Ok(TransportMessage::Outbound(_))),
             "opportunistic delivery should reach the transport"
+        );
+    }
+
+    #[test]
+    fn lxmf_announce_app_data_caches_stamp_costs_by_aspect() {
+        let mut mgr = test_manager();
+        let delivery_dest = [0x11; 16];
+        let propagation_dest = [0x22; 16];
+        let unrelated_dest = [0x33; 16];
+
+        let delivery_data = lxmf_core::handlers::get_announce_app_data(Some("peer"), Some(7));
+        mgr.update_lxmf_announce_app_data(
+            delivery_dest,
+            rns_identity::name_hash::name_hash("lxmf.delivery"),
+            Some(&delivery_data),
+        );
+        assert_eq!(mgr.router.get_stamp_cost(&delivery_dest), Some(7));
+
+        let pn_data =
+            lxmf_core::handlers::PropagationNodeAnnounceData::new(true, 1024, 1024, 23, 3, 0);
+        let pn_app_data = lxmf_core::handlers::get_propagation_node_app_data(&pn_data);
+        mgr.update_lxmf_announce_app_data(
+            propagation_dest,
+            rns_identity::name_hash::name_hash("lxmf.propagation"),
+            Some(&pn_app_data),
+        );
+        assert_eq!(mgr.router.get_stamp_cost(&propagation_dest), Some(23));
+
+        mgr.update_lxmf_announce_app_data(
+            unrelated_dest,
+            rns_identity::name_hash::name_hash("nomadnetwork.node"),
+            Some(&delivery_data),
+        );
+        assert_eq!(mgr.router.get_stamp_cost(&unrelated_dest), None);
+    }
+
+    #[test]
+    fn propagated_delivery_waits_for_propagation_node_stamp_cost() {
+        let mut mgr = test_manager();
+        let propagation_node = [0x44; 16];
+        let recipient_dest = [0x55; 16];
+        let prop_hex = hex::encode(propagation_node);
+        let recipient_hex = hex::encode(recipient_dest);
+        let prop_identity = Identity::new();
+        let recipient_identity = Identity::new();
+
+        mgr.known_identities
+            .insert(prop_hex, prop_identity.get_public_key());
+        mgr.known_identities
+            .insert(recipient_hex.clone(), recipient_identity.get_public_key());
+        mgr.router
+            .set_outbound_propagation_node(Some(propagation_node));
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(tx);
+
+        let message = mgr
+            .create_message(
+                &recipient_hex,
+                "relay once cost is known",
+                "",
+                DeliveryMethod::Propagated,
+            )
+            .expect("message created");
+        let message_id = message.hash.expect("message hash");
+        mgr.router.send(message);
+
+        let states = mgr.tick();
+        assert!(states.is_empty());
+
+        match rx.try_recv() {
+            Ok(TransportMessage::RequestPath { destination_hash }) => {
+                assert_eq!(destination_hash, propagation_node);
+            }
+            other => panic!("expected propagation-node path request, got {other:?}"),
+        }
+        assert!(
+            mgr.router
+                .pending_outbound
+                .iter()
+                .any(|msg| msg.hash == Some(message_id)),
+            "message should be requeued until propagation-node stamp cost is learned"
         );
     }
 

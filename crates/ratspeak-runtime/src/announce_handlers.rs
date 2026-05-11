@@ -23,7 +23,7 @@ pub async fn spawn_lxmf_delivery_handler(
     shutdown: ShutdownSignal,
 ) {
     let (htx, mut hrx) = mpsc::channel::<AnnounceHandlerEvent>(HANDLER_CHANNEL_CAP);
-    if !register_with_retry(&transport_tx, Some("lxmf.delivery".to_string()), htx).await {
+    if !register_with_retry(&transport_tx, Some("lxmf.delivery".to_string()), true, htx).await {
         return;
     }
 
@@ -50,7 +50,14 @@ pub async fn spawn_lxmf_propagation_handler(
     shutdown: ShutdownSignal,
 ) {
     let (htx, mut hrx) = mpsc::channel::<AnnounceHandlerEvent>(HANDLER_CHANNEL_CAP);
-    if !register_with_retry(&transport_tx, Some("lxmf.propagation".to_string()), htx).await {
+    if !register_with_retry(
+        &transport_tx,
+        Some("lxmf.propagation".to_string()),
+        true,
+        htx,
+    )
+    .await
+    {
         return;
     }
 
@@ -75,6 +82,7 @@ pub async fn spawn_lxmf_propagation_handler(
 async fn register_with_retry(
     transport_tx: &mpsc::Sender<TransportMessage>,
     aspect_filter: Option<String>,
+    receive_path_responses: bool,
     callback_tx: mpsc::Sender<AnnounceHandlerEvent>,
 ) -> bool {
     for attempt in 0..REGISTER_ATTEMPTS {
@@ -83,7 +91,7 @@ async fn register_with_retry(
         match transport_tx
             .send(TransportMessage::RegisterAnnounceHandler {
                 aspect_filter: filter,
-                receive_path_responses: false,
+                receive_path_responses,
                 callback_tx: cb,
             })
             .await
@@ -129,6 +137,14 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
         .as_ref()
         .map(|d| crate::extract_display_name(d))
         .filter(|s| !s.is_empty());
+
+    if let Some(bytes) = event.app_data.as_deref()
+        && let Some(cost) = lxmf_core::handlers::stamp_cost_from_app_data(bytes)
+        && let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_mut()
+    {
+        mgr.router.set_stamp_cost(event.destination_hash, cost);
+    }
 
     let iface = lookup_path_iface(state, event.destination_hash).await;
 
@@ -284,4 +300,35 @@ fn now_f64() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn lxmf_handler_registration_opts_into_path_responses() {
+        for aspect in ["lxmf.delivery", "lxmf.propagation"] {
+            let (transport_tx, mut transport_rx) = mpsc::channel::<TransportMessage>(1);
+            let (callback_tx, _callback_rx) = mpsc::channel::<AnnounceHandlerEvent>(1);
+
+            assert!(
+                register_with_retry(&transport_tx, Some(aspect.to_string()), true, callback_tx)
+                    .await
+            );
+
+            let msg = transport_rx.recv().await.expect("registration message");
+            match msg {
+                TransportMessage::RegisterAnnounceHandler {
+                    aspect_filter,
+                    receive_path_responses,
+                    ..
+                } => {
+                    assert_eq!(aspect_filter.as_deref(), Some(aspect));
+                    assert!(receive_path_responses);
+                }
+                other => panic!("unexpected transport message: {other:?}"),
+            }
+        }
+    }
 }
