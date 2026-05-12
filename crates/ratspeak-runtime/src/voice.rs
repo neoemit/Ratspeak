@@ -1373,20 +1373,14 @@ impl VoiceAudioSession {
             }
         };
 
-        let (output_stream, sink_task) = match start_speaker_side(
-            &host,
-            control_tx,
-            target_channels,
-            target_sample_rate,
-        )
-        .await
-        {
-            Ok((stream, sink_task)) => (Some(stream), Some(sink_task)),
-            Err(message) => {
-                warnings.push(message);
-                (None, None)
-            }
-        };
+        let (output_stream, sink_task) =
+            match start_speaker_side(&host, control_tx, target_sample_rate).await {
+                Ok((stream, sink_task)) => (Some(stream), Some(sink_task)),
+                Err(message) => {
+                    warnings.push(message);
+                    (None, None)
+                }
+            };
 
         if input_stream.is_none() && output_stream.is_none() {
             let detail = if warnings.is_empty() {
@@ -1452,7 +1446,6 @@ async fn start_microphone_side(
 async fn start_speaker_side(
     host: &cpal::Host,
     control_tx: mpsc::Sender<TelephonyControl>,
-    target_channels: usize,
     target_sample_rate: u32,
 ) -> VoiceResult<(cpal::Stream, JoinHandle<()>)> {
     let output_device = host
@@ -1475,7 +1468,6 @@ async fn start_speaker_side(
             let converted = resample_output_frame(
                 &frame,
                 target_sample_rate,
-                target_channels,
                 output_sample_rate,
                 output_channels,
             );
@@ -1960,11 +1952,11 @@ fn fill_output_u16(data: &mut [u16], output_queue: &Arc<Mutex<VecDeque<f32>>>) {
 fn resample_output_frame(
     frame: &RawAudioFrame,
     source_sample_rate: u32,
-    source_channels: usize,
     output_sample_rate: u32,
     output_channels: usize,
 ) -> Vec<f32> {
-    let source_frames = frame.sample_frames();
+    let source_channels = usize::from(frame.channels).max(1);
+    let source_frames = frame.samples.len() / source_channels;
     if source_frames == 0 || source_channels == 0 || output_channels == 0 {
         return Vec::new();
     }
@@ -1985,8 +1977,15 @@ fn resample_output_frame(
         let fraction = (source_position - source_index as f64) as f32;
         let source_base = source_index * source_channels;
         let next_base = next_index * source_channels;
-        let source = &frame.samples[source_base..source_base + source_channels];
-        let next = &frame.samples[next_base..next_base + source_channels];
+        let Some(source) = frame
+            .samples
+            .get(source_base..source_base + source_channels)
+        else {
+            break;
+        };
+        let Some(next) = frame.samples.get(next_base..next_base + source_channels) else {
+            break;
+        };
         for output_channel in 0..output_channels {
             let a = channel_sample(source, output_channel, output_channels);
             let b = channel_sample(next, output_channel, output_channels);
@@ -2016,4 +2015,31 @@ fn log_input_stream_error(err: cpal::StreamError) {
 
 fn log_output_stream_error(err: cpal::StreamError) {
     tracing::warn!(error = %err, "LXST speaker stream error");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_resampler_uses_decoded_frame_channel_count() {
+        let frame = RawAudioFrame::new(1, vec![0.0; 640]).unwrap();
+
+        let converted = resample_output_frame(&frame, 24_000, 48_000, 2);
+
+        assert_eq!(converted.len(), 1_280 * 2);
+    }
+
+    #[test]
+    fn output_resampler_handles_medium_quality_frame_shape() {
+        let frame = RawAudioFrame::new(
+            1,
+            vec![0.0; Profile::QualityMedium.sample_frames_per_packet()],
+        )
+        .unwrap();
+
+        let converted = resample_output_frame(&frame, 24_000, 48_000, 2);
+
+        assert_eq!(converted.len(), 2_880 * 2);
+    }
 }
