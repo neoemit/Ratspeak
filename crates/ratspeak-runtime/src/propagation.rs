@@ -60,8 +60,9 @@ const SYNC_FAILURE_WINDOW: Duration = Duration::from_secs(30 * 60);
 const SYNC_FAILURE_THRESHOLD: u32 = 3;
 
 const REFRESH_FOLLOWUP_DELAY: Duration = Duration::from_secs(4);
-const STATIC_STARTUP_PROBE_BUDGET: usize = 3;
+const STATIC_STARTUP_PROBE_BUDGET: usize = 1;
 const STATIC_BACKGROUND_PROBE_BUDGET: usize = 1;
+const STATIC_AUTO_REFRESH_PROBE_BUDGET: usize = 1;
 const STATIC_MANUAL_PROBE_BUDGET: usize = 10;
 const STATIC_PROBE_MIN_INTERVAL: f64 = 60.0;
 const STATIC_BACKGROUND_INTERVAL: Duration = Duration::from_secs(45);
@@ -207,6 +208,10 @@ fn static_probe_backoff(failures: u64) -> f64 {
     (STATIC_FAILURE_BASE_BACKOFF * 2f64.powi(exponent)).min(STATIC_FAILURE_MAX_BACKOFF)
 }
 
+fn static_probe_timeout() -> f64 {
+    rns_transport::constants::PATH_REQUEST_TIMEOUT + STATIC_PROBE_TIMEOUT_GRACE
+}
+
 fn ensure_static_registry_entry(
     registry: &mut std::collections::HashMap<String, serde_json::Value>,
     node: &crate::static_nodes::StaticPropNode,
@@ -241,7 +246,7 @@ fn ensure_static_registry_entry(
 }
 
 fn expire_static_probe_timeouts(state: &AppState, now: f64) {
-    let timeout = rns_transport::constants::PATH_REQUEST_TIMEOUT + STATIC_PROBE_TIMEOUT_GRACE;
+    let timeout = static_probe_timeout();
     let Ok(mut registry) = state.discovered_propagation_nodes.lock() else {
         return;
     };
@@ -294,11 +299,24 @@ fn expire_static_probe_timeouts(state: &AppState, now: f64) {
     }
 }
 
-fn static_probe_sort_key(identity_id: &str, hash: &[u8; 16]) -> [u8; 32] {
-    let mut data = Vec::with_capacity(identity_id.len() + hash.len());
-    data.extend_from_slice(identity_id.as_bytes());
-    data.extend_from_slice(hash);
-    rns_crypto::sha::sha256(&data)
+fn static_probe_is_in_flight(value: &serde_json::Value, now: f64) -> bool {
+    if value
+        .get("static_status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        != "probing"
+    {
+        return false;
+    }
+    value
+        .get("last_probe")
+        .and_then(json_f64)
+        .map(|t| now - t <= static_probe_timeout())
+        .unwrap_or(false)
+}
+
+fn static_probe_sort_key(hash: &[u8; 16]) -> (u16, [u8; 16]) {
+    (static_nodes::priority_for(hash), *hash)
 }
 
 fn select_static_probe_candidates(
@@ -316,16 +334,17 @@ fn select_static_probe_candidates(
 
     expire_static_probe_timeouts(state, now);
 
+    let auto_favor = mode == PropagationMode::Auto && favor_static;
     let budget = match kind {
         StaticProbeKind::Startup => STATIC_STARTUP_PROBE_BUDGET,
         StaticProbeKind::Background => STATIC_BACKGROUND_PROBE_BUDGET,
+        StaticProbeKind::Manual if auto_favor => STATIC_AUTO_REFRESH_PROBE_BUDGET,
         StaticProbeKind::Manual => STATIC_MANUAL_PROBE_BUDGET,
     };
     if budget == 0 {
         return Vec::new();
     }
 
-    let identity_id = crate::helpers::active_identity_id(state);
     let bundle = static_nodes::load();
 
     let mut candidates = Vec::new();
@@ -349,6 +368,17 @@ fn select_static_probe_candidates(
             {
                 static_hashes.push(hash);
             }
+        }
+
+        if auto_favor
+            && static_hashes.iter().any(|hash| {
+                registry
+                    .get(&hex::encode(hash))
+                    .map(|value| static_probe_is_in_flight(value, now))
+                    .unwrap_or(false)
+            })
+        {
+            return Vec::new();
         }
 
         for hash in static_hashes {
@@ -379,7 +409,7 @@ fn select_static_probe_candidates(
         }
     }
 
-    candidates.sort_by_key(|hash| static_probe_sort_key(&identity_id, hash));
+    candidates.sort_by_key(static_probe_sort_key);
     candidates.truncate(budget);
     candidates
 }
@@ -899,7 +929,7 @@ pub async fn reconcile_active_auto_node(state: &Arc<AppState>) {
 /// Issue `request_path` for every known propagation-node candidate
 /// (statics ∪ discovered). `ignore_throttle = true` is the startup case.
 pub async fn refresh_paths(state: &Arc<AppState>, ignore_throttle: bool) -> RefreshOutcome {
-    let (mode, _) = read_settings(state);
+    let (mode, favor_static) = read_settings(state);
     if mode == PropagationMode::Off {
         return RefreshOutcome::Sent { count: 0 };
     }
@@ -932,7 +962,10 @@ pub async fn refresh_paths(state: &Arc<AppState>, ignore_throttle: bool) -> Refr
     let mut candidates: Vec<[u8; 16]> = select_static_probe_candidates(state, static_kind, now);
     let static_candidates = candidates.clone();
 
-    if !ignore_throttle && let Ok(reg) = state.discovered_propagation_nodes.lock() {
+    if !ignore_throttle
+        && !(mode == PropagationMode::Auto && favor_static)
+        && let Ok(reg) = state.discovered_propagation_nodes.lock()
+    {
         let static_set = static_nodes::hash_set();
         let mut discovered = Vec::new();
         for hash_hex in reg.keys() {
@@ -1543,12 +1576,21 @@ mod tests {
     }
 
     #[test]
-    fn static_probe_candidates_respect_startup_budget_and_recent_probe() {
+    fn static_probe_prefers_sync_hub_first() {
         let state = make_state();
         let now = now_f64();
-        for i in 0..10u8 {
-            seed_static_node(&state, [i; 16], None, 0.0, "bootstrap", "unknown");
-        }
+        let sync_hub = hex::decode("deadbeefbadfceeae39c1aceb911e205").unwrap();
+        let mut sync_hash = [0u8; 16];
+        sync_hash.copy_from_slice(&sync_hub);
+
+        let first = select_static_probe_candidates(&state, StaticProbeKind::Startup, now);
+        assert_eq!(first, vec![sync_hash]);
+    }
+
+    #[test]
+    fn static_probe_candidates_are_serialized_in_auto_favor_mode() {
+        let state = make_state();
+        let now = now_f64();
 
         let first = select_static_probe_candidates(&state, StaticProbeKind::Startup, now);
         assert_eq!(first.len(), STATIC_STARTUP_PROBE_BUDGET);
@@ -1557,13 +1599,32 @@ mod tests {
         let second = select_static_probe_candidates(&state, StaticProbeKind::Startup, now + 1.0);
         assert_eq!(
             second.len(),
-            STATIC_STARTUP_PROBE_BUDGET,
-            "recently probed nodes should be skipped, but other static nodes remain eligible"
+            0,
+            "Auto favor must wait for the active static probe to resolve before probing another Ratspeak node"
         );
-        assert!(
-            first.iter().all(|h| !second.contains(h)),
-            "startup probing should not immediately retry the same static hashes"
+    }
+
+    #[test]
+    fn static_probe_falls_forward_after_sync_hub_probe_timeout() {
+        let state = make_state();
+        let now = now_f64();
+        let sync_hub = hex::decode("deadbeefbadfceeae39c1aceb911e205").unwrap();
+        let mut sync_hash = [0u8; 16];
+        sync_hash.copy_from_slice(&sync_hub);
+        let regional = hex::decode("111111111111425117677c92c1693b92").unwrap();
+        let mut regional_hash = [0u8; 16];
+        regional_hash.copy_from_slice(&regional);
+
+        let first = select_static_probe_candidates(&state, StaticProbeKind::Startup, now);
+        assert_eq!(first, vec![sync_hash]);
+        mark_static_probe_sent(&state, &first, now);
+
+        let after_timeout = select_static_probe_candidates(
+            &state,
+            StaticProbeKind::Background,
+            now + static_probe_timeout() + 1.0,
         );
+        assert_eq!(after_timeout, vec![regional_hash]);
     }
 
     #[test]

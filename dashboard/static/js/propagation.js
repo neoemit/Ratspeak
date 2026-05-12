@@ -65,7 +65,7 @@ function renderPropagationStatus(targetId) {
         html += renderManualBody(nodeHash, isConnected, msgCount);
     }
 
-    if (mode !== 'off') {
+    if (mode === 'manual') {
         html += renderDiscoveredList(mode, favorStatic, selectedNodeHash);
     }
 
@@ -96,7 +96,9 @@ function renderAutoBody(autoActive, isConnected, msgCount, favorStatic, awaiting
     if (autoActive) {
         var activeNode = findNode(autoActive);
         var nodeName = activeNode ? (activeNode.display_name || findNodeName(autoActive)) : findNodeName(autoActive);
-        var activeLabel = activeNode && activeNode.static ? 'Using Ratspeak inbox' : 'Using inbox';
+        var activeLabel = activeNode && activeNode.static
+            ? 'Using Ratspeak inbox'
+            : (favorStatic ? 'Using fallback inbox' : 'Using inbox');
         var statusDot = isConnected
             ? '<span class="text-status-online">●</span>'
             : '<span class="text-muted-color">○</span>';
@@ -106,10 +108,10 @@ function renderAutoBody(autoActive, isConnected, msgCount, favorStatic, awaiting
             '</div>' +
             '<div class="relay-card-details">' +
                 '<span>' + msgCount + ' message' + (msgCount !== 1 ? 's' : '') + ' stored</span>' +
-                ' · <span>Auto-checking every 90s</span>' +
-                (favorStatic && (!activeNode || !activeNode.static)
-                    ? ' · <span>checking Ratspeak inbox nodes in background</span>'
-                    : '') +
+                ' · <span>Auto</span>' +
+            '</div>' +
+            '<div class="inline-hint-sm" style="overflow-wrap:anywhere;margin-top:6px;">' +
+                'Propagation address<br>' + escapeHtml(autoActive) +
             '</div>' +
             '<div class="relay-card-actions">' +
                 '<button class="nr-btn nr-btn-sm" id="prop-sync-btn">Check Now</button>' +

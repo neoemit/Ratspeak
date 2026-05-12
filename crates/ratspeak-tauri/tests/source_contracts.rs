@@ -1246,6 +1246,8 @@ fn offline_inbox_auto_settings_use_ratspeak_node_preference() {
     assert!(propagation_js.contains("args.favorStatic = !!opts.favor_static"));
     assert!(network_commands.contains("favorStatic: Option<bool>"));
     assert!(propagation_js.contains("Auto selected"));
+    assert!(propagation_js.contains("if (mode === 'manual')"));
+    assert!(propagation_js.contains("Propagation address<br>"));
     assert!(!propagation_js.contains("Connecting..."));
     assert!(!settings_html.contains("Relay Node"));
     assert!(settings_html.contains("Offline Inbox"));
@@ -1266,6 +1268,8 @@ fn bundled_ratspeak_propagation_nodes_are_destination_hashes_with_sync_hub_prior
     assert!(nodes.contains("\"priority\": 0"));
     assert!(propagation.contains("registry_static_priority(favor_static && is_static"));
     assert!(propagation.contains("favor_static_prefers_sync_hub_over_lower_hop_static_node"));
+    assert!(propagation.contains("const STATIC_STARTUP_PROBE_BUDGET: usize = 1"));
+    assert!(propagation.contains("static_probe_prefers_sync_hub_first"));
     assert!(announce_handlers.contains("let hash_hex = hex::encode(event.destination_hash);"));
     assert!(announce_handlers.contains("mgr.router"));
     assert!(announce_handlers.contains("set_stamp_cost(event.destination_hash"));
