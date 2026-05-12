@@ -578,6 +578,11 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("mediaPlaybackRequiresUserGesture = false"));
     assert!(activity.contains("fun playCallRingtone(mode: String)"));
     assert!(activity.contains("fun stopCallRingtone()"));
+    assert!(activity.contains("fun startCallAudioRoute(role: String)"));
+    assert!(activity.contains("fun stopCallAudioRoute()"));
+    assert!(activity.contains("AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING"));
+    assert!(activity.contains("AudioAttributes.USAGE_NOTIFICATION_RINGTONE"));
+    assert!(activity.contains("audioManager.setCommunicationDevice(route)"));
 
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
     assert!(state_js.contains("window.RS.mediaPermissions"));
@@ -593,11 +598,14 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     ));
     assert!(lxmf.contains("RS.ringtones.sync(lxstVoiceState)"));
     assert!(lxmf.contains("RS.ringtones.setHandlers({ onOutgoingTimeout"));
+    assert!(lxmf.contains("function _voiceSyncNativeAudioRoute()"));
+    assert!(lxmf.contains("window.RatspeakAndroid.startCallAudioRoute"));
     assert!(lxmf.contains("function _voicePeerLookupHash(call)"));
     assert!(
         lxmf.contains("if (call.role === 'outgoing' && lxstVoiceState.lastDialHash) return lxstVoiceState.lastDialHash;")
     );
     assert!(lxmf.contains("function _voicePeerSurfaceTitle(call)"));
+    assert!(lxmf.contains("return _voicePeerName(call);"));
     assert!(lxmf.contains("remote_lxmf_destination"));
     assert!(lxmf.contains("lxst-incoming-call-address"));
     assert!(lxmf.contains("data.type === 'outgoing_pending'"));
@@ -646,7 +654,7 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(ringtone_js.contains("playCallRingtone"));
     assert!(ringtone_js.contains("stopCallRingtone"));
     assert!(ringtone_js.contains("playTimeoutCue();"));
-    assert!(ringtone_js.contains("return active.status === 'ringing';"));
+    assert!(ringtone_js.contains("active.status !== 'established'"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
     let ringtone_pos = index

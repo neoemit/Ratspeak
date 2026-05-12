@@ -45,6 +45,7 @@ var lxstVoiceState = {
 var _voiceElapsedTimer = null;
 var _voiceRingtoneTimeoutInFlight = false;
 var _voiceSuppressNoAnswerCueUntil = 0;
+var _voiceNativeAudioRouteToken = null;
 
 function _voiceStatusLabel(status) {
     switch (status) {
@@ -200,6 +201,34 @@ function _voiceTrackEstablished(active) {
     _voiceSyncElapsedTimer();
 }
 
+function _androidCallRouteBridge() {
+    if (!window.RatspeakAndroid) return null;
+    if (typeof window.RatspeakAndroid.startCallAudioRoute !== 'function') return null;
+    if (typeof window.RatspeakAndroid.stopCallAudioRoute !== 'function') return null;
+    return window.RatspeakAndroid;
+}
+
+function _voiceSyncNativeAudioRoute() {
+    var bridge = _androidCallRouteBridge();
+    var active = lxstVoiceState.active;
+    var shouldRoute = !!(active && active.status === 'established');
+    if (!bridge) {
+        _voiceNativeAudioRouteToken = null;
+        return;
+    }
+    if (!shouldRoute) {
+        if (_voiceNativeAudioRouteToken) {
+            _voiceNativeAudioRouteToken = null;
+            try { bridge.stopCallAudioRoute(); } catch (_) {}
+        }
+        return;
+    }
+    var token = (active.link_id || '') + ':' + (active.role || '');
+    if (_voiceNativeAudioRouteToken === token) return;
+    _voiceNativeAudioRouteToken = token;
+    try { bridge.startCallAudioRoute(active.role || ''); } catch (_) {}
+}
+
 function _voiceEnsureMicrophonePermission() {
     if (!window.RS || !RS.mediaPermissions || typeof RS.mediaPermissions.ensure !== 'function') {
         return Promise.resolve(true);
@@ -308,8 +337,6 @@ function _voicePeerName(call) {
 }
 
 function _voicePeerSurfaceTitle(call) {
-    var address = _voicePeerAddress(call);
-    if (address) return address;
     return _voicePeerName(call);
 }
 
@@ -507,6 +534,7 @@ function renderVoiceUi() {
     renderVoiceIncomingSheet();
     _voiceSyncElapsedTimer();
     _voiceSyncRingtone();
+    _voiceSyncNativeAudioRoute();
 }
 
 function renderVoiceIncomingSheet() {

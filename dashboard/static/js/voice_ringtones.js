@@ -114,7 +114,7 @@
 
     function _shouldRingOutgoing(active) {
         if (!active || active.role !== 'outgoing') return false;
-        return active.status === 'ringing';
+        return active.status !== 'established' && active.status !== 'busy' && active.status !== 'rejected';
     }
 
     function _desired(state) {
