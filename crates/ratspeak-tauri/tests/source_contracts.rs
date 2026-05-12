@@ -1233,3 +1233,40 @@ fn propagated_send_paths_run_relay_readiness_preflight() {
         );
     }
 }
+
+#[test]
+fn offline_inbox_auto_settings_use_ratspeak_node_preference() {
+    let root = repo_root();
+    let propagation_js =
+        read_source(root.join("dashboard/static/js/propagation.js")).expect("propagation js");
+    let settings_html = read_source(root.join("dashboard/index.html")).expect("dashboard html");
+    let network_commands = read_source(root.join("crates/ratspeak-tauri/src/commands/network.rs"))
+        .expect("network commands");
+
+    assert!(propagation_js.contains("args.favorStatic = !!opts.favor_static"));
+    assert!(network_commands.contains("favorStatic: Option<bool>"));
+    assert!(propagation_js.contains("Auto selected"));
+    assert!(!propagation_js.contains("Connecting..."));
+    assert!(!settings_html.contains("Relay Node"));
+    assert!(settings_html.contains("Offline Inbox"));
+}
+
+#[test]
+fn bundled_ratspeak_propagation_nodes_are_destination_hashes_with_sync_hub_priority() {
+    let root = repo_root();
+    let nodes = read_source(root.join("crates/ratspeak-db/nodes.json")).expect("nodes json");
+    let propagation = read_source(root.join("crates/ratspeak-runtime/src/propagation.rs"))
+        .expect("propagation source");
+    let announce_handlers =
+        read_source(root.join("crates/ratspeak-runtime/src/announce_handlers.rs"))
+            .expect("announce handlers");
+
+    assert!(nodes.contains("deadbeefbadfceeae39c1aceb911e205"));
+    assert!(nodes.contains("\"role\": \"sync_hub\""));
+    assert!(nodes.contains("\"priority\": 0"));
+    assert!(propagation.contains("registry_static_priority(favor_static && is_static"));
+    assert!(propagation.contains("favor_static_prefers_sync_hub_over_lower_hop_static_node"));
+    assert!(announce_handlers.contains("let hash_hex = hex::encode(event.destination_hash);"));
+    assert!(announce_handlers.contains("mgr.router"));
+    assert!(announce_handlers.contains("set_stamp_cost(event.destination_hash"));
+}

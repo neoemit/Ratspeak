@@ -321,26 +321,49 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
     let inserted = if let Ok(mut registry) = state.discovered_propagation_nodes.lock() {
         let key = hash_hex.clone();
         let existing = registry.get(&key).cloned();
+        let static_meta = crate::static_nodes::node_for(&event.destination_hash);
 
         if let Some(obj) = entry.as_object_mut() {
             let preserved_static = existing
                 .as_ref()
                 .and_then(|v| v.get("static").and_then(|s| s.as_bool()))
-                .unwrap_or(false);
+                .unwrap_or_else(|| static_meta.is_some());
             let preserved_region = existing
                 .as_ref()
                 .and_then(|v| v.get("region").cloned())
+                .or_else(|| {
+                    static_meta
+                        .and_then(|node| node.region.clone())
+                        .map(|region| json!(region))
+                })
+                .unwrap_or(serde_json::Value::Null);
+            let preserved_role = existing
+                .as_ref()
+                .and_then(|v| v.get("role").cloned())
+                .or_else(|| {
+                    static_meta
+                        .and_then(|node| node.role.clone())
+                        .map(|role| json!(role))
+                })
+                .unwrap_or(serde_json::Value::Null);
+            let preserved_priority = existing
+                .as_ref()
+                .and_then(|v| v.get("priority").cloned())
+                .or_else(|| static_meta.map(|node| json!(node.priority)))
                 .unwrap_or(serde_json::Value::Null);
             let preserved_name = existing
                 .as_ref()
                 .and_then(|v| v.get("display_name").and_then(|s| s.as_str()))
-                .map(String::from);
+                .map(String::from)
+                .or_else(|| static_meta.map(|node| node.display_name.clone()));
             obj.insert("static".to_string(), json!(preserved_static));
             obj.insert("region".to_string(), preserved_region);
+            obj.insert("role".to_string(), preserved_role);
+            obj.insert("priority".to_string(), preserved_priority);
             let final_name = display_name_from_announce
                 .clone()
                 .or(preserved_name)
-                .unwrap_or_else(|| format!("Relay {}", &hash_hex[..8.min(hash_hex.len())]));
+                .unwrap_or_else(|| format!("Inbox {}", &hash_hex[..8.min(hash_hex.len())]));
             obj.insert("display_name".to_string(), json!(final_name));
         }
 

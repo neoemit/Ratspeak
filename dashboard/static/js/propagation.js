@@ -1,6 +1,5 @@
-// Offline Inbox UI — three-mode toggle (Off / Auto / Manual), favor-static
-// sub-toggle, manual hash input, and a path-request refresh button. Mode +
-// favor_static persist via `set_propagation_mode`.
+// Offline Inbox UI — three-mode toggle (Off / Auto / Manual), Ratspeak-node
+// preference toggle, manual hash input, and a path-request refresh button.
 
 var propagationStatus = {
     enabled: false,
@@ -25,6 +24,11 @@ var refreshInFlight = false;
 
 // Backend trims to 512 with a 48h TTL; UI shows top 30 (rest still tracked).
 var MAX_RELAY_ROWS = 30;
+
+function propagationNodePriority(node) {
+    var parsed = parseInt(node && node.priority, 10);
+    return isNaN(parsed) ? 1000 : parsed;
+}
 
 function renderPropagationStatus(targetId) {
     var container = document.getElementById(targetId || 'settings-propagation-status');
@@ -186,6 +190,11 @@ function renderDiscoveredList(mode, favorStatic, activeHash) {
             var aStatic = a.static ? 1 : 0;
             var bStatic = b.static ? 1 : 0;
             if (aStatic !== bStatic) return bStatic - aStatic;
+            if (aStatic && bStatic) {
+                var aPriority = propagationNodePriority(a);
+                var bPriority = propagationNodePriority(b);
+                if (aPriority !== bPriority) return aPriority - bPriority;
+            }
         }
         var aHops = (a.hops == null) ? 99 : a.hops;
         var bHops = (b.hops == null) ? 99 : b.hops;
@@ -483,7 +492,7 @@ function findNode(hash) {
 
 function applyPropagationMode(mode, opts) {
     var args = { mode: mode };
-    if (opts && opts.favor_static !== undefined) args.favor_static = !!opts.favor_static;
+    if (opts && opts.favor_static !== undefined) args.favorStatic = !!opts.favor_static;
     RS.invoke('set_propagation_mode', args).catch(function(err) {
         showToast('Could not change Offline Inbox mode: ' + (err && err.message ? err.message : 'Unknown'),
             'toast-red', 4000);
@@ -581,11 +590,11 @@ RS.listen('propagation_update', function(data) {
             relayBadge.textContent = 'Off';
             relayBadge.className = 'settings-relay-badge';
         } else if (propagationStatus.connected) {
-            relayBadge.textContent = (modeLabel === 'auto' ? 'Auto: ' : '') + 'Connected';
+            relayBadge.textContent = (modeLabel === 'auto' ? 'Auto: ' : '') + 'Ready';
             relayBadge.className = 'settings-relay-badge connected';
         } else if (propagationStatus.auto_active_node ||
             (propagationStatus.mode === 'manual' && propagationStatus.propagation_node)) {
-            relayBadge.textContent = 'Connecting...';
+            relayBadge.textContent = modeLabel === 'auto' ? 'Auto selected' : 'Selected';
             relayBadge.className = 'settings-relay-badge';
         } else {
             relayBadge.textContent = 'Finding inbox';

@@ -1,1 +1,63 @@
-[]
+[
+  {
+    "hash": "deadbeefbadfceeae39c1aceb911e205",
+    "display_name": "Ratspeak Sync Hub",
+    "region": "global",
+    "role": "sync_hub",
+    "priority": 0
+  },
+  {
+    "hash": "111111111111425117677c92c1693b92",
+    "display_name": "Ratspeak Node 1",
+    "role": "public_node",
+    "priority": 100
+  },
+  {
+    "hash": "222222222222d1846e8b9a7f92e30de5",
+    "display_name": "Ratspeak Node 2",
+    "role": "public_node",
+    "priority": 100
+  },
+  {
+    "hash": "3333333333334627d3c1ef767598dbcc",
+    "display_name": "Ratspeak Node 3",
+    "role": "public_node",
+    "priority": 100
+  },
+  {
+    "hash": "44444444444453801f8e08826324de4f",
+    "display_name": "Ratspeak Node 4",
+    "role": "public_node",
+    "priority": 100
+  },
+  {
+    "hash": "555555555555354587290e114d0667d2",
+    "display_name": "Ratspeak Node 5",
+    "role": "public_node",
+    "priority": 100
+  },
+  {
+    "hash": "666666666666e14c681b46ee03326dc7",
+    "display_name": "Ratspeak Node 6",
+    "role": "public_node",
+    "priority": 100
+  },
+  {
+    "hash": "7777777777771ae14abe3f0f0bd6d495",
+    "display_name": "Ratspeak Node 7",
+    "role": "public_node",
+    "priority": 100
+  },
+  {
+    "hash": "888888888888c9882c43538c417d9383",
+    "display_name": "Ratspeak Node 8",
+    "role": "public_node",
+    "priority": 100
+  },
+  {
+    "hash": "99999999999958d678ec7eb3d964411e",
+    "display_name": "Ratspeak Node 9",
+    "role": "public_node",
+    "priority": 100
+  }
+]

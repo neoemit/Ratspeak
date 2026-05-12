@@ -6,11 +6,15 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
+pub const DEFAULT_STATIC_PRIORITY: u16 = 1_000;
+
 #[derive(Debug, Clone)]
 pub struct StaticPropNode {
     pub hash: [u8; 16],
     pub display_name: String,
     pub region: Option<String>,
+    pub role: Option<String>,
+    pub priority: u16,
 }
 
 /// On-disk shape: `hash` is a 32-char hex string for the 16-byte truncated
@@ -21,14 +25,20 @@ struct RawStaticPropNode {
     display_name: String,
     #[serde(default)]
     region: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default = "default_static_priority")]
+    priority: u16,
 }
 
 const NODES_JSON: &str = include_str!("../nodes.json");
-// TODO(release): populate `nodes.json` with Ratspeak-operated propagation
-// nodes before shipping relay Auto mode as an out-of-box feature.
 
 static NODES: OnceLock<Vec<StaticPropNode>> = OnceLock::new();
 static HASHES: OnceLock<HashSet<[u8; 16]>> = OnceLock::new();
+
+fn default_static_priority() -> u16 {
+    DEFAULT_STATIC_PRIORITY
+}
 
 /// Parsed once, lazily. Malformed JSON → warn + empty list.
 pub fn load() -> &'static Vec<StaticPropNode> {
@@ -37,6 +47,16 @@ pub fn load() -> &'static Vec<StaticPropNode> {
 
 pub fn hash_set() -> &'static HashSet<[u8; 16]> {
     HASHES.get_or_init(|| load().iter().map(|n| n.hash).collect())
+}
+
+pub fn priority_for(hash: &[u8; 16]) -> u16 {
+    node_for(hash)
+        .map(|node| node.priority)
+        .unwrap_or(DEFAULT_STATIC_PRIORITY)
+}
+
+pub fn node_for(hash: &[u8; 16]) -> Option<&'static StaticPropNode> {
+    load().iter().find(|node| &node.hash == hash)
 }
 
 fn parse_nodes_json() -> Vec<StaticPropNode> {
@@ -74,6 +94,8 @@ fn parse_nodes_json() -> Vec<StaticPropNode> {
                 hash,
                 display_name: r.display_name,
                 region: r.region,
+                role: r.role,
+                priority: r.priority,
             })
         })
         .collect()
@@ -89,9 +111,17 @@ mod tests {
     }
 
     #[test]
-    fn empty_bundle_returns_empty_list() {
-        assert!(load().is_empty(), "bundle should be empty pre-launch");
-        assert!(hash_set().is_empty());
+    fn bundled_nodes_include_sync_hub_with_top_priority() {
+        let nodes = load();
+        assert_eq!(nodes.len(), 10);
+        let sync_hub = nodes
+            .iter()
+            .find(|n| hex::encode(n.hash) == "deadbeefbadfceeae39c1aceb911e205")
+            .expect("sync hub present");
+        assert_eq!(sync_hub.role.as_deref(), Some("sync_hub"));
+        assert_eq!(sync_hub.priority, 0);
+        assert_eq!(hash_set().len(), 10);
+        assert_eq!(priority_for(&sync_hub.hash), 0);
     }
 
     #[test]
@@ -111,6 +141,8 @@ mod tests {
                     hash: h,
                     display_name: r.display_name,
                     region: r.region,
+                    role: r.role,
+                    priority: r.priority,
                 })
             })
             .collect();

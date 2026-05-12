@@ -185,7 +185,7 @@ pub async fn refresh_propagation_nodes(state: State<'_, Arc<AppState>>) -> AppRe
 pub async fn set_propagation_mode(
     state: State<'_, Arc<AppState>>,
     mode: String,
-    favor_static: Option<bool>,
+    #[allow(non_snake_case)] favorStatic: Option<bool>,
 ) -> AppResult<Value> {
     use crate::propagation::{self, PropagationMode};
 
@@ -193,6 +193,7 @@ pub async fn set_propagation_mode(
         .ok_or_else(|| AppError::bad_request("mode must be off | auto | manual"))?;
     let st: Arc<AppState> = Arc::clone(&state);
     let prev_mode = propagation::read_settings(&st).0;
+    let favor_static = favorStatic;
     let (mode_now, favor_now) = propagation::persist_settings(&st, parsed, favor_static);
 
     match parsed {

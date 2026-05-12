@@ -184,6 +184,14 @@ fn registry_entry_is_static(
             .unwrap_or(false)
 }
 
+fn registry_static_priority(is_static: bool, hash: &[u8; 16]) -> u16 {
+    if is_static {
+        static_nodes::priority_for(hash)
+    } else {
+        static_nodes::DEFAULT_STATIC_PRIORITY
+    }
+}
+
 fn static_entry_is_selectable(value: &serde_json::Value, now: f64) -> bool {
     let status = value
         .get("static_status")
@@ -226,6 +234,8 @@ fn ensure_static_registry_entry(
             "last_failure_reason": null,
             "static": true,
             "region": node.region.clone(),
+            "role": node.role.clone(),
+            "priority": node.priority,
         })
     });
 }
@@ -492,7 +502,8 @@ pub fn mark_relay_failure(state: &AppState, hash: [u8; 16], reason: &str) {
     }
 }
 
-/// Pure ranking: (favor_static && is_static) DESC, hops ASC, dest_hash ASC.
+/// Pure ranking: (favor_static && is_static) DESC, static priority ASC,
+/// hops ASC, dest_hash ASC.
 /// Recency is intentionally not a tie-break — would flip on every announce
 /// and tear down the active link.
 pub fn auto_select_node(state: &AppState) -> Option<[u8; 16]> {
@@ -500,7 +511,7 @@ pub fn auto_select_node(state: &AppState) -> Option<[u8; 16]> {
     let static_set = static_nodes::hash_set();
     let now = now_f64();
 
-    let mut candidates: Vec<(bool, u8, [u8; 16])> = {
+    let mut candidates: Vec<(bool, u16, u8, [u8; 16])> = {
         let nodes = state.discovered_propagation_nodes.lock().ok()?;
         nodes
             .iter()
@@ -531,13 +542,14 @@ pub fn auto_select_node(state: &AppState) -> Option<[u8; 16]> {
                     .and_then(|v| v.as_u64())
                     .map(|h| h.min(255) as u8)
                     .unwrap_or(255);
-                Some((is_static, hops, h))
+                let priority = registry_static_priority(favor_static && is_static, &h);
+                Some((is_static, priority, hops, h))
             })
             .collect()
     };
 
     if let Ok(failures) = state.auto_failure_counts.lock() {
-        candidates.retain(|(_, _, h)| match failures.get(h) {
+        candidates.retain(|(_, _, _, h)| match failures.get(h) {
             Some((count, when)) if *count >= SYNC_FAILURE_THRESHOLD => {
                 when.elapsed() >= SYNC_FAILURE_WINDOW
             }
@@ -556,10 +568,14 @@ pub fn auto_select_node(state: &AppState) -> Option<[u8; 16]> {
             std::cmp::Ordering::Equal => {}
             other => return other,
         }
-        a.2.cmp(&b.2)
+        match a.2.cmp(&b.2) {
+            std::cmp::Ordering::Equal => {}
+            other => return other,
+        }
+        a.3.cmp(&b.3)
     });
 
-    candidates.first().map(|(_, _, h)| *h)
+    candidates.first().map(|(_, _, _, h)| *h)
 }
 
 async fn transport_query(
@@ -634,7 +650,7 @@ fn auto_select_node_with_live_paths(
     let static_set = static_nodes::hash_set();
     let now = now_f64();
 
-    let mut candidates: Vec<(bool, u8, [u8; 16])> = {
+    let mut candidates: Vec<(bool, u16, u8, [u8; 16])> = {
         let nodes = state.discovered_propagation_nodes.lock().ok()?;
         nodes
             .iter()
@@ -666,14 +682,15 @@ fn auto_select_node_with_live_paths(
                     .and_then(|v| v.as_u64())
                     .unwrap_or(255)
                     .min(255) as u8;
-                Some((favor_static && is_static, hops, h))
+                let priority = registry_static_priority(favor_static && is_static, &h);
+                Some((favor_static && is_static, priority, hops, h))
             })
             .collect()
     };
 
     if let Ok(map) = state.auto_failure_counts.lock() {
         let now = Instant::now();
-        candidates.retain(|(_, _, h)| {
+        candidates.retain(|(_, _, _, h)| {
             !map.get(h).is_some_and(|(count, first)| {
                 *count >= SYNC_FAILURE_THRESHOLD
                     && now.duration_since(*first) <= SYNC_FAILURE_WINDOW
@@ -690,10 +707,14 @@ fn auto_select_node_with_live_paths(
             std::cmp::Ordering::Equal => {}
             other => return other,
         }
-        a.2.cmp(&b.2)
+        match a.2.cmp(&b.2) {
+            std::cmp::Ordering::Equal => {}
+            other => return other,
+        }
+        a.3.cmp(&b.3)
     });
 
-    candidates.first().map(|(_, _, h)| *h)
+    candidates.first().map(|(_, _, _, h)| *h)
 }
 
 async fn request_relay_path(state: &Arc<AppState>, hash: [u8; 16]) {
@@ -1326,6 +1347,20 @@ mod tests {
             .insert("path_status".to_string(), json!(status));
     }
 
+    fn sync_hub_hash() -> [u8; 16] {
+        let bytes = hex::decode("deadbeefbadfceeae39c1aceb911e205").unwrap();
+        let mut hash = [0u8; 16];
+        hash.copy_from_slice(&bytes);
+        hash
+    }
+
+    fn ratspeak_node_1_hash() -> [u8; 16] {
+        let bytes = hex::decode("111111111111425117677c92c1693b92").unwrap();
+        let mut hash = [0u8; 16];
+        hash.copy_from_slice(&bytes);
+        hash
+    }
+
     #[test]
     fn parses_known_modes() {
         assert_eq!(PropagationMode::parse("off"), Some(PropagationMode::Off));
@@ -1409,6 +1444,35 @@ mod tests {
     }
 
     #[test]
+    fn favor_static_prefers_sync_hub_over_lower_hop_static_node() {
+        let state = make_state();
+        let now = now_f64();
+        let sync_hub = sync_hub_hash();
+        let regional = ratspeak_node_1_hash();
+        seed_static_node(&state, sync_hub, Some(9), now, "enabled", "reachable");
+        seed_static_node(&state, regional, Some(1), now, "enabled", "reachable");
+
+        assert_eq!(
+            auto_select_node(&state),
+            Some(sync_hub),
+            "Ratspeak static priority should put the sync hub first when reachable"
+        );
+    }
+
+    #[test]
+    fn favor_static_falls_back_to_reachable_regional_node_when_sync_hub_path_missing() {
+        let state = make_state();
+        let now = now_f64();
+        let sync_hub = sync_hub_hash();
+        let regional = ratspeak_node_1_hash();
+        seed_static_node(&state, sync_hub, Some(1), now, "enabled", "reachable");
+        seed_static_node(&state, regional, Some(5), now, "enabled", "reachable");
+        set_node_path_status(&state, sync_hub, "missing");
+
+        assert_eq!(auto_select_node(&state), Some(regional));
+    }
+
+    #[test]
     fn missing_path_status_blocks_auto_selection_and_falls_back() {
         let state = make_state();
         let now = now_f64();
@@ -1463,6 +1527,19 @@ mod tests {
         seed_node(&state, [0xBB; 16], 1, now);
 
         assert_eq!(auto_select_node(&state), Some([0xBB; 16]));
+    }
+
+    #[test]
+    fn disabling_static_favor_turns_sync_hub_priority_off() {
+        let state = make_state();
+        set_active_identity_settings(&state, "auto", false);
+        let now = now_f64();
+        let sync_hub = sync_hub_hash();
+        let regional = ratspeak_node_1_hash();
+        seed_static_node(&state, sync_hub, Some(9), now, "enabled", "reachable");
+        seed_static_node(&state, regional, Some(1), now, "enabled", "reachable");
+
+        assert_eq!(auto_select_node(&state), Some(regional));
     }
 
     #[test]
