@@ -640,8 +640,12 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
     assert!(lxmf.contains("function _voiceEnsureMicrophonePermission()"));
     assert!(lxmf.contains("function _voiceEnsurePlaybackReady()"));
+    assert!(lxmf.contains("function _voiceAfterNextPaint()"));
+    assert!(lxmf.contains("function _voiceSetOptimisticOutgoing(hash)"));
+    assert!(lxmf.contains("function _voiceBlockMobileNavigation(ms)"));
+    assert!(lxmf.contains("var dialToken = ++_voiceDialToken;"));
     assert!(lxmf.contains(
-        "return _voiceEnsurePlaybackReady().then(_voiceEnsureMicrophonePermission).then(function()"
+        "return _voiceAfterNextPaint().then(_voiceEnsurePlaybackReady).then(_voiceEnsureMicrophonePermission)"
     ));
     assert!(lxmf.contains("RS.ringtones.sync(lxstVoiceState)"));
     assert!(lxmf.contains("RS.ringtones.setHandlers({ onOutgoingTimeout"));
@@ -1079,6 +1083,11 @@ fn mobile_tab_swipe_uses_bottom_bar_slots_without_view_slide_animation() {
     assert!(nav.contains("var MOBILE_TAB_SLOTS = ['peers', 'message', 'contacts', 'more'];"));
     assert!(nav.contains("function _mobileTabSlot(viewId)"));
     assert!(nav.contains("function _viewForMobileTabSlot(slot)"));
+    assert!(nav.contains("function blockMobileNavigation(ms)"));
+    assert!(nav.contains("window.RS.blockMobileNavigation = blockMobileNavigation;"));
+    assert!(
+        nav.contains("if (_isMobileNavigationBlocked()) {\n                e.stopPropagation();")
+    );
     assert!(nav.contains("localStorage.setItem('ratspeak_more_view', viewId)"));
 
     let start = nav.find("function initTabSwipe()").expect("initTabSwipe");
@@ -1089,6 +1098,7 @@ fn mobile_tab_swipe_uses_bottom_bar_slots_without_view_slide_animation() {
     let init_tab_swipe = &tail[..end];
     assert!(init_tab_swipe.contains("MOBILE_TAB_SLOTS.indexOf(_mobileTabSlot(currentView))"));
     assert!(init_tab_swipe.contains("_viewForMobileTabSlot(MOBILE_TAB_SLOTS[nextIdx])"));
+    assert!(init_tab_swipe.contains("if (_isMobileNavigationBlocked()) return true;"));
     assert!(init_tab_swipe.contains("switchView(targetView);"));
     assert!(
         !init_tab_swipe.contains("transition:"),

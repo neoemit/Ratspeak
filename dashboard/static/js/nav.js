@@ -28,6 +28,7 @@ var VIEW_ALIASES = {
 
 var _navTransitioning = false;
 var _navInitialLoad = true;
+var _mobileNavigationBlockedUntil = 0;
 
 var TRANSITION_CLASSES = ['entering', 'exiting', 'slide-in-right', 'slide-out-left', 'slide-in-left', 'slide-out-right'];
 
@@ -37,6 +38,20 @@ if (window.matchMedia) {
         _prefersReducedMotion = e.matches;
     });
 }
+
+function _isMobileNavigationBlocked() {
+    return isMobile() && Date.now() < _mobileNavigationBlockedUntil;
+}
+
+function blockMobileNavigation(ms) {
+    if (!isMobile()) return;
+    var until = Date.now() + Math.max(0, ms || 0);
+    if (until > _mobileNavigationBlockedUntil) _mobileNavigationBlockedUntil = until;
+}
+
+window.RS = window.RS || {};
+window.RS.blockMobileNavigation = blockMobileNavigation;
+window.RS.isMobileNavigationBlocked = _isMobileNavigationBlocked;
 
 // Accepts semantic names, duration-ish intensity numbers, or a vibration-style
 // pattern array. Mobile routes through tauri-plugin-haptics on both iOS and
@@ -567,6 +582,10 @@ function initBottomBar() {
     bar.querySelectorAll('.bottom-bar-item').forEach(function(item) {
         item.addEventListener('click', function(e) {
             e.preventDefault();
+            if (_isMobileNavigationBlocked()) {
+                e.stopPropagation();
+                return;
+            }
             if (_bbDidLongPress) { _bbDidLongPress = false; return; }
             // Tap haptic comes from RS.gestures.attachRipple (RIPPLE_SELECTORS).
             var view = this.dataset.view;
@@ -1161,6 +1180,7 @@ function initTabSwipe() {
         distanceThreshold: RS.gestures.SWIPE_DISTANCE_PX,
         skipIf: function(e) {
             if (typeof _isSetupActive === 'function' && _isSetupActive()) return true;
+            if (_isMobileNavigationBlocked()) return true;
             if (_navTransitioning) return true;
             if (MOBILE_TAB_SLOTS.indexOf(_mobileTabSlot(currentView)) === -1) return true;
             if (e.target.closest('button, a, input, select, .selector-badge')) return true;
