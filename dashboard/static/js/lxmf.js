@@ -36,6 +36,8 @@ var lxstVoiceState = {
     audioRunning: false,
     audioMicrophone: false,
     audioSpeaker: false,
+    microphoneMuted: false,
+    speakerphone: false,
     lastAudioWarningKey: null,
     lastDialHash: null,
     lastError: null,
@@ -46,6 +48,9 @@ var _voiceElapsedTimer = null;
 var _voiceRingtoneTimeoutInFlight = false;
 var _voiceSuppressNoAnswerCueUntil = 0;
 var _voiceNativeAudioRouteToken = null;
+var _voiceNativeAudioRoutePrimed = false;
+var _voiceNativeAudioRouteLastSyncAt = 0;
+var _voiceSpeakerRestartToken = 0;
 
 function _voiceStatusLabel(status) {
     switch (status) {
@@ -68,6 +73,15 @@ function _voiceIcon(name, size) {
     }
     if (name === 'phone-incoming') {
         return '<svg ' + attrs + '><polyline points="16 2 16 8 22 8"/><line x1="22" y1="2" x2="16" y2="8"/><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65a2 2 0 0 1-.45 2.11L8.09 9.69a16 16 0 0 0 6.22 6.22l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92z"/></svg>';
+    }
+    if (name === 'mic') {
+        return '<svg ' + attrs + '><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="8" y1="22" x2="16" y2="22"/></svg>';
+    }
+    if (name === 'speaker') {
+        return '<svg ' + attrs + '><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/></svg>';
+    }
+    if (name === 'speaker-on') {
+        return '<svg ' + attrs + '><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>';
     }
     return '<svg ' + attrs + '><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65a2 2 0 0 1-.45 2.11L8.09 9.69a16 16 0 0 0 6.22 6.22l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92z"/></svg>';
 }
@@ -187,16 +201,24 @@ function _voiceSyncElapsedTimer() {
     }
 }
 
+function _voiceResetCallControls() {
+    _voiceSpeakerRestartToken++;
+    lxstVoiceState.microphoneMuted = false;
+    lxstVoiceState.speakerphone = false;
+}
+
 function _voiceTrackEstablished(active) {
     if (!active || active.status !== 'established') {
         lxstVoiceState.establishedAtMs = null;
         lxstVoiceState.establishedLinkId = null;
+        _voiceResetCallControls();
         _voiceSyncElapsedTimer();
         return;
     }
     if (lxstVoiceState.establishedLinkId !== active.link_id || !lxstVoiceState.establishedAtMs) {
         lxstVoiceState.establishedLinkId = active.link_id;
         lxstVoiceState.establishedAtMs = Date.now();
+        _voiceResetCallControls();
     }
     _voiceSyncElapsedTimer();
 }
@@ -208,25 +230,47 @@ function _androidCallRouteBridge() {
     return window.RatspeakAndroid;
 }
 
-function _voiceSyncNativeAudioRoute() {
+function _voiceNativeRouteName() {
+    return lxstVoiceState.speakerphone ? 'speaker' : 'earpiece';
+}
+
+function _voicePrimeNativeCallRoute() {
+    var bridge = _androidCallRouteBridge();
+    if (!bridge) return;
+    var route = _voiceNativeRouteName();
+    _voiceNativeAudioRoutePrimed = true;
+    _voiceNativeAudioRouteToken = 'pending:' + route;
+    try { bridge.startCallAudioRoute(route); } catch (_) {}
+}
+
+function _voiceReleaseNativeCallRoutePrime() {
+    _voiceNativeAudioRoutePrimed = false;
+}
+
+function _voiceSyncNativeAudioRoute(force) {
     var bridge = _androidCallRouteBridge();
     var active = lxstVoiceState.active;
-    var shouldRoute = !!(active && active.status === 'established');
+    var shouldRoute = !!(active || _voiceNativeAudioRoutePrimed);
     if (!bridge) {
         _voiceNativeAudioRouteToken = null;
+        _voiceNativeAudioRouteLastSyncAt = 0;
         return;
     }
     if (!shouldRoute) {
         if (_voiceNativeAudioRouteToken) {
             _voiceNativeAudioRouteToken = null;
+            _voiceNativeAudioRouteLastSyncAt = 0;
             try { bridge.stopCallAudioRoute(); } catch (_) {}
         }
         return;
     }
-    var token = (active.link_id || '') + ':' + (active.role || '');
-    if (_voiceNativeAudioRouteToken === token) return;
+    var route = _voiceNativeRouteName();
+    var token = ((active && active.link_id) || 'pending') + ':' + route;
+    var now = Date.now();
+    if (!force && _voiceNativeAudioRouteToken === token && (now - _voiceNativeAudioRouteLastSyncAt) < 10000) return;
     _voiceNativeAudioRouteToken = token;
-    try { bridge.startCallAudioRoute(active.role || ''); } catch (_) {}
+    _voiceNativeAudioRouteLastSyncAt = now;
+    try { bridge.startCallAudioRoute(route); } catch (_) {}
 }
 
 function _voiceEnsureMicrophonePermission() {
@@ -282,6 +326,8 @@ function _voiceHandleRingtoneTimeout() {
         lxstVoiceState.audioRunning = false;
         lxstVoiceState.audioMicrophone = false;
         lxstVoiceState.audioSpeaker = false;
+        _voiceReleaseNativeCallRoutePrime();
+        _voiceResetCallControls();
         lxstVoiceState.lastDialHash = null;
         lxstVoiceState.establishedAtMs = null;
         lxstVoiceState.establishedLinkId = null;
@@ -380,6 +426,9 @@ function _voiceRenderCallSurface(ids) {
     var answerBtn = document.getElementById(ids.answer);
     var rejectBtn = document.getElementById(ids.reject);
     var hangupBtn = document.getElementById(ids.hangup);
+    var controls = ids.controls ? document.getElementById(ids.controls) : null;
+    var muteBtn = ids.mute ? document.getElementById(ids.mute) : null;
+    var speakerBtn = ids.speaker ? document.getElementById(ids.speaker) : null;
     var peer = active || incoming;
     var avatarEl = surface.querySelector('.lxst-call-strip-indicator');
 
@@ -411,6 +460,31 @@ function _voiceRenderCallSurface(ids) {
     if (hangupBtn) {
         hangupBtn.style.display = active ? '' : 'none';
         hangupBtn.innerHTML = _voiceIcon('phone', 16) + '<span>Hang up</span>';
+    }
+
+    var showCallControls = !!(active && active.status === 'established');
+    if (controls) controls.hidden = !showCallControls;
+    if (muteBtn) {
+        var muteLabel = lxstVoiceState.microphoneMuted ? 'Unmute microphone' : 'Mute microphone';
+        if (!lxstVoiceState.audioMicrophone) muteLabel = 'Microphone unavailable';
+        muteBtn.style.display = showCallControls ? '' : 'none';
+        muteBtn.disabled = showCallControls && !lxstVoiceState.audioMicrophone;
+        muteBtn.classList.toggle('is-muted', !!lxstVoiceState.microphoneMuted);
+        muteBtn.setAttribute('aria-pressed', lxstVoiceState.microphoneMuted ? 'true' : 'false');
+        muteBtn.setAttribute('title', muteLabel);
+        muteBtn.setAttribute('aria-label', muteLabel);
+        muteBtn.innerHTML = _voiceIcon('mic', 18);
+    }
+    if (speakerBtn) {
+        var canRouteSpeaker = !!_androidCallRouteBridge();
+        var speakerLabel = lxstVoiceState.speakerphone ? 'Use earpiece' : 'Use speaker';
+        speakerBtn.style.display = showCallControls && canRouteSpeaker ? '' : 'none';
+        speakerBtn.disabled = !(showCallControls && canRouteSpeaker);
+        speakerBtn.classList.toggle('is-on', !!lxstVoiceState.speakerphone);
+        speakerBtn.setAttribute('aria-pressed', lxstVoiceState.speakerphone ? 'true' : 'false');
+        speakerBtn.setAttribute('title', speakerLabel);
+        speakerBtn.setAttribute('aria-label', speakerLabel);
+        speakerBtn.innerHTML = _voiceIcon(lxstVoiceState.speakerphone ? 'speaker-on' : 'speaker', 18);
     }
 }
 
@@ -456,6 +530,8 @@ function _voiceStartCall(hash) {
     if (!lxstVoiceState.available || !hash) return Promise.resolve();
     _voiceHaptic('selection');
     return _voiceEnsurePlaybackReady().then(_voiceEnsureMicrophonePermission).then(function() {
+        _voiceResetCallControls();
+        _voicePrimeNativeCallRoute();
         lxstVoiceState.lastDialHash = hash;
         renderVoiceUi();
         return RS.invoke('voice_call', { args: { hash: hash } }).then(function(result) {
@@ -463,6 +539,7 @@ function _voiceStartCall(hash) {
             renderVoiceUi();
         }).catch(function(err) {
             lxstVoiceState.lastDialHash = null;
+            _voiceReleaseNativeCallRoutePrime();
             _voiceHaptic('error');
             _voiceNotify((err && err.message) || 'Could not start call');
             renderVoiceUi();
@@ -474,11 +551,14 @@ function _voiceAnswerCall() {
     _voiceStopRingtone();
     _voiceHaptic('selection');
     return _voiceEnsurePlaybackReady().then(_voiceEnsureMicrophonePermission).then(function() {
+        _voiceResetCallControls();
+        _voicePrimeNativeCallRoute();
         return RS.invoke('voice_answer').then(function() {
             _voiceHaptic('success');
             lxstVoiceState.incoming = null;
             renderVoiceUi();
         }).catch(function(err) {
+            _voiceReleaseNativeCallRoutePrime();
             _voiceHaptic('error');
             _voiceNotify((err && err.message) || 'Could not answer call');
         });
@@ -508,11 +588,57 @@ function _voiceHangupCall() {
         lxstVoiceState.audioRunning = false;
         lxstVoiceState.audioMicrophone = false;
         lxstVoiceState.audioSpeaker = false;
+        _voiceReleaseNativeCallRoutePrime();
+        _voiceResetCallControls();
         lxstVoiceState.lastDialHash = null;
         lxstVoiceState.establishedAtMs = null;
         lxstVoiceState.establishedLinkId = null;
         renderVoiceUi();
     });
+}
+
+function _voiceToggleMute() {
+    var active = lxstVoiceState.active;
+    if (!active || active.status !== 'established' || !lxstVoiceState.audioMicrophone) return Promise.resolve();
+    var nextMuted = !lxstVoiceState.microphoneMuted;
+    var previousMuted = lxstVoiceState.microphoneMuted;
+    lxstVoiceState.microphoneMuted = nextMuted;
+    _voiceHaptic('selection');
+    renderVoiceUi();
+    return RS.invoke('voice_set_microphone_muted', { args: { muted: nextMuted } }).then(function(result) {
+        if (result && typeof result.microphone_muted === 'boolean') {
+            lxstVoiceState.microphoneMuted = result.microphone_muted;
+        }
+        renderVoiceUi();
+    }).catch(function(err) {
+        lxstVoiceState.microphoneMuted = previousMuted;
+        _voiceHaptic('error');
+        _voiceNotify((err && err.message) || 'Could not update microphone mute');
+        renderVoiceUi();
+    });
+}
+
+function _voiceToggleSpeaker() {
+    var active = lxstVoiceState.active;
+    if (!active || active.status !== 'established' || !_androidCallRouteBridge()) return;
+    var previousSpeakerphone = lxstVoiceState.speakerphone;
+    var nextSpeakerphone = !previousSpeakerphone;
+    var restartToken = ++_voiceSpeakerRestartToken;
+    lxstVoiceState.speakerphone = nextSpeakerphone;
+    _voiceHaptic('selection');
+    _voiceNativeAudioRouteToken = null;
+    renderVoiceUi();
+    setTimeout(function() {
+        if (restartToken !== _voiceSpeakerRestartToken) return;
+        RS.invoke('voice_restart_speaker', { args: { speakerphone: nextSpeakerphone } }).catch(function(err) {
+            if (restartToken !== _voiceSpeakerRestartToken) return;
+            lxstVoiceState.speakerphone = previousSpeakerphone;
+            _voiceNativeAudioRouteToken = null;
+            _voiceHaptic('error');
+            _voiceNotify((err && err.message) || 'Could not switch audio route');
+            renderVoiceUi();
+        });
+    }, 280);
 }
 
 function renderVoiceUi() {
@@ -543,7 +669,10 @@ function renderVoiceUi() {
         status: 'lxst-call-strip-status',
         answer: 'lxst-call-answer-btn',
         reject: 'lxst-call-reject-btn',
-        hangup: 'lxst-call-hangup-btn'
+        hangup: 'lxst-call-hangup-btn',
+        controls: 'lxst-call-strip-controls',
+        mute: 'lxst-call-mute-btn',
+        speaker: 'lxst-call-speaker-btn'
     });
     _voiceRenderCallSurface({
         surface: 'lxst-call-global',
@@ -552,6 +681,9 @@ function renderVoiceUi() {
         answer: 'lxst-call-global-answer-btn',
         reject: 'lxst-call-global-reject-btn',
         hangup: 'lxst-call-global-hangup-btn',
+        controls: 'lxst-call-global-controls',
+        mute: 'lxst-call-global-mute-btn',
+        speaker: 'lxst-call-global-speaker-btn',
         global: true
     });
 
@@ -638,6 +770,13 @@ function _voiceHandleUpdate(data) {
     if (data.type === 'service') {
         lxstVoiceState.available = true;
         lxstVoiceState.running = !!data.running;
+        if (!lxstVoiceState.running) {
+            lxstVoiceState.audioRunning = false;
+            lxstVoiceState.audioMicrophone = false;
+            lxstVoiceState.audioSpeaker = false;
+            _voiceReleaseNativeCallRoutePrime();
+            _voiceResetCallControls();
+        }
     } else if (data.type === 'incoming') {
         lxstVoiceState.incoming = {
             link_id: data.link_id,
@@ -684,6 +823,9 @@ function _voiceHandleUpdate(data) {
         lxstVoiceState.audioRunning = !!(data.audio && data.audio.running);
         lxstVoiceState.audioMicrophone = !!(data.audio && data.audio.microphone);
         lxstVoiceState.audioSpeaker = !!(data.audio && data.audio.speaker);
+        if (data.audio && typeof data.audio.microphone_muted === 'boolean') {
+            lxstVoiceState.microphoneMuted = data.audio.microphone_muted;
+        }
     } else if (data.type === 'outgoing_failed') {
         var failedMessage = data.message || 'Call could not be connected';
         lxstVoiceState.active = null;
@@ -691,6 +833,8 @@ function _voiceHandleUpdate(data) {
         lxstVoiceState.audioRunning = false;
         lxstVoiceState.audioMicrophone = false;
         lxstVoiceState.audioSpeaker = false;
+        _voiceReleaseNativeCallRoutePrime();
+        _voiceResetCallControls();
         lxstVoiceState.lastAudioWarningKey = null;
         lxstVoiceState.lastDialHash = null;
         lxstVoiceState.establishedAtMs = null;
@@ -701,9 +845,12 @@ function _voiceHandleUpdate(data) {
             _voiceNotify(failedMessage);
         }
     } else if (data.type === 'audio') {
-        lxstVoiceState.audioRunning = data.state === 'started' && !!data.running;
+        lxstVoiceState.audioRunning = !!data.running;
         lxstVoiceState.audioMicrophone = !!data.microphone;
         lxstVoiceState.audioSpeaker = !!data.speaker;
+        if (typeof data.microphone_muted === 'boolean') {
+            lxstVoiceState.microphoneMuted = data.microphone_muted;
+        }
         if (lxstVoiceState.audioMicrophone && lxstVoiceState.audioSpeaker) {
             lxstVoiceState.lastAudioWarningKey = null;
         }
@@ -721,6 +868,10 @@ function _voiceHandleUpdate(data) {
                 }
             }
         }
+    } else if (data.type === 'audio_control') {
+        if (typeof data.microphone_muted === 'boolean') {
+            lxstVoiceState.microphoneMuted = data.microphone_muted;
+        }
     } else if (data.type === 'terminated') {
         shouldPlayNoAnswerCue = !!(previousActive
             && previousActive.role === 'outgoing'
@@ -732,6 +883,8 @@ function _voiceHandleUpdate(data) {
         lxstVoiceState.audioRunning = false;
         lxstVoiceState.audioMicrophone = false;
         lxstVoiceState.audioSpeaker = false;
+        _voiceReleaseNativeCallRoutePrime();
+        _voiceResetCallControls();
         lxstVoiceState.lastAudioWarningKey = null;
         lxstVoiceState.lastDialHash = null;
         lxstVoiceState.establishedAtMs = null;
@@ -2006,17 +2159,17 @@ document.addEventListener('DOMContentLoaded', function() {
             if (e.key === 'Enter') { e.preventDefault(); this.blur(); }
         });
     }
-    ['contacts-add-fab', 'contacts-add-btn'].forEach(function(id) {
-        var addBtn = document.getElementById(id);
-        if (!addBtn) return;
-        addBtn.addEventListener('click', function() {
-            rsPromptContact({ title: 'Add Contact' }).then(function(result) {
-                if (!result) return;
-                RS.invoke('add_contact', { args: { hash: result.hash, display_name: result.display_name } }).catch(function() {});
-                showToast('Adding contact\u2026', 'toast-orange', 2000);
-            });
+    function openAddContactPrompt() {
+        rsPromptContact({ title: 'Add Contact' }).then(function(result) {
+            if (!result) return;
+            RS.invoke('add_contact', { args: { hash: result.hash, display_name: result.display_name } }).catch(function() {});
+            showToast('Adding contact\u2026', 'toast-orange', 2000);
         });
-    });
+    }
+
+    RS.gestures.bindViewFabClick('contacts-add-fab', openAddContactPrompt);
+    var contactsHeaderAddBtn = document.getElementById('contacts-add-btn');
+    if (contactsHeaderAddBtn) contactsHeaderAddBtn.addEventListener('click', openAddContactPrompt);
 });
 
 window.renderConversation = renderConversation;
@@ -3249,9 +3402,8 @@ function initFabSpeedDial() {
     // Exposed so nav.js can close the dial on view switch.
     window._closeFabDial = closeDial;
 
-    mainFab.addEventListener('click', function(e) {
+    RS.gestures.bindViewFabClick(mainFab, function(e) {
         e.stopPropagation();
-        if (typeof haptic === 'function') haptic('selection');
         _dialOpen ? closeDial() : openDial();
     });
 
@@ -3491,11 +3643,22 @@ document.addEventListener('DOMContentLoaded', function() {
         var btn = document.getElementById(id);
         if (btn) btn.addEventListener('click', _voiceHangupCall);
     });
+    ['lxst-call-mute-btn', 'lxst-call-global-mute-btn'].forEach(function(id) {
+        var btn = document.getElementById(id);
+        if (btn) btn.addEventListener('click', _voiceToggleMute);
+    });
+    ['lxst-call-speaker-btn', 'lxst-call-global-speaker-btn'].forEach(function(id) {
+        var btn = document.getElementById(id);
+        if (btn) btn.addEventListener('click', _voiceToggleSpeaker);
+    });
     _voiceWireHangupProximity('lxst-call-strip', 'lxst-call-hangup-btn');
     _voiceWireHangupProximity('lxst-call-global', 'lxst-call-global-hangup-btn');
     RS.invoke('voice_status').then(function(status) {
         lxstVoiceState.available = true;
         lxstVoiceState.running = !!(status && status.running);
+        if (status && typeof status.microphone_muted === 'boolean') {
+            lxstVoiceState.microphoneMuted = status.microphone_muted;
+        }
         renderVoiceUi();
     }).catch(function() {
         lxstVoiceState.available = false;

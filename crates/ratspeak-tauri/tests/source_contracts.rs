@@ -562,6 +562,7 @@ fn voice_and_capture_paths_preflight_media_permissions() {
         .expect("android manifest");
     assert!(manifest.contains("android.permission.CAMERA"));
     assert!(manifest.contains("android.permission.RECORD_AUDIO"));
+    assert!(manifest.contains("android.permission.WAKE_LOCK"));
     assert!(manifest.contains("android.hardware.camera.any"));
     assert!(manifest.contains("android.hardware.microphone"));
 
@@ -580,9 +581,32 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("fun stopCallRingtone()"));
     assert!(activity.contains("fun startCallAudioRoute(role: String)"));
     assert!(activity.contains("fun stopCallAudioRoute()"));
+    assert!(activity.contains("requestCallAudioFocus()"));
+    assert!(activity.contains("fun playCallRingtone(mode: String): Boolean"));
+    assert!(activity.contains("runOnMainForBoolean"));
+    assert!(activity.contains("AUDIOFOCUS_REQUEST_GRANTED"));
+    assert!(activity.contains("AudioManager.STREAM_RING"));
+    assert!(activity.contains("AudioAttributes.USAGE_VOICE_COMMUNICATION"));
+    assert!(activity.contains("volumeControlStream = AudioManager.STREAM_VOICE_CALL"));
+    assert!(activity.contains("syncCallProximityWakeLock(preferEarpiece)"));
+    assert!(activity.contains("PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK"));
+    assert!(activity.contains("isWakeLockLevelSupported"));
+    assert!(activity.contains("PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY"));
+    assert!(activity.contains("callAudioRouteName = routeName"));
     assert!(activity.contains("AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING"));
     assert!(activity.contains("AudioAttributes.USAGE_NOTIFICATION_RINGTONE"));
     assert!(activity.contains("audioManager.setCommunicationDevice(route)"));
+
+    let voice_audio = read_source(root.join(
+        "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakVoiceAudio.kt",
+    ))
+    .expect("android voice audio");
+    assert!(voice_audio.contains("object RatspeakVoiceAudio"));
+    assert!(voice_audio.contains("AudioAttributes.USAGE_VOICE_COMMUNICATION"));
+    assert!(voice_audio.contains("AudioAttributes.CONTENT_TYPE_SPEECH"));
+    assert!(voice_audio.contains("AudioFormat.ENCODING_PCM_FLOAT"));
+    assert!(voice_audio.contains("AudioTrack.MODE_STREAM"));
+    assert!(voice_audio.contains("AudioTrack.WRITE_NON_BLOCKING"));
 
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
     assert!(state_js.contains("window.RS.mediaPermissions"));
@@ -598,8 +622,15 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     ));
     assert!(lxmf.contains("RS.ringtones.sync(lxstVoiceState)"));
     assert!(lxmf.contains("RS.ringtones.setHandlers({ onOutgoingTimeout"));
-    assert!(lxmf.contains("function _voiceSyncNativeAudioRoute()"));
+    assert!(lxmf.contains("function _voiceSyncNativeAudioRoute(force)"));
     assert!(lxmf.contains("window.RatspeakAndroid.startCallAudioRoute"));
+    assert!(lxmf.contains("lxstVoiceState.speakerphone ? 'speaker' : 'earpiece'"));
+    assert!(lxmf.contains("function _voiceToggleMute()"));
+    assert!(lxmf.contains("function _voiceToggleSpeaker()"));
+    assert!(lxmf.contains("function _voicePrimeNativeCallRoute()"));
+    assert!(lxmf.contains("_voiceNativeAudioRouteLastSyncAt"));
+    assert!(lxmf.contains("voice_set_microphone_muted"));
+    assert!(lxmf.contains("voice_restart_speaker"));
     assert!(lxmf.contains("function _voicePeerLookupHash(call)"));
     assert!(
         lxmf.contains("if (call.role === 'outgoing' && lxstVoiceState.lastDialHash) return lxstVoiceState.lastDialHash;")
@@ -630,6 +661,22 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(voice_rs.contains("BlackholeReason::RateLimit"));
     assert!(voice_rs.contains("send_ephemeral_opportunistic_message"));
     assert!(voice_rs.contains("pub async fn announce_if_running(state: &AppState)"));
+    assert!(voice_rs.contains("static VOICE_MICROPHONE_MUTED: AtomicBool"));
+    assert!(voice_rs.contains("pub fn set_microphone_muted("));
+    assert!(voice_rs.contains("enum VoiceAudioControl"));
+    assert!(voice_rs.contains("RestartSpeaker { speakerphone: bool }"));
+    assert!(voice_rs.contains("async fn restart_speaker("));
+    assert!(voice_rs.contains("TelephonyControl::StopOpusStream"));
+    assert!(voice_rs.contains("start_microphone_side("));
+    assert!(voice_rs.contains("start_android_speaker_side("));
+    assert!(voice_rs.contains("RatspeakVoiceAudio.write"));
+    assert!(voice_rs.contains("const VOICE_OUTPUT_GAIN"));
+    assert!(voice_rs.contains("const VOICE_NOISE_GATE_OPEN_RMS"));
+    assert!(voice_rs.contains("fn update_noise_gate("));
+    assert!(voice_rs.contains("fn frame_rms("));
+    assert!(voice_rs.contains("fn apply_voice_output_leveling("));
+    assert!(voice_rs.contains("builder.clear_pending_audio();"));
+    assert!(voice_rs.contains("\"microphone_muted\": microphone_muted()"));
     assert!(voice_rs.contains("TelephonyControl::Announce"));
     assert!(voice_rs.contains("TelephonyServiceEvent::OutgoingCallPending"));
     assert!(voice_rs.contains("TelephonyServiceEvent::OutgoingCallFailed"));
@@ -653,10 +700,15 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(ringtone_js.contains("var OUTGOING_TIMEOUT_MS = 25000"));
     assert!(ringtone_js.contains("playCallRingtone"));
     assert!(ringtone_js.contains("stopCallRingtone"));
+    assert!(ringtone_js.contains("if (started === false)"));
     assert!(ringtone_js.contains("playTimeoutCue();"));
     assert!(ringtone_js.contains("active.status !== 'established'"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    assert!(index.contains("id=\"lxst-call-global-mute-btn\""));
+    assert!(index.contains("id=\"lxst-call-global-speaker-btn\""));
+    assert!(index.contains("id=\"lxst-call-mute-btn\""));
+    assert!(index.contains("id=\"lxst-call-speaker-btn\""));
     let ringtone_pos = index
         .find("/static/js/voice_ringtones.js")
         .expect("ringtone script");
@@ -681,6 +733,8 @@ fn active_call_surface_is_passive_and_shows_elapsed_duration() {
     assert!(lxmf.contains("minutes + ':' + (seconds < 10 ? '0' : '') + seconds"));
     assert!(lxmf.contains("function _voiceCallSurfaceAvatarHtml(call, size)"));
     assert!(lxmf.contains("identityAvatar(info.avatarHash || info.address || '', size)"));
+    assert!(lxmf.contains("name === 'speaker-on'"));
+    assert!(lxmf.contains("lxstVoiceState.speakerphone ? 'speaker-on' : 'speaker'"));
     assert!(lxmf.contains("function _voiceWireHangupProximity(surfaceId, hangupId)"));
     assert!(
         lxmf.contains(
@@ -693,8 +747,13 @@ fn active_call_surface_is_passive_and_shows_elapsed_duration() {
     let messaging_css =
         read_source(root.join("dashboard/static/css/09-messaging.css")).expect("css");
     assert!(messaging_css.contains("cursor: default;"));
-    assert!(messaging_css.contains("min-height: 80px;"));
+    assert!(messaging_css.contains("min-height: 78px;"));
     assert!(messaging_css.contains(".lxst-call-action::before"));
+    assert!(messaging_css.contains(".lxst-call-strip-controls"));
+    assert!(messaging_css.contains("flex-direction: column;"));
+    assert!(messaging_css.contains(".lxst-call-toggle.is-muted::after"));
+    assert!(messaging_css.contains(".lxst-call-toggle.is-on"));
+    assert!(!messaging_css.contains("box-shadow: inset 0 0 0 1px var(--border-light);"));
     assert!(messaging_css.contains(".lxst-call-strip-title"));
     assert!(messaging_css.contains("overflow-wrap: anywhere;"));
     assert!(messaging_css.contains(".lxst-incoming-call-address"));
@@ -825,7 +884,10 @@ fn contacts_tab_is_first_class_on_desktop_and_shows_full_addresses() {
     assert!(
         renderer.contains("'<span class=\"contacts-row-hash\">' + escapeHtml(c.hash) + '</span>'")
     );
-    assert!(lxmf.contains("['contacts-add-fab', 'contacts-add-btn'].forEach(function(id)"));
+    assert!(lxmf.contains("function openAddContactPrompt()"));
+    assert!(
+        lxmf.contains("RS.gestures.bindViewFabClick('contacts-add-fab', openAddContactPrompt);")
+    );
     assert!(
         !renderer.contains("shortHash(c.hash"),
         "standalone Contacts tab must not shorten LXMF addresses"
@@ -896,6 +958,7 @@ fn mobile_haptics_use_tauri_plugin_commands_and_semantic_feedback() {
     let constants =
         read_source(root.join("dashboard/static/js/constants.js")).expect("constants js");
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    let games = read_source(root.join("dashboard/static/js/games_tab.js")).expect("games js");
     let mut js_files = Vec::new();
     collect_files(&root.join("dashboard/static/js"), &mut js_files);
 
@@ -911,11 +974,15 @@ fn mobile_haptics_use_tauri_plugin_commands_and_semantic_feedback() {
     assert!(nav.contains("'selection_feedback'"));
     assert!(!nav.contains("{ payload: step.payload }"));
     assert!(gestures.contains("if (typeof haptic === 'function') haptic(name);"));
+    assert!(gestures.contains("G.bindViewFabClick = function(target, handler, opts)"));
     assert!(gestures.contains("RIPPLE_HAPTIC_SELECTORS"));
     assert!(constants.contains("RIPPLE_HAPTIC_SELECTORS"));
     assert!(lxmf.contains("function _voiceHaptic(name)"));
     assert!(lxmf.contains("_voiceHaptic('success')"));
     assert!(lxmf.contains("_voiceHaptic('warning')"));
+    assert!(lxmf.contains("RS.gestures.bindViewFabClick(mainFab"));
+    assert!(lxmf.contains("RS.gestures.bindViewFabClick('contacts-add-fab'"));
+    assert!(games.contains("RS.gestures.bindViewFabClick('games-fab-btn'"));
 
     for path in js_files
         .iter()

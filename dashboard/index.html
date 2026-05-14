@@ -143,7 +143,9 @@
         </div>
         <div class="lxst-call-strip-main">
             <span class="lxst-call-strip-title" id="lxst-call-global-title"></span>
-            <span class="lxst-call-strip-status" id="lxst-call-global-status"></span>
+            <div class="lxst-call-strip-meta">
+                <span class="lxst-call-strip-status" id="lxst-call-global-status"></span>
+            </div>
         </div>
         <div class="lxst-call-strip-actions">
             <button class="lxst-call-action lxst-call-action-answer" id="lxst-call-global-answer-btn" type="button" title="Answer call" aria-label="Answer call">
@@ -154,6 +156,10 @@
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.1 13.9a16 16 0 0 0 4.21 2.01l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
                 <span>Reject</span>
             </button>
+            <div class="lxst-call-strip-controls" id="lxst-call-global-controls" hidden>
+                <button class="lxst-call-toggle" id="lxst-call-global-mute-btn" type="button" title="Mute microphone" aria-label="Mute microphone" aria-pressed="false"></button>
+                <button class="lxst-call-toggle" id="lxst-call-global-speaker-btn" type="button" title="Use speaker" aria-label="Use speaker" aria-pressed="false"></button>
+            </div>
             <button class="lxst-call-action lxst-call-action-hangup" id="lxst-call-global-hangup-btn" type="button" title="Hang up" aria-label="Hang up">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65a2 2 0 0 1-.45 2.11L8.09 9.69a16 16 0 0 0 6.22 6.22l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92z"/></svg>
                 <span>Hang up</span>
@@ -459,7 +465,9 @@
                             </div>
                             <div class="lxst-call-strip-main">
                                 <span class="lxst-call-strip-title" id="lxst-call-strip-title"></span>
-                                <span class="lxst-call-strip-status" id="lxst-call-strip-status"></span>
+                                <div class="lxst-call-strip-meta">
+                                    <span class="lxst-call-strip-status" id="lxst-call-strip-status"></span>
+                                </div>
                             </div>
                             <div class="lxst-call-strip-actions">
                                 <button class="lxst-call-action lxst-call-action-answer" id="lxst-call-answer-btn" type="button" title="Answer call" aria-label="Answer call">
@@ -470,6 +478,10 @@
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.1 13.9a16 16 0 0 0 4.21 2.01l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
                                     <span>Reject</span>
                                 </button>
+                                <div class="lxst-call-strip-controls" id="lxst-call-strip-controls" hidden>
+                                    <button class="lxst-call-toggle" id="lxst-call-mute-btn" type="button" title="Mute microphone" aria-label="Mute microphone" aria-pressed="false"></button>
+                                    <button class="lxst-call-toggle" id="lxst-call-speaker-btn" type="button" title="Use speaker" aria-label="Use speaker" aria-pressed="false"></button>
+                                </div>
                                 <button class="lxst-call-action lxst-call-action-hangup" id="lxst-call-hangup-btn" type="button" title="Hang up" aria-label="Hang up">
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65a2 2 0 0 1-.45 2.11L8.09 9.69a16 16 0 0 0 6.22 6.22l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92z"/></svg>
                                     <span>Hang up</span>

@@ -530,6 +530,13 @@
     gap: 4px;
     flex: 1;
 }
+.lxst-call-strip-meta {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    overflow: hidden;
+}
 .lxst-call-strip-title {
     font-size: var(--text-base);
     font-weight: 600;
@@ -541,6 +548,78 @@
 .lxst-call-strip-status {
     font-size: var(--text-sm);
     color: var(--text-muted);
+    min-width: 0;
+    flex: 0 1 auto;
+}
+.lxst-call-strip-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    flex: 0 0 auto;
+}
+.lxst-call-strip-controls[hidden] {
+    display: none;
+}
+.lxst-call-toggle {
+    -webkit-appearance: none;
+    appearance: none;
+    position: relative;
+    width: 38px;
+    height: 34px;
+    min-width: 38px;
+    border: 0;
+    border-radius: var(--radius-full);
+    background: transparent;
+    box-shadow: none;
+    color: var(--text-muted);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+}
+.lxst-call-toggle::before {
+    content: "";
+    position: absolute;
+    inset: -5px;
+    border-radius: inherit;
+}
+.lxst-call-toggle:hover,
+.lxst-call-toggle:focus,
+.lxst-call-toggle:focus-visible,
+.lxst-call-toggle:active {
+    background: transparent;
+    box-shadow: none;
+    color: var(--text-primary);
+    outline: none;
+}
+.lxst-call-toggle:disabled {
+    cursor: default;
+    opacity: 0.45;
+}
+.lxst-call-toggle svg {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
+}
+.lxst-call-toggle.is-on {
+    background: transparent;
+    box-shadow: none;
+    color: var(--text-primary);
+}
+.lxst-call-toggle.is-muted::after {
+    content: "";
+    position: absolute;
+    width: 23px;
+    height: 2px;
+    border-radius: var(--radius-full);
+    background: var(--status-error);
+    transform: rotate(-45deg);
+    box-shadow: 0 0 0 1px var(--surface-sheet);
 }
 .lxst-call-strip-actions {
     display: flex;
@@ -665,11 +744,25 @@
     .lxst-call-strip {
         padding: 12px var(--space-4);
         gap: var(--space-3);
-        min-height: 80px;
+        min-height: 78px;
     }
     .lxst-call-strip-indicator {
         width: 50px;
         height: 50px;
+    }
+    .lxst-call-strip-main {
+        gap: 3px;
+    }
+    .lxst-call-strip-title,
+    .lxst-call-strip-status {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .lxst-call-toggle {
+        width: 40px;
+        height: 32px;
+        min-width: 40px;
     }
     .lxst-call-action {
         min-height: 52px;

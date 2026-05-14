@@ -4047,6 +4047,7 @@ dependencies = [
  "glob",
  "hex",
  "indexmap 2.13.1",
+ "jni 0.19.0",
  "lrgp",
  "lxmf-core",
  "lxst-core",

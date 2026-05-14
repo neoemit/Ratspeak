@@ -15,6 +15,18 @@ RS.gestures = RS.gestures || {};
     }
     G._hapticByName = _hapticByName;
 
+    G.bindViewFabClick = function(target, handler, opts) {
+        var el = (typeof target === 'string') ? document.getElementById(target) : target;
+        if (!el) return null;
+        opts = opts || {};
+        var feedback = opts.haptic || 'selection';
+        el.addEventListener('click', function(e) {
+            _hapticByName(feedback);
+            if (typeof handler === 'function') return handler.call(this, e);
+        });
+        return el;
+    };
+
     function _prefersReducedMotionNow() {
         return window.matchMedia &&
                window.matchMedia('(prefers-reduced-motion: reduce)').matches;

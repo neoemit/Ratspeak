@@ -34,6 +34,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import android.os.PowerManager
 import android.provider.OpenableColumns
 import android.util.Base64
 import android.webkit.JavascriptInterface
@@ -49,6 +50,8 @@ import androidx.core.view.WindowInsetsCompat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
@@ -93,12 +96,16 @@ class MainActivity : TauriActivity() {
     private var callRingtoneMode: String? = null
     private var callRingtoneTrack: AudioTrack? = null
     private var callRingtoneFocusRequest: Any? = null
+    private var callAudioFocusRequest: Any? = null
+    private var callProximityWakeLock: PowerManager.WakeLock? = null
     private var callAudioRouteActive = false
+    private var callAudioRouteName: String? = null
     private val callRingtoneFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
         if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
             handler.post { stopNativeCallRingtone() }
         }
     }
+    private val callAudioFocusListener = AudioManager.OnAudioFocusChangeListener { }
     @Volatile private var lastNetworkType: String = ""
     @Volatile private var serviceMulticastEnabled = false
 
@@ -265,6 +272,7 @@ class MainActivity : TauriActivity() {
             } catch (_: Exception) {}
         }
         networkCallback = null
+        releaseCallProximityWakeLock(waitForNoProximity = false)
         super.onDestroy()
     }
 
@@ -478,14 +486,25 @@ class MainActivity : TauriActivity() {
         return if (mode.equals("incoming", ignoreCase = true)) "incoming" else "outgoing"
     }
 
-    private fun startNativeCallRingtone(mode: String) {
+    private fun startNativeCallRingtone(mode: String): Boolean {
         val normalizedMode = normalizedCallRingtoneMode(mode)
         stopNativeCallRingtone()
         callRingtoneMode = normalizedMode
         callRingtoneGeneration++
+        val generation = callRingtoneGeneration
+        volumeControlStream = if (normalizedMode == "incoming") {
+            AudioManager.STREAM_RING
+        } else {
+            AudioManager.STREAM_VOICE_CALL
+        }
         configureCallRingtoneRoute(normalizedMode)
-        requestCallRingtoneAudioFocus(normalizedMode)
-        playNativeCallRingtoneLoop(normalizedMode, callRingtoneGeneration)
+        if (!requestCallRingtoneAudioFocus(normalizedMode)) {
+            if (callRingtoneGeneration == generation) stopNativeCallRingtone()
+            return false
+        }
+        val started = playNativeCallRingtoneLoop(normalizedMode, generation)
+        if (!started && callRingtoneGeneration == generation) stopNativeCallRingtone()
+        return started
     }
 
     private fun stopNativeCallRingtone() {
@@ -497,19 +516,25 @@ class MainActivity : TauriActivity() {
         }
         callRingtoneTrack = null
         abandonCallRingtoneAudioFocus()
-        if (!callAudioRouteActive) restoreCallAudioRoute()
+        if (!callAudioRouteActive) {
+            volumeControlStream = AudioManager.USE_DEFAULT_STREAM_TYPE
+            restoreCallAudioRoute()
+        }
     }
 
-    private fun requestCallRingtoneAudioFocus(mode: String) {
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+    private fun requestCallRingtoneAudioFocus(mode: String): Boolean {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
         val attributes = callRingtoneAudioAttributes(mode)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
                 .setAudioAttributes(attributes)
                 .setOnAudioFocusChangeListener(callRingtoneFocusListener, handler)
                 .build()
-            callRingtoneFocusRequest = request
-            audioManager.requestAudioFocus(request)
+            val focusResult = audioManager.requestAudioFocus(request)
+            if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                callRingtoneFocusRequest = request
+            }
+            focusResult
         } else {
             @Suppress("DEPRECATION")
             audioManager.requestAudioFocus(
@@ -518,6 +543,7 @@ class MainActivity : TauriActivity() {
                 AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
             )
         }
+        return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
     }
 
     private fun abandonCallRingtoneAudioFocus() {
@@ -534,6 +560,45 @@ class MainActivity : TauriActivity() {
             @Suppress("DEPRECATION")
             audioManager.abandonAudioFocus(callRingtoneFocusListener)
         }
+    }
+
+    private fun requestCallAudioFocus() {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        val attributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val existing = callAudioFocusRequest as? AudioFocusRequest
+            if (existing != null) return
+            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(attributes)
+                .setOnAudioFocusChangeListener(callAudioFocusListener, handler)
+                .build()
+            callAudioFocusRequest = request
+            audioManager.requestAudioFocus(request)
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.requestAudioFocus(
+                callAudioFocusListener,
+                AudioManager.STREAM_VOICE_CALL,
+                AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+            )
+        }
+    }
+
+    private fun abandonCallAudioFocus() {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val request = callAudioFocusRequest as? AudioFocusRequest
+            if (request != null) {
+                audioManager.abandonAudioFocusRequest(request)
+                callAudioFocusRequest = null
+                return
+            }
+        }
+        @Suppress("DEPRECATION")
+        audioManager.abandonAudioFocus(callAudioFocusListener)
     }
 
     private fun callRingtoneAudioAttributes(mode: String): AudioAttributes {
@@ -561,23 +626,46 @@ class MainActivity : TauriActivity() {
     }
 
     private fun startNativeCallAudioRoute(role: String) {
+        val routeName = if (role.equals("speaker", ignoreCase = true)) "speaker" else "earpiece"
         callAudioRouteActive = true
-        val preferEarpiece = !role.equals("speaker", ignoreCase = true)
+        callAudioRouteName = routeName
+        volumeControlStream = AudioManager.STREAM_VOICE_CALL
+        requestCallAudioFocus()
+        val preferEarpiece = routeName != "speaker"
         configureCommunicationRoute(preferEarpiece)
+        syncCallProximityWakeLock(preferEarpiece)
     }
 
     private fun stopNativeCallAudioRoute() {
         callAudioRouteActive = false
+        callAudioRouteName = null
+        releaseCallProximityWakeLock()
         restoreCallAudioRoute()
+        volumeControlStream = AudioManager.USE_DEFAULT_STREAM_TYPE
+        abandonCallAudioFocus()
     }
 
     private fun configureCommunicationRoute(preferEarpiece: Boolean) {
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        @Suppress("DEPRECATION")
+        audioManager.isSpeakerphoneOn = !preferEarpiece
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val route = selectCommunicationDevice(audioManager, preferEarpiece)
             if (route != null) {
-                try { audioManager.setCommunicationDevice(route) } catch (_: Throwable) {}
+                try {
+                    val current = audioManager.communicationDevice
+                    if (current != null && current.type != route.type) {
+                        audioManager.clearCommunicationDevice()
+                    }
+                    if (!audioManager.setCommunicationDevice(route)) {
+                        @Suppress("DEPRECATION")
+                        audioManager.isSpeakerphoneOn = !preferEarpiece
+                    }
+                } catch (_: Throwable) {
+                    @Suppress("DEPRECATION")
+                    audioManager.isSpeakerphoneOn = !preferEarpiece
+                }
             } else {
                 try { audioManager.clearCommunicationDevice() } catch (_: Throwable) {}
             }
@@ -588,7 +676,10 @@ class MainActivity : TauriActivity() {
     }
 
     private fun restoreCallAudioRoute() {
+        releaseCallProximityWakeLock()
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        @Suppress("DEPRECATION")
+        audioManager.isSpeakerphoneOn = false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try { audioManager.clearCommunicationDevice() } catch (_: Throwable) {}
         } else {
@@ -608,6 +699,12 @@ class MainActivity : TauriActivity() {
         } catch (_: Throwable) {
             return null
         }
+        if (!preferEarpiece) {
+            val speaker = devices.firstOrNull {
+                it.isSink && it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+            }
+            if (speaker != null) return speaker
+        }
         val accessory = devices.firstOrNull { device ->
             device.isSink && when (device.type) {
                 AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
@@ -626,6 +723,47 @@ class MainActivity : TauriActivity() {
         }
         return devices.firstOrNull { it.isSink && it.type == preferredType }
             ?: devices.firstOrNull { it.isSink && it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+    }
+
+    private fun syncCallProximityWakeLock(preferEarpiece: Boolean) {
+        if (preferEarpiece) {
+            acquireCallProximityWakeLock()
+        } else {
+            releaseCallProximityWakeLock()
+        }
+    }
+
+    private fun acquireCallProximityWakeLock() {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+        if (!powerManager.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) return
+        val lock = callProximityWakeLock ?: try {
+            powerManager
+                .newWakeLock(
+                    PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK,
+                    "Ratspeak:LXSTProximity"
+                )
+                .apply { setReferenceCounted(false) }
+                .also { callProximityWakeLock = it }
+        } catch (_: Throwable) {
+            null
+        } ?: return
+        if (!lock.isHeld) {
+            try { lock.acquire() } catch (_: Throwable) {}
+        }
+    }
+
+    private fun releaseCallProximityWakeLock(waitForNoProximity: Boolean = true) {
+        val lock = callProximityWakeLock ?: return
+        try {
+            if (lock.isHeld) {
+                if (waitForNoProximity) {
+                    lock.release(PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY)
+                } else {
+                    lock.release()
+                }
+            }
+        } catch (_: Throwable) {}
+        callProximityWakeLock = null
     }
 
     private fun callRingtoneSequenceMs(mode: String): Long {
@@ -662,9 +800,10 @@ class MainActivity : TauriActivity() {
         return root * phrase[noteIndex % phrase.size] * (1.0 + taperLift)
     }
 
-    private fun playNativeCallRingtoneLoop(mode: String, generation: Int) {
+    private fun playNativeCallRingtoneLoop(mode: String, generation: Int): Boolean {
         val pcm = buildNativeCallRingtonePcm(mode)
         val frameCount = pcm.size / 2
+        if (callRingtoneGeneration != generation) return false
         val track = try {
             AudioTrack.Builder()
                 .setAudioAttributes(callRingtoneAudioAttributes(mode))
@@ -679,17 +818,22 @@ class MainActivity : TauriActivity() {
                 .setBufferSizeInBytes(pcm.size)
                 .build()
         } catch (_: Throwable) {
-            return
+            return false
         }
         try {
-            track.write(pcm, 0, pcm.size)
+            val written = track.write(pcm, 0, pcm.size)
+            if (written != pcm.size) {
+                try { track.release() } catch (_: Throwable) {}
+                return false
+            }
             track.setLoopPoints(0, frameCount, -1)
             callRingtoneTrack = track
             track.play()
+            return track.playState == AudioTrack.PLAYSTATE_PLAYING
         } catch (_: Throwable) {
             if (callRingtoneTrack === track) callRingtoneTrack = null
             try { track.release() } catch (_: Throwable) {}
-            if (callRingtoneGeneration == generation) stopNativeCallRingtone()
+            return false
         }
     }
 
@@ -785,6 +929,24 @@ class MainActivity : TauriActivity() {
             bytes[offset + 1] = ((shortValue.toInt() shr 8) and 0xff).toByte()
         }
         return bytes
+    }
+
+    private fun runOnMainForBoolean(timeoutMs: Long = 500L, block: () -> Boolean): Boolean {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return try { block() } catch (_: Throwable) { false }
+        }
+        val latch = CountDownLatch(1)
+        var result = false
+        handler.post {
+            result = try { block() } catch (_: Throwable) { false }
+            latch.countDown()
+        }
+        return try {
+            latch.await(timeoutMs, TimeUnit.MILLISECONDS) && result
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
     }
 
     override fun onRequestPermissionsResult(
@@ -1326,8 +1488,8 @@ class MainActivity : TauriActivity() {
         }
 
         @JavascriptInterface
-        fun playCallRingtone(mode: String) {
-            handler.post {
+        fun playCallRingtone(mode: String): Boolean {
+            return this@MainActivity.runOnMainForBoolean {
                 this@MainActivity.startNativeCallRingtone(mode)
             }
         }

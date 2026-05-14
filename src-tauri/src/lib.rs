@@ -327,6 +327,10 @@ pub fn run() {
             ratspeak_tauri::commands::voice::voice_reject,
             #[cfg(feature = "lxst-voice")]
             ratspeak_tauri::commands::voice::voice_hangup,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_set_microphone_muted,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_restart_speaker,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

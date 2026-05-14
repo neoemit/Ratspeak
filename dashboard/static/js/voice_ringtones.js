@@ -95,7 +95,11 @@
         var bridge = _androidRingtoneBridge();
         if (!bridge) return false;
         try {
-            bridge.playCallRingtone(mode);
+            var started = bridge.playCallRingtone(mode);
+            if (started === false) {
+                nativeRingtoneActive = false;
+                return false;
+            }
             nativeRingtoneActive = true;
             return true;
         } catch (err) {

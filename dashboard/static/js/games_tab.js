@@ -1693,10 +1693,7 @@
 
     function _initNewGameBtn() {
         _bindBtn('games-new-btn', showNewGameDialog);
-        _bindBtn('games-fab-btn', function() {
-            if (typeof haptic === 'function') haptic('selection');
-            showNewGameDialog();
-        });
+        RS.gestures.bindViewFabClick('games-fab-btn', showNewGameDialog);
     }
 
     window.gamesTabLoad = function() {

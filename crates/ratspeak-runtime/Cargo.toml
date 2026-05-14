@@ -67,3 +67,8 @@ btleplug = { workspace = true, optional = true }
 # iOS-only: CoreBluetooth authorization probe in platform_ios.rs
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6"
+
+# Android LXST voice output streams decoded PCM through a native AudioTrack so
+# the platform applies VoIP routing and call-volume policy.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.19"

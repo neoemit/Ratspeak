@@ -1,7 +1,10 @@
 //! LXST voice service and native audio bridge.
 
 use std::collections::{HashSet, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -23,20 +26,35 @@ use crate::state::AppState;
 
 const AUDIO_FRAME_CHANNEL_DEPTH: usize = 8;
 const AUDIO_SPEAKER_CHANNEL_DEPTH: usize = 32;
-const VOICE_AGC_TARGET_RMS: f32 = 0.17782794;
+const VOICE_AGC_TARGET_RMS: f32 = 0.14125375;
 const VOICE_AGC_MIN_GAIN: f32 = 0.35;
-const VOICE_AGC_MAX_GAIN: f32 = 6.0;
+const VOICE_AGC_MAX_GAIN: f32 = 3.0;
 const VOICE_AGC_ATTACK: f32 = 0.20;
 const VOICE_AGC_RELEASE: f32 = 0.04;
 const VOICE_HIGHPASS_HZ: f32 = 250.0;
 const VOICE_LOWPASS_HZ: f32 = 8_500.0;
+const VOICE_NOISE_GATE_INITIAL_FLOOR_RMS: f32 = 0.003;
+const VOICE_NOISE_GATE_OPEN_RMS: f32 = 0.006;
+const VOICE_NOISE_GATE_CLOSE_RMS: f32 = 0.003;
+const VOICE_NOISE_GATE_FLOOR_OPEN_MULTIPLIER: f32 = 2.2;
+const VOICE_NOISE_GATE_FLOOR_CLOSE_MULTIPLIER: f32 = 1.25;
+const VOICE_NOISE_GATE_CLOSED_GAIN: f32 = 0.35;
+const VOICE_NOISE_GATE_ATTACK: f32 = 0.45;
+const VOICE_NOISE_GATE_RELEASE: f32 = 0.06;
+const VOICE_NOISE_GATE_FLOOR_FAST: f32 = 0.06;
+const VOICE_NOISE_GATE_FLOOR_SLOW: f32 = 0.006;
+const VOICE_NOISE_GATE_HOLD_MS: usize = 420;
 const VOICE_PROFILE_UPGRADE_AFTER: Duration = Duration::ZERO;
 const VOICE_PROFILE_SWITCH_COOLDOWN: Duration = Duration::from_secs(12);
 const VOICE_PROFILE_DOWNGRADE_COOLDOWN: Duration = Duration::from_secs(20);
 const VOICE_PROFILE_UPGRADE_LOCKOUT_AFTER_DOWNGRADE: Duration = Duration::from_secs(60);
 const VOICE_PROFILE_DROPPED_FRAME_THRESHOLD: usize = 4;
 const VOICE_AUDIO_FADE_IN_MS: usize = 20;
+#[cfg_attr(target_os = "android", allow(dead_code))]
 const VOICE_AUDIO_OUTPUT_PREBUFFER_MS: usize = 120;
+const VOICE_OUTPUT_GAIN: f32 = 1.85;
+const VOICE_OUTPUT_LIMIT: f32 = 0.98;
+const VOICE_OUTPUT_LIMIT_CURVE: f32 = 0.35;
 const VOICE_INITIAL_PROFILE: Profile = Profile::QualityHigh;
 const LXMF_DELIVERY_DESTINATION_NAME: &str = "lxmf.delivery";
 const VOICE_CONTACTS_ONLY_NOTICE: &str = "I'm only accepting calls from contacts.";
@@ -44,11 +62,13 @@ const VOICE_REJECTED_CALL_BLACKHOLE_THRESHOLD: u32 = 10;
 const VOICE_REJECTED_CALL_ATTEMPT_WINDOW: Duration = Duration::from_secs(6 * 60 * 60);
 const VOICE_AUTO_BLACKHOLE_REASON: &str = "LXST call spam guard";
 const VOICE_BLOCKED_CONTACT_BLACKHOLE_REASON: &str = "Blocked contact LXST call";
+static VOICE_MICROPHONE_MUTED: AtomicBool = AtomicBool::new(false);
 
 pub type VoiceResult<T> = Result<T, String>;
 
 pub struct LxstVoiceServiceHandle {
     control_tx: mpsc::Sender<TelephonyControl>,
+    audio_control_tx: mpsc::Sender<VoiceAudioControl>,
     service_task: Option<JoinHandle<()>>,
     event_task: Option<JoinHandle<()>>,
 }
@@ -56,11 +76,13 @@ pub struct LxstVoiceServiceHandle {
 impl LxstVoiceServiceHandle {
     fn new(
         control_tx: mpsc::Sender<TelephonyControl>,
+        audio_control_tx: mpsc::Sender<VoiceAudioControl>,
         service_task: JoinHandle<()>,
         event_task: JoinHandle<()>,
     ) -> Self {
         Self {
             control_tx,
+            audio_control_tx,
             service_task: Some(service_task),
             event_task: Some(event_task),
         }
@@ -68,6 +90,10 @@ impl LxstVoiceServiceHandle {
 
     fn control_tx(&self) -> mpsc::Sender<TelephonyControl> {
         self.control_tx.clone()
+    }
+
+    fn audio_control_tx(&self) -> mpsc::Sender<VoiceAudioControl> {
+        self.audio_control_tx.clone()
     }
 
     async fn shutdown(mut self) {
@@ -79,6 +105,10 @@ impl LxstVoiceServiceHandle {
             await_or_abort(task).await;
         }
     }
+}
+
+enum VoiceAudioControl {
+    RestartSpeaker { speakerphone: bool },
 }
 
 impl Drop for LxstVoiceServiceHandle {
@@ -109,6 +139,7 @@ pub async fn start_voice_service(state: &Arc<AppState>) -> VoiceResult<()> {
         .map_err(|e| format!("Failed to register LXST telephony destination: {e}"))?;
 
     let (control_tx, control_rx) = mpsc::channel::<TelephonyControl>(32);
+    let (audio_control_tx, audio_control_rx) = mpsc::channel::<VoiceAudioControl>(8);
     let (event_tx, event_rx) = mpsc::channel::<TelephonyServiceEvent>(128);
     let service =
         TelephonyService::new(endpoint, TelephonyRuntimeCore::new(), control_rx, event_tx);
@@ -121,10 +152,16 @@ pub async fn start_voice_service(state: &Arc<AppState>) -> VoiceResult<()> {
     let event_control_tx = control_tx.clone();
     let runtime = tokio::runtime::Handle::current();
     let event_task = tokio::task::spawn_blocking(move || {
-        runtime.block_on(drive_voice_events(event_state, event_control_tx, event_rx));
+        runtime.block_on(drive_voice_events(
+            event_state,
+            event_control_tx,
+            event_rx,
+            audio_control_rx,
+        ));
     });
 
-    let handle = LxstVoiceServiceHandle::new(control_tx, service_task, event_task);
+    let handle =
+        LxstVoiceServiceHandle::new(control_tx, audio_control_tx, service_task, event_task);
     if let Ok(mut voice) = state.lxst_voice.lock() {
         if voice.is_some() {
             drop(handle);
@@ -158,6 +195,7 @@ pub async fn shutdown_voice_service(state: &Arc<AppState>) {
     if let Some(handle) = handle {
         handle.shutdown().await;
     }
+    VOICE_MICROPHONE_MUTED.store(false, Ordering::Relaxed);
 
     state.emit_to_all(
         "voice_call_update",
@@ -179,7 +217,38 @@ pub fn voice_status(state: &AppState) -> Value {
     json!({
         "enabled": true,
         "running": running,
+        "microphone_muted": microphone_muted(),
     })
+}
+
+pub fn set_microphone_muted(state: &AppState, muted: bool) -> VoiceResult<Value> {
+    if voice_control_tx(state).is_none() {
+        return Err("LXST voice service is not running".to_string());
+    }
+    VOICE_MICROPHONE_MUTED.store(muted, Ordering::Relaxed);
+    state.emit_to_all(
+        "voice_call_update",
+        json!({
+            "type": "audio_control",
+            "microphone_muted": muted,
+        }),
+    );
+    Ok(json!({
+        "ok": true,
+        "microphone_muted": muted,
+    }))
+}
+
+pub async fn restart_speaker(state: &AppState, speakerphone: bool) -> VoiceResult<Value> {
+    let tx = voice_audio_control_tx(state)
+        .ok_or_else(|| "LXST voice service is not running".to_string())?;
+    tx.send(VoiceAudioControl::RestartSpeaker { speakerphone })
+        .await
+        .map_err(|_| "LXST voice audio controls are not accepting commands".to_string())?;
+    Ok(json!({
+        "ok": true,
+        "speakerphone": speakerphone,
+    }))
 }
 
 pub async fn call_identity(state: &Arc<AppState>, remote_identity: [u8; 16]) -> VoiceResult<Value> {
@@ -249,6 +318,10 @@ async fn send_control(state: &AppState, control: TelephonyControl) -> VoiceResul
     tx.send(control)
         .await
         .map_err(|_| "LXST voice service is not accepting commands".to_string())
+}
+
+fn microphone_muted() -> bool {
+    VOICE_MICROPHONE_MUTED.load(Ordering::Relaxed)
 }
 
 #[derive(Debug, Clone)]
@@ -593,6 +666,14 @@ fn voice_control_tx(state: &AppState) -> Option<mpsc::Sender<TelephonyControl>> 
         .and_then(|voice| voice.as_ref().map(LxstVoiceServiceHandle::control_tx))
 }
 
+fn voice_audio_control_tx(state: &AppState) -> Option<mpsc::Sender<VoiceAudioControl>> {
+    state
+        .lxst_voice
+        .lock()
+        .ok()
+        .and_then(|voice| voice.as_ref().map(LxstVoiceServiceHandle::audio_control_tx))
+}
+
 fn voice_runtime_inputs(
     state: &AppState,
 ) -> VoiceResult<(
@@ -625,6 +706,7 @@ async fn drive_voice_events(
     state: Arc<AppState>,
     control_tx: mpsc::Sender<TelephonyControl>,
     mut event_rx: mpsc::Receiver<TelephonyServiceEvent>,
+    mut audio_control_rx: mpsc::Receiver<VoiceAudioControl>,
 ) {
     let mut audio_session: Option<VoiceAudioSession> = None;
     let mut audio_failure: Option<VoiceAudioFailure> = None;
@@ -632,7 +714,29 @@ async fn drive_voice_events(
     let mut latest_snapshot: Option<TelephonyRuntimeSnapshot> = None;
     let mut suppressed_call_links: HashSet<[u8; 16]> = HashSet::new();
 
-    while let Some(event) = event_rx.recv().await {
+    loop {
+        let event = tokio::select! {
+            event = event_rx.recv() => event,
+            control = audio_control_rx.recv() => {
+                if let Some(control) = control {
+                    handle_voice_audio_control(
+                        &state,
+                        &control_tx,
+                        latest_snapshot.as_ref(),
+                        &mut audio_session,
+                        &mut audio_failure,
+                        control,
+                    )
+                    .await;
+                } else {
+                    break;
+                }
+                continue;
+            }
+        };
+        let Some(event) = event else {
+            break;
+        };
         match event {
             TelephonyServiceEvent::IncomingCall {
                 link_id,
@@ -909,6 +1013,74 @@ async fn drive_voice_events(
     stop_audio_session(audio_session.take(), &control_tx).await;
 }
 
+async fn handle_voice_audio_control(
+    state: &AppState,
+    control_tx: &mpsc::Sender<TelephonyControl>,
+    latest_snapshot: Option<&TelephonyRuntimeSnapshot>,
+    audio_session: &mut Option<VoiceAudioSession>,
+    audio_failure: &mut Option<VoiceAudioFailure>,
+    control: VoiceAudioControl,
+) {
+    match control {
+        VoiceAudioControl::RestartSpeaker { speakerphone } => {
+            let Some(snapshot) = latest_snapshot else {
+                return;
+            };
+            let Some(active) = snapshot.active_call.as_ref() else {
+                return;
+            };
+            if active.status != SignallingStatus::Established {
+                return;
+            }
+
+            if let Some(session) = audio_session.as_mut() {
+                match session.restart_speaker(control_tx.clone()).await {
+                    Ok(()) => {
+                        state.emit_to_all(
+                            "voice_call_update",
+                            json!({
+                                "type": "audio",
+                                "state": "restarted",
+                                "link_id": hex::encode(session.link_id),
+                                "profile": profile_key(session.profile),
+                                "running": session.running(),
+                                "microphone": session.microphone,
+                                "microphone_muted": microphone_muted(),
+                                "speaker": session.speaker,
+                                "speakerphone": speakerphone,
+                                "warnings": session.warnings.clone(),
+                            }),
+                        );
+                    }
+                    Err(message) => {
+                        state.emit_to_all(
+                            "voice_call_update",
+                            json!({
+                                "type": "audio",
+                                "state": "speaker_restart_failed",
+                                "link_id": hex::encode(session.link_id),
+                                "profile": profile_key(session.profile),
+                                "running": session.running(),
+                                "microphone": session.microphone,
+                                "microphone_muted": microphone_muted(),
+                                "speaker": session.speaker,
+                                "speakerphone": speakerphone,
+                                "warnings": [message],
+                            }),
+                        );
+                    }
+                }
+                emit_snapshot(state, snapshot, audio_session.as_ref());
+            } else {
+                *audio_failure = None;
+                reconcile_audio_session(state, control_tx, snapshot, audio_session, audio_failure)
+                    .await;
+                emit_snapshot(state, snapshot, audio_session.as_ref());
+            }
+        }
+    }
+}
+
 async fn reconcile_audio_session(
     state: &AppState,
     control_tx: &mpsc::Sender<TelephonyControl>,
@@ -978,6 +1150,7 @@ async fn reconcile_audio_session(
                     "profile": profile_key(profile),
                     "running": microphone || speaker,
                     "microphone": microphone,
+                    "microphone_muted": microphone_muted(),
                     "speaker": speaker,
                     "warnings": warnings,
                 }),
@@ -1073,6 +1246,7 @@ async fn stop_audio_session(
         }
         drop(session);
     }
+    VOICE_MICROPHONE_MUTED.store(false, Ordering::Relaxed);
 }
 
 fn emit_snapshot(
@@ -1091,6 +1265,7 @@ fn emit_snapshot(
                 "profile": profile_key(session.profile),
                 "running": session.running(),
                 "microphone": session.microphone,
+                "microphone_muted": microphone_muted(),
                 "speaker": session.speaker,
             })),
             "active_call": snapshot.active_call.as_ref().map(active_call_payload),
@@ -1353,8 +1528,24 @@ struct VoiceAudioSession {
     speaker: bool,
     warnings: Vec<String>,
     _input_stream: Option<cpal::Stream>,
-    _output_stream: Option<cpal::Stream>,
+    _output_stream: Option<VoiceOutputStream>,
     sink_task: Option<JoinHandle<()>>,
+}
+
+#[cfg(target_os = "android")]
+type VoiceOutputStream = AndroidVoiceOutput;
+
+#[cfg(not(target_os = "android"))]
+type VoiceOutputStream = cpal::Stream;
+
+#[cfg(target_os = "android")]
+struct AndroidVoiceOutput;
+
+#[cfg(target_os = "android")]
+impl Drop for AndroidVoiceOutput {
+    fn drop(&mut self) {
+        android_voice_audio::stop();
+    }
 }
 
 struct VoiceAudioFailure {
@@ -1373,11 +1564,84 @@ impl VoiceAudioSession {
         self.microphone || self.speaker
     }
 
+    async fn restart_speaker(
+        &mut self,
+        control_tx: mpsc::Sender<TelephonyControl>,
+    ) -> VoiceResult<()> {
+        let had_microphone = self.microphone;
+        let had_speaker = self.speaker;
+        if self.microphone {
+            let _ = control_tx.send(TelephonyControl::StopOpusStream).await;
+        }
+        if self.speaker {
+            let _ = control_tx
+                .send(TelephonyControl::StopOpusReceiveStream)
+                .await;
+        }
+        if let Some(task) = self.sink_task.take() {
+            await_or_abort(task).await;
+        }
+        self._output_stream.take();
+        self._input_stream.take();
+        self.microphone = false;
+        self.speaker = false;
+
+        let host = cpal::default_host();
+        let target_channels = usize::from(self.profile.channels());
+        let target_sample_rate = self.profile.sample_rate_hz();
+        let target_frames = self.profile.sample_frames_per_packet();
+        let mut restart_warnings = Vec::new();
+
+        match start_microphone_side(
+            &host,
+            self.profile,
+            control_tx.clone(),
+            target_channels,
+            target_sample_rate,
+            target_frames,
+        )
+        .await
+        {
+            Ok(stream) => {
+                self._input_stream = Some(stream);
+                self.microphone = true;
+            }
+            Err(message) => {
+                restart_warnings.push(message);
+            }
+        }
+
+        match start_speaker_side(&host, control_tx, target_sample_rate).await {
+            Ok((stream, sink_task)) => {
+                self._output_stream = Some(stream);
+                self.sink_task = Some(sink_task);
+                self.speaker = true;
+            }
+            Err(message) => {
+                restart_warnings.push(message);
+            }
+        }
+
+        if (had_microphone && !self.microphone) || (had_speaker && !self.speaker) {
+            let detail = restart_warnings.join("; ");
+            self.warnings.extend(restart_warnings);
+            return Err(if detail.is_empty() {
+                "Failed to restart LXST audio route".to_string()
+            } else {
+                format!("Failed to restart LXST audio route: {detail}")
+            });
+        }
+
+        self.warnings.extend(restart_warnings);
+        Ok(())
+    }
+
     async fn start(
         link_id: [u8; 16],
         profile: Profile,
         control_tx: mpsc::Sender<TelephonyControl>,
     ) -> VoiceResult<Self> {
+        VOICE_MICROPHONE_MUTED.store(false, Ordering::Relaxed);
         let host = cpal::default_host();
         let target_channels = usize::from(profile.channels());
         let target_sample_rate = profile.sample_rate_hz();
@@ -1475,60 +1739,148 @@ async fn start_speaker_side(
     host: &cpal::Host,
     control_tx: mpsc::Sender<TelephonyControl>,
     target_sample_rate: u32,
-) -> VoiceResult<(cpal::Stream, JoinHandle<()>)> {
-    let output_device = host
-        .default_output_device()
-        .ok_or_else(|| "No default speaker is available".to_string())?;
-    let output_config = select_output_config(&output_device, target_sample_rate)?;
+) -> VoiceResult<(VoiceOutputStream, JoinHandle<()>)> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = host;
+        return start_android_speaker_side(control_tx, target_sample_rate).await;
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let output_device = host
+            .default_output_device()
+            .ok_or_else(|| "No default speaker is available".to_string())?;
+        let output_config = select_output_config(&output_device, target_sample_rate)?;
+        let (speaker_tx, mut speaker_rx) =
+            mpsc::channel::<RawAudioFrame>(AUDIO_SPEAKER_CHANNEL_DEPTH);
+
+        let output_channels = usize::from(output_config.channels());
+        let output_sample_rate = output_config.sample_rate().0;
+        let max_queue_samples = output_channels * output_sample_rate as usize;
+        let prebuffer_samples =
+            output_channels * output_sample_rate as usize * VOICE_AUDIO_OUTPUT_PREBUFFER_MS / 1000;
+        let output_queue = Arc::new(Mutex::new(AudioOutputQueue::new(
+            max_queue_samples,
+            prebuffer_samples,
+        )));
+        let output_stream =
+            build_output_stream(&output_device, &output_config, Arc::clone(&output_queue))?;
+
+        let sink_task = tokio::spawn(async move {
+            let mut fade_samples_remaining = fade_sample_count(output_sample_rate, output_channels);
+            let fade_samples_total = fade_samples_remaining;
+            while let Some(frame) = speaker_rx.recv().await {
+                let mut converted = resample_output_frame(
+                    &frame,
+                    target_sample_rate,
+                    output_sample_rate,
+                    output_channels,
+                );
+                apply_fade_in(
+                    &mut converted,
+                    &mut fade_samples_remaining,
+                    fade_samples_total,
+                );
+                apply_voice_output_leveling(&mut converted);
+                if let Ok(mut queue) = output_queue.lock() {
+                    queue.push_samples(converted);
+                }
+            }
+        });
+
+        if let Err(e) = output_stream.play() {
+            sink_task.abort();
+            return Err(format!("Failed to start speaker stream: {e}"));
+        }
+
+        if let Err(e) = control_tx
+            .send(TelephonyControl::StartOpusReceiveStream { frames: speaker_tx })
+            .await
+        {
+            sink_task.abort();
+            return Err(format!("Failed to start LXST speaker stream: {e}"));
+        }
+
+        Ok((output_stream, sink_task))
+    }
+}
+
+#[cfg(target_os = "android")]
+async fn start_android_speaker_side(
+    control_tx: mpsc::Sender<TelephonyControl>,
+    target_sample_rate: u32,
+) -> VoiceResult<(AndroidVoiceOutput, JoinHandle<()>)> {
+    const ANDROID_OUTPUT_SAMPLE_RATE: u32 = 48_000;
+    const ANDROID_OUTPUT_CHANNELS: usize = 1;
+
+    android_voice_audio::start(ANDROID_OUTPUT_SAMPLE_RATE, ANDROID_OUTPUT_CHANNELS)?;
     let (speaker_tx, mut speaker_rx) = mpsc::channel::<RawAudioFrame>(AUDIO_SPEAKER_CHANNEL_DEPTH);
 
-    let output_channels = usize::from(output_config.channels());
-    let output_sample_rate = output_config.sample_rate().0;
-    let max_queue_samples = output_channels * output_sample_rate as usize;
-    let prebuffer_samples =
-        output_channels * output_sample_rate as usize * VOICE_AUDIO_OUTPUT_PREBUFFER_MS / 1000;
-    let output_queue = Arc::new(Mutex::new(AudioOutputQueue::new(
-        max_queue_samples,
-        prebuffer_samples,
-    )));
-    let output_stream =
-        build_output_stream(&output_device, &output_config, Arc::clone(&output_queue))?;
-
-    let sink_task = tokio::spawn(async move {
-        let mut fade_samples_remaining = fade_sample_count(output_sample_rate, output_channels);
+    let sink_task = tokio::task::spawn_blocking(move || {
+        let mut fade_samples_remaining =
+            fade_sample_count(ANDROID_OUTPUT_SAMPLE_RATE, ANDROID_OUTPUT_CHANNELS);
         let fade_samples_total = fade_samples_remaining;
-        while let Some(frame) = speaker_rx.recv().await {
+        while let Some(frame) = speaker_rx.blocking_recv() {
             let mut converted = resample_output_frame(
                 &frame,
                 target_sample_rate,
-                output_sample_rate,
-                output_channels,
+                ANDROID_OUTPUT_SAMPLE_RATE,
+                ANDROID_OUTPUT_CHANNELS,
             );
             apply_fade_in(
                 &mut converted,
                 &mut fade_samples_remaining,
                 fade_samples_total,
             );
-            if let Ok(mut queue) = output_queue.lock() {
-                queue.push_samples(converted);
+            apply_voice_output_leveling(&mut converted);
+            if let Err(err) = write_android_voice_samples(&converted) {
+                tracing::warn!(error = %err, "LXST Android voice output write failed");
+                if android_voice_audio::start(ANDROID_OUTPUT_SAMPLE_RATE, ANDROID_OUTPUT_CHANNELS)
+                    .is_ok()
+                {
+                    let _ = write_android_voice_samples(&converted);
+                } else {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
             }
         }
     });
-
-    if let Err(e) = output_stream.play() {
-        sink_task.abort();
-        return Err(format!("Failed to start speaker stream: {e}"));
-    }
 
     if let Err(e) = control_tx
         .send(TelephonyControl::StartOpusReceiveStream { frames: speaker_tx })
         .await
     {
         sink_task.abort();
-        return Err(format!("Failed to start LXST speaker stream: {e}"));
+        android_voice_audio::stop();
+        return Err(format!("Failed to start LXST Android speaker stream: {e}"));
     }
 
-    Ok((output_stream, sink_task))
+    Ok((AndroidVoiceOutput, sink_task))
+}
+
+#[cfg(target_os = "android")]
+fn write_android_voice_samples(samples: &[f32]) -> VoiceResult<()> {
+    let mut offset = 0usize;
+    let mut empty_writes = 0u8;
+    while offset < samples.len() {
+        match android_voice_audio::write(&samples[offset..]) {
+            Ok(0) => {
+                empty_writes = empty_writes.saturating_add(1);
+                if empty_writes >= 4 {
+                    return Err("Android voice AudioTrack stopped accepting samples".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(written) => {
+                let remaining = samples.len() - offset;
+                offset += written.min(remaining);
+                empty_writes = 0;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
 }
 
 impl Drop for VoiceAudioSession {
@@ -1637,6 +1989,13 @@ impl InputFrameBuilder {
 
         frames
     }
+
+    fn clear_pending_audio(&mut self) {
+        self.source_samples.clear();
+        self.pending_frame.clear();
+        self.source_cursor = 0.0;
+        self.fade_samples_remaining = self.fade_samples_total;
+    }
 }
 
 struct VoiceInputProcessor {
@@ -1644,6 +2003,10 @@ struct VoiceInputProcessor {
     highpass: Vec<HighPassFilter>,
     lowpass: Vec<LowPassFilter>,
     agc_gain: f32,
+    noise_floor_rms: f32,
+    gate_gain: f32,
+    gate_hold_samples: usize,
+    gate_hold_samples_total: usize,
 }
 
 impl VoiceInputProcessor {
@@ -1667,6 +2030,11 @@ impl VoiceInputProcessor {
                 .map(|_| LowPassFilter::new(sample_rate, lowpass_cutoff))
                 .collect(),
             agc_gain: 1.0,
+            noise_floor_rms: VOICE_NOISE_GATE_INITIAL_FLOOR_RMS,
+            gate_gain: 1.0,
+            gate_hold_samples: 0,
+            gate_hold_samples_total: ((sample_rate as usize) * VOICE_NOISE_GATE_HOLD_MS / 1000)
+                .max(1),
         }
     }
 
@@ -1682,24 +2050,84 @@ impl VoiceInputProcessor {
             }
         }
 
-        let rms = (samples.iter().map(|sample| sample * sample).sum::<f32>()
-            / samples.len() as f32)
-            .sqrt();
-        if rms > 0.0001 {
+        let rms = frame_rms(samples);
+        let gate_open = self.update_noise_gate(rms, samples.len() / self.channels);
+        self.apply_noise_gate(samples);
+
+        let gated_rms = frame_rms(samples);
+        if gate_open && gated_rms > 0.0001 {
             let desired_gain =
-                (VOICE_AGC_TARGET_RMS / rms).clamp(VOICE_AGC_MIN_GAIN, VOICE_AGC_MAX_GAIN);
+                (VOICE_AGC_TARGET_RMS / gated_rms).clamp(VOICE_AGC_MIN_GAIN, VOICE_AGC_MAX_GAIN);
             let coefficient = if desired_gain < self.agc_gain {
                 VOICE_AGC_ATTACK
             } else {
                 VOICE_AGC_RELEASE
             };
             self.agc_gain += (desired_gain - self.agc_gain) * coefficient;
+        } else {
+            self.agc_gain += (1.0 - self.agc_gain) * VOICE_AGC_RELEASE;
         }
 
         for sample in samples {
             *sample = (*sample * self.agc_gain).clamp(-0.98, 0.98);
         }
     }
+
+    fn update_noise_gate(&mut self, rms: f32, sample_frames: usize) -> bool {
+        let open_threshold = VOICE_NOISE_GATE_OPEN_RMS
+            .max(self.noise_floor_rms * VOICE_NOISE_GATE_FLOOR_OPEN_MULTIPLIER);
+        let close_threshold = VOICE_NOISE_GATE_CLOSE_RMS
+            .max(self.noise_floor_rms * VOICE_NOISE_GATE_FLOOR_CLOSE_MULTIPLIER);
+
+        if rms < open_threshold {
+            let coefficient = if rms < self.noise_floor_rms {
+                VOICE_NOISE_GATE_FLOOR_FAST
+            } else {
+                VOICE_NOISE_GATE_FLOOR_SLOW
+            };
+            self.noise_floor_rms += (rms - self.noise_floor_rms) * coefficient;
+            self.noise_floor_rms = self
+                .noise_floor_rms
+                .clamp(0.0001, VOICE_NOISE_GATE_OPEN_RMS);
+        }
+
+        let active = rms >= open_threshold || self.gate_hold_samples > 0;
+        if rms >= open_threshold {
+            self.gate_hold_samples = self.gate_hold_samples_total;
+        } else if rms < close_threshold {
+            self.gate_hold_samples = self.gate_hold_samples.saturating_sub(sample_frames);
+        }
+
+        let target_gain = if active {
+            1.0
+        } else {
+            VOICE_NOISE_GATE_CLOSED_GAIN
+        };
+        let coefficient = if target_gain > self.gate_gain {
+            VOICE_NOISE_GATE_ATTACK
+        } else {
+            VOICE_NOISE_GATE_RELEASE
+        };
+        self.gate_gain += (target_gain - self.gate_gain) * coefficient;
+        self.gate_gain = self.gate_gain.clamp(VOICE_NOISE_GATE_CLOSED_GAIN, 1.0);
+        active
+    }
+
+    fn apply_noise_gate(&self, samples: &mut [f32]) {
+        if (self.gate_gain - 1.0).abs() < f32::EPSILON {
+            return;
+        }
+        for sample in samples {
+            *sample *= self.gate_gain;
+        }
+    }
+}
+
+fn frame_rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt()
 }
 
 struct HighPassFilter {
@@ -1818,6 +2246,7 @@ fn select_input_config(
     }
 }
 
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn select_output_config(
     device: &cpal::Device,
     preferred_sample_rate: u32,
@@ -1851,6 +2280,7 @@ fn fallback_input_config(
         .ok_or_else(|| "no supported microphone configuration was found".to_string())
 }
 
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn fallback_output_config(
     device: &cpal::Device,
     preferred_sample_rate: u32,
@@ -1913,6 +2343,7 @@ fn sample_format_penalty(format: cpal::SampleFormat) -> u8 {
     }
 }
 
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn build_output_stream(
     device: &cpal::Device,
     supported: &cpal::SupportedStreamConfig,
@@ -1956,17 +2387,23 @@ fn push_input_samples(
     let Ok(mut builder) = builder.try_lock() else {
         return;
     };
+    if microphone_muted() {
+        builder.clear_pending_audio();
+        return;
+    }
     for frame in builder.push_interleaved(samples) {
         let _ = capture_tx.try_send(frame);
     }
 }
 
+#[cfg_attr(target_os = "android", allow(dead_code))]
 struct AudioOutputQueue {
     samples: VecDeque<f32>,
     max_samples: usize,
     prebuffer_samples_remaining: usize,
 }
 
+#[cfg_attr(target_os = "android", allow(dead_code))]
 impl AudioOutputQueue {
     fn new(max_samples: usize, prebuffer_samples: usize) -> Self {
         Self {
@@ -2001,6 +2438,7 @@ impl AudioOutputQueue {
     }
 }
 
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn fill_output_f32(data: &mut [f32], output_queue: &Arc<Mutex<AudioOutputQueue>>) {
     if let Ok(mut queue) = output_queue.lock() {
         for sample in data {
@@ -2011,6 +2449,7 @@ fn fill_output_f32(data: &mut [f32], output_queue: &Arc<Mutex<AudioOutputQueue>>
     }
 }
 
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn fill_output_i16(data: &mut [i16], output_queue: &Arc<Mutex<AudioOutputQueue>>) {
     if let Ok(mut queue) = output_queue.lock() {
         for sample in data {
@@ -2022,6 +2461,7 @@ fn fill_output_i16(data: &mut [i16], output_queue: &Arc<Mutex<AudioOutputQueue>>
     }
 }
 
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn fill_output_u16(data: &mut [u16], output_queue: &Arc<Mutex<AudioOutputQueue>>) {
     if let Ok(mut queue) = output_queue.lock() {
         for sample in data {
@@ -2099,6 +2539,18 @@ fn apply_fade_in(samples: &mut [f32], remaining: &mut usize, total: usize) {
     *remaining -= count;
 }
 
+fn apply_voice_output_leveling(samples: &mut [f32]) {
+    for sample in samples {
+        let boosted = if sample.is_finite() {
+            *sample * VOICE_OUTPUT_GAIN
+        } else {
+            0.0
+        };
+        *sample = (boosted / (1.0 + VOICE_OUTPUT_LIMIT_CURVE * boosted.abs()))
+            .clamp(-VOICE_OUTPUT_LIMIT, VOICE_OUTPUT_LIMIT);
+    }
+}
+
 fn channel_sample(source: &[f32], target_channel: usize, target_channels: usize) -> f32 {
     if source.is_empty() {
         return 0.0;
@@ -2116,8 +2568,181 @@ fn log_input_stream_error(err: cpal::StreamError) {
     tracing::warn!(error = %err, "LXST microphone stream error");
 }
 
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn log_output_stream_error(err: cpal::StreamError) {
     tracing::warn!(error = %err, "LXST speaker stream error");
+}
+
+#[cfg(target_os = "android")]
+mod android_voice_audio {
+    use std::sync::OnceLock;
+
+    use jni::objects::{GlobalRef, JClass, JObject, JValue};
+
+    use super::VoiceResult;
+
+    const CLASS_NAME: &str = "org.ratspeak.android.RatspeakVoiceAudio";
+    static APP_CLASS_LOADER: OnceLock<GlobalRef> = OnceLock::new();
+
+    pub fn start(sample_rate_hz: u32, channels: usize) -> VoiceResult<()> {
+        with_env(|env| {
+            let class = find_app_class(env, CLASS_NAME)?;
+            let ok = env
+                .call_static_method(
+                    class,
+                    "start",
+                    "(II)Z",
+                    &[
+                        JValue::Int(sample_rate_hz as i32),
+                        JValue::Int(channels as i32),
+                    ],
+                )
+                .map_err(|e| {
+                    clear_exception(env);
+                    format!("RatspeakVoiceAudio.start: {e}")
+                })?
+                .z()
+                .map_err(|e| format!("RatspeakVoiceAudio.start result: {e}"))?;
+            if ok {
+                Ok(())
+            } else {
+                Err("Android voice AudioTrack could not be initialized".to_string())
+            }
+        })
+    }
+
+    pub fn write(samples: &[f32]) -> VoiceResult<usize> {
+        if samples.is_empty() {
+            return Ok(0);
+        }
+        with_env(|env| {
+            let class = find_app_class(env, CLASS_NAME)?;
+            let array = env
+                .new_float_array(samples.len() as i32)
+                .map_err(|e| format!("voice float array: {e}"))?;
+            env.set_float_array_region(array, 0, samples)
+                .map_err(|e| format!("voice float array region: {e}"))?;
+            let written = env
+                .call_static_method(
+                    class,
+                    "write",
+                    "([FI)I",
+                    &[
+                        JValue::Object(JObject::from(array)),
+                        JValue::Int(samples.len() as i32),
+                    ],
+                )
+                .map_err(|e| {
+                    clear_exception(env);
+                    format!("RatspeakVoiceAudio.write: {e}")
+                })?
+                .i()
+                .map_err(|e| format!("RatspeakVoiceAudio.write result: {e}"))?;
+            if written < 0 {
+                Err(format!(
+                    "Android voice AudioTrack write failed with code {written}"
+                ))
+            } else {
+                Ok(written as usize)
+            }
+        })
+    }
+
+    pub fn stop() {
+        let _ = with_env(|env| {
+            let class = find_app_class(env, CLASS_NAME)?;
+            env.call_static_method(class, "stop", "()V", &[])
+                .map_err(|e| {
+                    clear_exception(env);
+                    format!("RatspeakVoiceAudio.stop: {e}")
+                })?;
+            Ok(())
+        });
+    }
+
+    fn with_env<F, T>(f: F) -> VoiceResult<T>
+    where
+        F: FnOnce(&jni::JNIEnv) -> VoiceResult<T>,
+    {
+        let vm = rns_interface::android_usb::java_vm()
+            .ok_or_else(|| "JavaVM not initialized for Android voice audio".to_string())?;
+        let env = vm
+            .attach_current_thread()
+            .map_err(|e| format!("JNI attach for Android voice audio: {e}"))?;
+        f(&env)
+    }
+
+    fn get_app_context<'a>(env: &'a jni::JNIEnv) -> VoiceResult<JObject<'a>> {
+        let activity_thread = env.find_class("android/app/ActivityThread").map_err(|e| {
+            clear_exception(env);
+            format!("ActivityThread class: {e}")
+        })?;
+        let app = env
+            .call_static_method(
+                activity_thread,
+                "currentApplication",
+                "()Landroid/app/Application;",
+                &[],
+            )
+            .map_err(|e| {
+                clear_exception(env);
+                format!("currentApplication: {e}")
+            })?
+            .l()
+            .map_err(|e| format!("currentApplication object: {e}"))?;
+        if app.is_null() {
+            return Err("ActivityThread.currentApplication returned null".to_string());
+        }
+        Ok(app)
+    }
+
+    fn ensure_class_loader(env: &jni::JNIEnv) -> VoiceResult<&'static GlobalRef> {
+        if APP_CLASS_LOADER.get().is_none() {
+            let context = get_app_context(env)?;
+            let loader = env
+                .call_method(context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
+                .map_err(|e| {
+                    clear_exception(env);
+                    format!("getClassLoader: {e}")
+                })?
+                .l()
+                .map_err(|e| format!("ClassLoader object: {e}"))?;
+            let global = env
+                .new_global_ref(loader)
+                .map_err(|e| format!("ClassLoader global ref: {e}"))?;
+            let _ = APP_CLASS_LOADER.set(global);
+        }
+        APP_CLASS_LOADER
+            .get()
+            .ok_or_else(|| "Application ClassLoader not initialized".to_string())
+    }
+
+    fn find_app_class<'a>(env: &'a jni::JNIEnv, dotted: &str) -> VoiceResult<JClass<'a>> {
+        let loader = ensure_class_loader(env)?;
+        let name = env
+            .new_string(dotted)
+            .map_err(|e| format!("voice class name: {e}"))?;
+        let class = env
+            .call_method(
+                loader.as_obj(),
+                "loadClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;",
+                &[JValue::Object(name.into())],
+            )
+            .map_err(|e| {
+                clear_exception(env);
+                format!("loadClass({dotted}): {e}")
+            })?
+            .l()
+            .map_err(|e| format!("voice class object: {e}"))?;
+        Ok(JClass::from(class))
+    }
+
+    fn clear_exception(env: &jni::JNIEnv) {
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2180,6 +2805,99 @@ mod tests {
 
         apply_fade_in(&mut samples, &mut remaining, 4);
         assert_eq!(samples, vec![0.25, 0.5, 0.75, 1.0]);
+    }
+
+    #[test]
+    fn voice_output_leveling_lifts_quiet_samples_and_limits_peaks() {
+        let mut samples = vec![0.0, 0.2, -0.2, 1.0, -1.0, f32::NAN];
+
+        apply_voice_output_leveling(&mut samples);
+
+        assert_eq!(samples[0], 0.0);
+        assert!(samples[1] > 0.2);
+        assert!(samples[2] < -0.2);
+        assert!(samples[3] <= VOICE_OUTPUT_LIMIT);
+        assert!(samples[4] >= -VOICE_OUTPUT_LIMIT);
+        assert_eq!(samples[5], 0.0);
+    }
+
+    #[test]
+    fn voice_input_processor_gates_low_level_room_noise() {
+        let mut processor = VoiceInputProcessor::new(1, 48_000);
+        let mut loudest = 0.0_f32;
+
+        for _ in 0..8 {
+            let mut samples = sine_samples(0.0025, 960, 64.0);
+            processor.process(&mut samples);
+            loudest = loudest.max(
+                samples
+                    .iter()
+                    .map(|sample| sample.abs())
+                    .fold(0.0, f32::max),
+            );
+        }
+
+        assert!(loudest < 0.006, "noise gate allowed {loudest}");
+        assert!(
+            processor.agc_gain < 1.4,
+            "AGC pumped noise to {}",
+            processor.agc_gain
+        );
+    }
+
+    #[test]
+    fn voice_input_processor_preserves_close_speech_level() {
+        let mut processor = VoiceInputProcessor::new(1, 48_000);
+        let mut samples = sine_samples(0.08, 960, 64.0);
+
+        processor.process(&mut samples);
+
+        let rms = frame_rms(&samples);
+        assert!(rms > 0.03, "speech RMS was gated too aggressively: {rms}");
+    }
+
+    #[test]
+    fn voice_input_processor_keeps_sentence_tails_open() {
+        let mut processor = VoiceInputProcessor::new(1, 48_000);
+
+        for _ in 0..4 {
+            let mut samples = sine_samples(0.08, 960, 64.0);
+            processor.process(&mut samples);
+        }
+
+        let mut quiet_tail = sine_samples(0.01, 960, 64.0);
+        processor.process(&mut quiet_tail);
+
+        let rms = frame_rms(&quiet_tail);
+        assert!(
+            rms > 0.004,
+            "sentence tail was gated too aggressively: {rms}"
+        );
+    }
+
+    #[test]
+    fn input_frame_builder_clear_pending_audio_drops_pre_mute_samples() {
+        let mut builder = InputFrameBuilder::new(1, 48_000, 1, 48_000, 4);
+
+        assert!(builder.push_interleaved(&[0.8, 0.8, 0.8]).is_empty());
+        assert!(!builder.pending_frame.is_empty());
+
+        builder.clear_pending_audio();
+        assert!(builder.pending_frame.is_empty());
+        assert!(builder.source_samples.is_empty());
+
+        let frames = builder.push_interleaved(&[0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].samples.iter().all(|sample| sample.abs() < 0.0001));
+    }
+
+    fn sine_samples(amplitude: f32, len: usize, period_samples: f32) -> Vec<f32> {
+        (0..len)
+            .map(|index| {
+                let phase = index as f32 * std::f32::consts::TAU / period_samples;
+                phase.sin() * amplitude
+            })
+            .collect()
     }
 
     #[test]

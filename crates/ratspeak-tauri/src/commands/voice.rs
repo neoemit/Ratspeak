@@ -16,6 +16,16 @@ pub struct VoiceCallArgs {
     pub hash: String,
 }
 
+#[derive(Deserialize)]
+pub struct VoiceSetMicrophoneMutedArgs {
+    pub muted: bool,
+}
+
+#[derive(Deserialize)]
+pub struct VoiceRestartSpeakerArgs {
+    pub speakerphone: bool,
+}
+
 #[tauri::command]
 pub async fn voice_start_service(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let app_state = state.inner().clone();
@@ -88,6 +98,24 @@ pub async fn voice_reject(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
 pub async fn voice_hangup(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let app_state = state.inner().clone();
     crate::voice::hangup(&app_state)
+        .await
+        .map_err(AppError::service_unavailable)
+}
+
+#[tauri::command]
+pub async fn voice_set_microphone_muted(
+    state: State<'_, Arc<AppState>>,
+    args: VoiceSetMicrophoneMutedArgs,
+) -> AppResult<Value> {
+    crate::voice::set_microphone_muted(&state, args.muted).map_err(AppError::service_unavailable)
+}
+
+#[tauri::command]
+pub async fn voice_restart_speaker(
+    state: State<'_, Arc<AppState>>,
+    args: VoiceRestartSpeakerArgs,
+) -> AppResult<Value> {
+    crate::voice::restart_speaker(&state, args.speakerphone)
         .await
         .map_err(AppError::service_unavailable)
 }
