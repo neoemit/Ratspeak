@@ -96,9 +96,7 @@
 
         _celebratedWins[session.game_id] = true;
         if (session.game_id === _selectedSessionId && typeof haptic === 'function') {
-            haptic(30);
-            setTimeout(function() { haptic(30); }, 100);
-            setTimeout(function() { haptic(15); }, 250);
+            haptic('success');
         }
         if (typeof currentView !== 'undefined' && currentView === 'games' && typeof rsConfetti === 'function') {
             rsConfetti(_celebrationOptions(session));
@@ -324,7 +322,6 @@
     }
 
     function _showDeleteSheet(sessionId) {
-        if (typeof haptic === 'function') haptic(10);
         if (typeof rsConfirm !== 'function') return;
         rsConfirm({
             title: 'Remove game?',
@@ -333,7 +330,7 @@
             danger: true
         }).then(function(ok) {
             if (!ok) return;
-            if (typeof haptic === 'function') haptic(15);
+            if (typeof haptic === 'function') haptic('warning');
             _deleteSession(sessionId);
         });
     }
@@ -506,7 +503,7 @@
         var resendBtn = panel.querySelector('.games-resend-btn');
         if (resendBtn) {
             resendBtn.addEventListener('click', function() {
-                if (typeof haptic === 'function') haptic(15);
+                if (typeof haptic === 'function') haptic('selection');
                 resendBtn.disabled = true;
                 resendBtn.textContent = 'Resending…';
                 session.delivery_state = 'sending';
@@ -691,7 +688,7 @@
         if (winCells) {
             _maybeCelebrateWin(session);
         } else if (typeof haptic === 'function') {
-            haptic(25);
+            haptic('selection');
         }
 
         // Wire contract: backend expects "i" at top of payload, not nested under "move".
@@ -1140,7 +1137,7 @@
         renderSessionList();
         renderDetail();
 
-        if (typeof haptic === 'function') haptic(25);
+        if (typeof haptic === 'function') haptic('selection');
 
         RS.invoke('send_game_action', {
             args: {
@@ -1327,7 +1324,7 @@
     }
 
     function _showNewGameSheet() {
-        if (typeof haptic === 'function') haptic(10);
+        if (typeof haptic === 'function') haptic('selection');
 
         var existing = document.getElementById('games-new-sheet-overlay');
         if (existing) existing.remove();
@@ -1409,7 +1406,7 @@
         if (sheet) {
             sheet.querySelectorAll('.games-sheet-game-card').forEach(function(card) {
                 card.addEventListener('click', function() {
-                    if (typeof haptic === 'function') haptic(10);
+                    if (typeof haptic === 'function') haptic('selection');
                     sheet.querySelectorAll('.games-sheet-game-card').forEach(function(c) {
                         c.classList.remove('selected');
                         c.setAttribute('aria-pressed', 'false');
@@ -1422,7 +1419,7 @@
 
             sheet.querySelectorAll('.games-sheet-contact-row').forEach(function(row) {
                 row.addEventListener('click', function() {
-                    if (typeof haptic === 'function') haptic(10);
+                    if (typeof haptic === 'function') haptic('selection');
                     sheet.querySelectorAll('.games-sheet-contact-row').forEach(function(r) {
                         r.classList.remove('selected');
                         r.setAttribute('aria-pressed', 'false');
@@ -1440,7 +1437,7 @@
         _bindBtn('games-sheet-cancel', _closeNewGameSheet);
         _bindBtn('games-sheet-send', function() {
             if (!selectedHash) return;
-            if (typeof haptic === 'function') haptic(10);
+            if (typeof haptic === 'function') haptic('selection');
             _closeNewGameSheet();
             startNewGame(selectedAppId, selectedHash);
         });
@@ -1558,7 +1555,7 @@
                 if (typeof showToast === 'function') {
                     showToast(_reasonToMessage(reason, data.command), 'toast-red', 5000);
                 }
-                if (typeof haptic === 'function') haptic(40);
+                if (typeof haptic === 'function') haptic('error');
                 return;
             }
 
@@ -1597,7 +1594,7 @@
             if (typeof showToast === 'function') {
                 showToast(_reasonToMessage(reason, data.command), 'toast-red', 4000);
             }
-            if (typeof haptic === 'function') haptic(40);
+            if (typeof haptic === 'function') haptic('error');
         });
 
         // Per-action signal from the runtime — forces a board redraw and badge
@@ -1633,7 +1630,7 @@
         if (isNew && typeof currentView !== 'undefined' && currentView !== 'games') {
             if (record.status === 'pending' && !_isMe(record, record.challenger)) {
                 if (typeof showToast === 'function') showToast('\uD83C\uDFAE Game challenge from ' + _contactName(record.contact_hash), 'toast-green', 5000);
-                if (typeof haptic === 'function') { haptic(10); setTimeout(function() { haptic(10); }, 80); }
+                if (typeof haptic === 'function') haptic('success');
                 if (!window.__TAURI_INTERNALS__ && document.hidden && typeof rsNotify !== 'undefined') {
                     rsNotify.send({
                         title: 'Game challenge',
@@ -1651,7 +1648,7 @@
             || record.game_id !== _selectedSessionId;
         if (movedSinceLast && notViewingThisGame && record.status === 'active') {
             if (typeof showToast === 'function') showToast('Game update from ' + _contactName(record.contact_hash), 'toast-blue', 3000);
-            if (typeof haptic === 'function') haptic(15);
+            if (typeof haptic === 'function') haptic('light');
             if (!window.__TAURI_INTERNALS__ && document.hidden && typeof rsNotify !== 'undefined') {
                 rsNotify.send({
                     title: 'Game update',
@@ -1697,7 +1694,7 @@
     function _initNewGameBtn() {
         _bindBtn('games-new-btn', showNewGameDialog);
         _bindBtn('games-fab-btn', function() {
-            if (typeof haptic === 'function') haptic(10);
+            if (typeof haptic === 'function') haptic('selection');
             showNewGameDialog();
         });
     }

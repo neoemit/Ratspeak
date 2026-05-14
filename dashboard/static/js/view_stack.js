@@ -106,6 +106,7 @@ RS._viewStack = RS._viewStack || [];
             direction: 'right',
             edgeZone: RS.gestures.EDGE_ZONE_PX,
             distanceThreshold: RS.gestures.SWIPE_DISTANCE_DRILLBACK_PX,
+            hapticAt: { commit: 'selection' },
             skipIf: function() { return V.depth() <= 1; },
             onCommit: function() { V.pop(); }
         });

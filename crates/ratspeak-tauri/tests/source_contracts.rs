@@ -888,6 +888,57 @@ fn mobile_tab_swipe_uses_bottom_bar_slots_without_view_slide_animation() {
 }
 
 #[test]
+fn mobile_haptics_use_tauri_plugin_commands_and_semantic_feedback() {
+    let root = repo_root();
+    let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
+    let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    let gestures = read_source(root.join("dashboard/static/js/gestures.js")).expect("gestures js");
+    let constants =
+        read_source(root.join("dashboard/static/js/constants.js")).expect("constants js");
+    let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    let mut js_files = Vec::new();
+    collect_files(&root.join("dashboard/static/js"), &mut js_files);
+
+    assert!(state_js.contains("impactFeedback: 'impact_feedback'"));
+    assert!(state_js.contains("notificationFeedback: 'notification_feedback'"));
+    assert!(state_js.contains("selectionFeedback: 'selection_feedback'"));
+    assert!(state_js.contains("'plugin:haptics|'"));
+    assert!(nav.contains("case 'success':"));
+    assert!(nav.contains("case 'warning':"));
+    assert!(nav.contains("case 'error':"));
+    assert!(nav.contains("step.kind === 'impact'    ? 'impact_feedback'"));
+    assert!(nav.contains("step.kind === 'notify'    ? 'notification_feedback'"));
+    assert!(nav.contains("'selection_feedback'"));
+    assert!(!nav.contains("{ payload: step.payload }"));
+    assert!(gestures.contains("if (typeof haptic === 'function') haptic(name);"));
+    assert!(gestures.contains("RIPPLE_HAPTIC_SELECTORS"));
+    assert!(constants.contains("RIPPLE_HAPTIC_SELECTORS"));
+    assert!(lxmf.contains("function _voiceHaptic(name)"));
+    assert!(lxmf.contains("_voiceHaptic('success')"));
+    assert!(lxmf.contains("_voiceHaptic('warning')"));
+
+    for path in js_files
+        .iter()
+        .filter(|path| path.extension().is_some_and(|ext| ext == "js"))
+    {
+        let source = read_source(path).expect("js source");
+        assert!(
+            !source.contains("haptic(["),
+            "{} should use semantic haptic names, not vibration arrays",
+            path.display()
+        );
+        for digit in '0'..='9' {
+            let needle = format!("haptic({digit}");
+            assert!(
+                !source.contains(&needle),
+                "{} should use semantic haptic names, not raw durations",
+                path.display()
+            );
+        }
+    }
+}
+
+#[test]
 fn first_run_announce_hint_waits_for_online_mobile_interface() {
     let root = repo_root();
     let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");

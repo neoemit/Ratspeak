@@ -448,8 +448,13 @@ function _voiceRestoreHeaderStatus() {
     statusEl.className = 'lxmf-chat-header-status' + (statusOnline ? ' is-online' : '');
 }
 
+function _voiceHaptic(name) {
+    if (typeof haptic === 'function') haptic(name);
+}
+
 function _voiceStartCall(hash) {
     if (!lxstVoiceState.available || !hash) return Promise.resolve();
+    _voiceHaptic('selection');
     return _voiceEnsurePlaybackReady().then(_voiceEnsureMicrophonePermission).then(function() {
         lxstVoiceState.lastDialHash = hash;
         renderVoiceUi();
@@ -458,6 +463,7 @@ function _voiceStartCall(hash) {
             renderVoiceUi();
         }).catch(function(err) {
             lxstVoiceState.lastDialHash = null;
+            _voiceHaptic('error');
             _voiceNotify((err && err.message) || 'Could not start call');
             renderVoiceUi();
         });
@@ -466,11 +472,14 @@ function _voiceStartCall(hash) {
 
 function _voiceAnswerCall() {
     _voiceStopRingtone();
+    _voiceHaptic('selection');
     return _voiceEnsurePlaybackReady().then(_voiceEnsureMicrophonePermission).then(function() {
         return RS.invoke('voice_answer').then(function() {
+            _voiceHaptic('success');
             lxstVoiceState.incoming = null;
             renderVoiceUi();
         }).catch(function(err) {
+            _voiceHaptic('error');
             _voiceNotify((err && err.message) || 'Could not answer call');
         });
     });
@@ -478,6 +487,7 @@ function _voiceAnswerCall() {
 
 function _voiceRejectCall() {
     _voiceStopRingtone();
+    _voiceHaptic('warning');
     _voiceSuppressNoAnswerCueUntil = Date.now() + 2000;
     return RS.invoke('voice_reject').catch(function() {}).then(function() {
         lxstVoiceState.incoming = null;
@@ -487,8 +497,10 @@ function _voiceRejectCall() {
 
 function _voiceHangupCall() {
     _voiceStopRingtone();
+    _voiceHaptic('warning');
     _voiceSuppressNoAnswerCueUntil = Date.now() + 2000;
     return RS.invoke('voice_hangup').catch(function(err) {
+        _voiceHaptic('error');
         _voiceNotify((err && err.message) || 'Could not hang up call');
     }).then(function() {
         lxstVoiceState.active = null;
@@ -1529,6 +1541,7 @@ function _renderConversationsFromCache(convos) {
             delegated: '.conv-row',
             direction: 'left',
             distanceThreshold: RS.gestures.SWIPE_DISTANCE_CONV_DELETE_PX,
+            hapticAt: { commit: 'warning' },
             onProgress: function(dx, _dy, _progress, row) {
                 if (!row) return;
                 var offset = Math.max(0, Math.min(-dx, 120));
@@ -3238,7 +3251,7 @@ function initFabSpeedDial() {
 
     mainFab.addEventListener('click', function(e) {
         e.stopPropagation();
-        if (typeof haptic === 'function') haptic(10);
+        if (typeof haptic === 'function') haptic('selection');
         _dialOpen ? closeDial() : openDial();
     });
 
@@ -3247,7 +3260,7 @@ function initFabSpeedDial() {
     var dialNew = document.getElementById('fab-dial-new');
     if (dialNew) {
         dialNew.addEventListener('click', function() {
-            if (typeof haptic === 'function') haptic(10);
+            if (typeof haptic === 'function') haptic('selection');
             closeDial();
             var btn = document.getElementById('lxmf-send-message-btn');
             if (btn) btn.click();
@@ -3257,7 +3270,7 @@ function initFabSpeedDial() {
     var dialContacts = document.getElementById('fab-dial-contacts');
     if (dialContacts) {
         dialContacts.addEventListener('click', function() {
-            if (typeof haptic === 'function') haptic(10);
+            if (typeof haptic === 'function') haptic('selection');
             closeDial();
             openFabContactPicker();
         });
@@ -3604,7 +3617,7 @@ document.addEventListener('DOMContentLoaded', function() {
             holdTimer = setTimeout(function() {
                 holdFired = true;
                 holdTimer = null;
-                if (typeof haptic === 'function') haptic(20);
+                if (typeof haptic === 'function') haptic('medium');
                 openSendMethodPopover();
             }, holdMs);
         }
@@ -3870,6 +3883,7 @@ document.addEventListener('DOMContentLoaded', function() {
             direction: 'right',
             edgeZone: RS.gestures.EDGE_ZONE_PX,
             distanceThreshold: RS.gestures.SWIPE_DISTANCE_DRILLBACK_PX,
+            hapticAt: { commit: 'selection' },
             onProgress: function(dx) {
                 if (dx <= 0) return;
                 chatArea.style.transition = 'none';

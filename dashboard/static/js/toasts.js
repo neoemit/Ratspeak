@@ -75,6 +75,7 @@ function showToast(message, colorClass, duration, onClick) {
     RS.gestures.attachSwipe(toast, {
         direction: 'up',
         distanceThreshold: RS.gestures.SWIPE_DISTANCE_TOAST_DISMISS_PX,
+        hapticAt: { commit: 'selection' },
         onProgress: function(_dx, dy) {
             if (dy < 0) toast.style.transform = 'translateY(' + dy + 'px)';
         },

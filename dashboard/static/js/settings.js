@@ -683,6 +683,7 @@ RS.listen('announce_triggered', function(data) {
 
     if (data.success) {
         _lastAnnounceTime = Date.now();
+        if (typeof haptic === 'function') haptic('success');
         showToast('Announcement sent!', 'toast-green', 4000);
         // Burst is gated on backend success so it aligns with the real outcome.
         if (origin && typeof showAnnounceAnimation === 'function') {
@@ -705,6 +706,7 @@ RS.listen('announce_triggered', function(data) {
             }, ANNOUNCE_COOLDOWN);
         }
     } else if (data.error === 'no_interfaces') {
+        if (typeof haptic === 'function') haptic('warning');
         showToast('Connect to a network first!', 'toast-orange', 3000);
         // Frontend cache disagreed with backend; play dampened animation for closure.
         if (origin && typeof showAnnounceFailAnimation === 'function') {
@@ -715,6 +717,7 @@ RS.listen('announce_triggered', function(data) {
             networkBtn.disabled = false;
         }
     } else if (data.error === 'not_sent') {
+        if (typeof haptic === 'function') haptic('warning');
         var announceMsg = window._autoEnabled
             ? 'Announce queued, but no interface transmitted it yet. Local Network may still be finding peers.'
             : 'Announce queued, but no connected interface transmitted it. Check that your TCP peer is connected or enable Local Network.';
@@ -727,6 +730,7 @@ RS.listen('announce_triggered', function(data) {
             networkBtn.disabled = false;
         }
     } else {
+        if (typeof haptic === 'function') haptic('error');
         showToast('Announce failed — router not ready', 'toast-red', 4000);
         if (origin && typeof showAnnounceFailAnimation === 'function') {
             showAnnounceFailAnimation(origin.el, origin.cx, origin.cy);
@@ -786,6 +790,7 @@ function confirmDangerAction(action, onClose) {
         }).then(function(ok) {
             if (ok === undefined) return;
             if (!ok) { _close(); return; }
+            if (typeof haptic === 'function') haptic('warning');
             showToast('Resetting\u2026', 'toast-orange', 5000);
             RS.invoke('api_factory_reset')
                 .then(function() {
@@ -795,6 +800,7 @@ function confirmDangerAction(action, onClose) {
                     setTimeout(function() { window.location.reload(); }, 1500);
                 })
                 .catch(function() {
+                    if (typeof haptic === 'function') haptic('error');
                     showToast('Reset failed', 'toast-red', 5000);
                     _close();
                 });
@@ -808,8 +814,10 @@ function confirmDangerAction(action, onClose) {
     rsConfirm({ message: cfg.msg, danger: true, confirmText: 'Confirm' }).then(function(ok) {
         if (!ok) return;
         RS.invoke(cfg.command).then(function() {
+            if (typeof haptic === 'function') haptic('success');
             showToast(cfg.success, '', 3000);
         }).catch(function() {
+            if (typeof haptic === 'function') haptic('error');
             showToast(cfg.fail || 'Operation failed', 'toast-red', 3000);
         });
     });

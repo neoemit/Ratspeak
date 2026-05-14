@@ -8,11 +8,10 @@ RS.gestures = RS.gestures || {};
 (function() {
     var G = RS.gestures;
 
-    // Names map to iOS feedback generators (UIImpactFeedback / UINotificationFeedback).
+    // Names map to native feedback semantics in nav.js::haptic().
     function _hapticByName(name) {
         if (!name) return;
-        var ms = G.HAPTIC_DURATION_MAP[name];
-        if (typeof ms === 'number' && typeof haptic === 'function') haptic(ms);
+        if (typeof haptic === 'function') haptic(name);
     }
     G._hapticByName = _hapticByName;
 
@@ -26,6 +25,7 @@ RS.gestures = RS.gestures || {};
         opts = opts || {};
         var root = rootEl || document;
         var selectors = opts.selectors || G.RIPPLE_SELECTORS;
+        var hapticSelectors = opts.hapticSelectors || G.RIPPLE_HAPTIC_SELECTORS || selectors;
         var hapticOnTap = (opts.hapticOnTap === undefined) ? 'light' : opts.hapticOnTap;
 
         if (!isMobile()) return function() {};
@@ -59,10 +59,20 @@ RS.gestures = RS.gestures || {};
                 var el = target.closest && target.closest(selectors[i]);
                 if (el) {
                     _spawnRipple(e, el);
-                    if (hapticOnTap) _hapticByName(hapticOnTap);
+                    if (hapticOnTap && _matchesAnySelector(el, hapticSelectors)) {
+                        _hapticByName(hapticOnTap);
+                    }
                     break;
                 }
             }
+        }
+
+        function _matchesAnySelector(el, selectorList) {
+            if (!el || !selectorList) return false;
+            for (var i = 0; i < selectorList.length; i++) {
+                if (el.matches && el.matches(selectorList[i])) return true;
+            }
+            return false;
         }
 
         root.addEventListener('pointerdown', _onPointerDown, { passive: true });

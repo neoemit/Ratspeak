@@ -333,7 +333,13 @@ function _rsNotifyInvoke(cmd, payload) {
 
 // Mobile-only; desktop falls back to navigator.vibrate (no-op on macOS/Windows).
 function _rsHapticsInvoke(method, payload) {
-    return window.__TAURI_INTERNALS__.invoke('plugin:haptics|' + method, payload || {});
+    var commandMap = {
+        impactFeedback: 'impact_feedback',
+        notificationFeedback: 'notification_feedback',
+        selectionFeedback: 'selection_feedback'
+    };
+    var command = commandMap[method] || method;
+    return window.__TAURI_INTERNALS__.invoke('plugin:haptics|' + command, payload || {});
 }
 
 window.rsNotify = {

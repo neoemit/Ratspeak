@@ -38,18 +38,26 @@ if (window.matchMedia) {
     });
 }
 
-// Accepts duration in ms or a vibrate-pattern array. WKWebView lacks
-// navigator.vibrate; mobile routes through tauri-plugin-haptics on both
-// iOS and Android. Browser fallback uses navigator.vibrate.
+// Accepts semantic names, duration-ish intensity numbers, or a vibration-style
+// pattern array. Mobile routes through tauri-plugin-haptics on both iOS and
+// Android; browser fallback uses navigator.vibrate.
 function haptic(pattern) {
     if (!isTauriMobile()) {
-        if (navigator.vibrate) navigator.vibrate(pattern);
+        if (navigator.vibrate) {
+            var fallback = _hapticFallbackPattern(pattern);
+            if (fallback !== null) navigator.vibrate(fallback);
+        }
         return;
     }
     _dispatchHaptic(pattern);
 }
 
 function _dispatchHaptic(pattern) {
+    if (typeof pattern === 'string') {
+        var named = _nameToHapticStep(pattern);
+        if (named) _fireHapticStep(named);
+        return;
+    }
     if (typeof pattern === 'number') {
         var step = _patternToHaptic(pattern);
         if (step) _fireHapticStep(step);
@@ -71,6 +79,37 @@ function _dispatchHaptic(pattern) {
     }
 }
 
+function _nameToHapticStep(name) {
+    switch (name) {
+        case 'selection':
+            return { kind: 'selection' };
+        case 'light':
+        case 'impactLight':
+            return { kind: 'impact', payload: { style: 'light' } };
+        case 'medium':
+        case 'impactMedium':
+            return { kind: 'impact', payload: { style: 'medium' } };
+        case 'heavy':
+        case 'impactHeavy':
+            return { kind: 'impact', payload: { style: 'heavy' } };
+        case 'success':
+            return { kind: 'notify', payload: { type: 'success' } };
+        case 'warning':
+            return { kind: 'notify', payload: { type: 'warning' } };
+        case 'error':
+            return { kind: 'notify', payload: { type: 'error' } };
+        default:
+            return null;
+    }
+}
+
+function _hapticFallbackPattern(pattern) {
+    if (typeof pattern === 'number' || Array.isArray(pattern)) return pattern;
+    if (typeof pattern !== 'string') return null;
+    var map = (window.RS && RS.gestures && RS.gestures.HAPTIC_DURATION_MAP) || {};
+    return typeof map[pattern] === 'number' ? map[pattern] : null;
+}
+
 // Boundaries: ≤12 light, ≤22 medium, ≤35 heavy, 40+ error.
 function _patternToHaptic(ms) {
     if (ms <= 12)  return { kind: 'impact',  payload: { style: 'light'  } };
@@ -81,10 +120,13 @@ function _patternToHaptic(ms) {
 
 function _fireHapticStep(step) {
     try {
-        var method = step.kind === 'impact'  ? 'impactFeedback'
-                   : step.kind === 'notify'  ? 'notificationFeedback'
-                   :                           'selectionFeedback';
-        _rsHapticsInvoke(method, { payload: step.payload });
+        var method = step.kind === 'impact'    ? 'impact_feedback'
+                   : step.kind === 'notify'    ? 'notification_feedback'
+                   : step.kind === 'vibrate'   ? 'vibrate'
+                   :                             'selection_feedback';
+        var payload = step.payload || {};
+        var result = _rsHapticsInvoke(method, payload);
+        if (result && typeof result.catch === 'function') result.catch(function() {});
     } catch (e) { /* swallow — haptics never block a gesture */ }
 }
 
@@ -633,8 +675,8 @@ function initBottomBar() {
         onFire: function(touch) {
             _bbDidLongPress = true;
 
-            // Staged pattern reads as a tactile pop rather than a single buzz.
-            haptic([0, 30, 50, 30]);
+            // Staged hold already primed the gesture; fire with a firm, non-error pop.
+            haptic('heavy');
 
             var hit = document.elementFromPoint(touch.clientX, touch.clientY);
             var bbItem = (hit && hit.closest) ? hit.closest('.bottom-bar-item') : null;
@@ -782,6 +824,7 @@ function initSidebarSwipe() {
     RS.gestures.attachSwipe(sidebar, {
         direction: 'left',
         distanceThreshold: RS.gestures.SWIPE_DISTANCE_PX,
+        hapticAt: { commit: 'selection' },
         skipIf: function() {
             return typeof _isSetupActive === 'function' && _isSetupActive();
         },
@@ -836,7 +879,6 @@ function initBottomSheet() {
     sheet.querySelectorAll('.bottom-sheet-item[data-view]').forEach(function(item) {
         item.addEventListener('click', function(e) {
             e.preventDefault();
-            haptic(10);
             var targetView = this.dataset.view;
             closeSheet();
             // Let close animation clear before switching views.
@@ -1056,6 +1098,7 @@ function initDrillDownSwipeBack() {
         direction: 'right',
         edgeZone: RS.gestures.EDGE_ZONE_PX,
         distanceThreshold: RS.gestures.SWIPE_DISTANCE_DRILLBACK_PX,
+        hapticAt: { commit: 'selection' },
         skipIf: function(e) {
             if (_navTransitioning) return true;
             if (e.target.closest('button, a, input, select, .selector-badge')) return true;
@@ -1138,7 +1181,7 @@ function initTabSwipe() {
             if (nextIdx < 0 || nextIdx >= MOBILE_TAB_SLOTS.length) return;
             var targetView = _viewForMobileTabSlot(MOBILE_TAB_SLOTS[nextIdx]);
             if (!targetView || targetView === currentView) return;
-            haptic(10);
+            haptic('selection');
             switchView(targetView);
         }
     });
