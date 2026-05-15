@@ -10,8 +10,8 @@ use bytes::Bytes;
 use serde_json::{Value, json};
 
 use lxmf_core::constants::{
-    DeliveryMethod, MAX_DELIVERY_ATTEMPTS, MAX_PATHLESS_TRIES, PATH_REQUEST_WAIT, STRUCT_OVERHEAD,
-    TIMESTAMP_SIZE,
+    DELIVERY_RETRY_WAIT, DeliveryMethod, MAX_DELIVERY_ATTEMPTS, MAX_PATHLESS_TRIES,
+    PATH_REQUEST_WAIT, STRUCT_OVERHEAD, TIMESTAMP_SIZE,
 };
 use lxmf_core::message::LxMessage;
 use lxmf_core::router::{LxmRouter, OutboundAction, RouterConfig};
@@ -2843,6 +2843,22 @@ impl LxmfManager {
                     continue;
                 }
 
+                // Python increments the attempt counter before considering a
+                // new Link, but only creates that Link while attempts < MAX
+                // (LXMRouter.py:2655-2669). Keep the terminal >MAX failure
+                // boundary in the router while preventing one extra LinkRequest.
+                if message.delivery_attempts >= MAX_DELIVERY_ATTEMPTS {
+                    message.next_delivery_attempt = now + DELIVERY_RETRY_WAIT as f64;
+                    tracing::warn!(
+                        dest = %dest_hex,
+                        attempts = message.delivery_attempts,
+                        max_attempts = MAX_DELIVERY_ATTEMPTS,
+                        "outbound LXMF: Direct delivery attempt budget reached; deferring terminal failure"
+                    );
+                    self.router.send(message);
+                    continue;
+                }
+
                 if self.link_delivery.is_none()
                     && let Some(ref tx) = self.router.transport_tx
                 {
@@ -3045,6 +3061,18 @@ impl LxmfManager {
                     {
                         results.push((hex::encode(hash), "routing"));
                     }
+                    continue;
+                }
+
+                if message.delivery_attempts >= MAX_DELIVERY_ATTEMPTS {
+                    message.next_delivery_attempt = now + DELIVERY_RETRY_WAIT as f64;
+                    tracing::warn!(
+                        dest = %dest_hex,
+                        attempts = message.delivery_attempts,
+                        max_attempts = MAX_DELIVERY_ATTEMPTS,
+                        "outbound LXMF: oversized Link delivery attempt budget reached; deferring terminal failure"
+                    );
+                    self.router.send(message);
                     continue;
                 }
 
@@ -3632,6 +3660,66 @@ mod tests {
         );
     }
 
+    /// D3: Python increments before Link creation, but only opens a new Link
+    /// while delivery_attempts < MAX_DELIVERY_ATTEMPTS (LXMRouter.py:2655-2669).
+    /// At the post-increment boundary, Rust must not emit one extra LinkRequest.
+    #[test]
+    fn direct_delivery_at_attempt_boundary_does_not_start_extra_link() {
+        let mut mgr = test_manager();
+        let dest = [0x45; 16];
+        let dest_hex = hex::encode(dest);
+        let remote = Identity::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(tx);
+        mgr.known_identities
+            .insert(dest_hex.clone(), remote.get_public_key());
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
+            hash: dest,
+            timestamp: now,
+            via: None,
+            hops: 1,
+            expires: now + 60.0,
+            interface: "test".to_string(),
+        }]);
+
+        let mut msg = LxMessage::new(
+            dest,
+            mgr.lxmf_dest_hash,
+            "Boundary",
+            "hello",
+            DeliveryMethod::Direct,
+        );
+        msg.sign(&mgr.identity.get_signing_key().unwrap()).unwrap();
+        msg.delivery_attempts = MAX_DELIVERY_ATTEMPTS - 1;
+        let results = mgr.execute_encrypted_actions(vec![OutboundAction::DeliverDirect {
+            message: msg,
+            dest_hash: dest,
+        }]);
+
+        assert!(results.is_empty());
+        assert_eq!(mgr.router.pending_outbound.len(), 1);
+        assert_eq!(
+            mgr.router.pending_outbound[0].delivery_attempts,
+            MAX_DELIVERY_ATTEMPTS
+        );
+        let nda = mgr.router.pending_outbound[0].next_delivery_attempt;
+        assert!(
+            nda > now + DELIVERY_RETRY_WAIT as f64 - 2.0
+                && nda < now + DELIVERY_RETRY_WAIT as f64 + 2.0,
+            "attempt-boundary deferral must use DELIVERY_RETRY_WAIT (10s), got {}",
+            nda - now
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no LinkRequest should be emitted at the post-increment attempt boundary"
+        );
+    }
+
     /// D2: Python `handle_outbound` pre-emptively requests an unknown path for
     /// Opportunistic messages and defers PATH_REQUEST_WAIT (LXMRouter.py:1675).
     #[test]
@@ -3668,7 +3756,8 @@ mod tests {
         }
 
         // Non-opportunistic is a no-op.
-        let mut direct = LxMessage::new(dest, mgr.lxmf_dest_hash, "D", "hi", DeliveryMethod::Direct);
+        let mut direct =
+            LxMessage::new(dest, mgr.lxmf_dest_hash, "D", "hi", DeliveryMethod::Direct);
         mgr.preempt_opportunistic_path(&mut direct);
         assert_eq!(direct.next_delivery_attempt, 0.0);
     }
@@ -3731,6 +3820,77 @@ mod tests {
             rx.try_recv().is_err(),
             "pathless branch must not drop the path"
         );
+    }
+
+    /// D2 Branch 2: after the first pathless deferral, a newly known path still
+    /// causes Python to drop and rediscover once before resuming best-effort
+    /// opportunistic sends (LXMRouter.py:2574-2583).
+    #[test]
+    fn opportunistic_rediscovery_branch_drops_path_and_defers() {
+        let mut mgr = test_manager();
+        let dest = [0x57; 16];
+        let dest_hex = hex::encode(dest);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(tx);
+        mgr.known_identities
+            .insert(dest_hex, Identity::new().get_public_key());
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
+            hash: dest,
+            timestamp: now,
+            via: None,
+            hops: 2,
+            expires: now + 60.0,
+            interface: "test".to_string(),
+        }]);
+
+        let mut msg = LxMessage::new(
+            dest,
+            mgr.lxmf_dest_hash,
+            "Opp",
+            "hi",
+            DeliveryMethod::Opportunistic,
+        );
+        msg.sign(&mgr.identity.get_signing_key().unwrap()).unwrap();
+        let msg_hash = msg.hash.unwrap();
+        msg.delivery_attempts = MAX_PATHLESS_TRIES + 1;
+
+        let results = mgr.execute_encrypted_actions(vec![OutboundAction::DeliverOpportunistic {
+            message: msg,
+            dest_hash: dest,
+        }]);
+
+        assert_eq!(results, vec![(hex::encode(msg_hash), "routing")]);
+        assert_eq!(mgr.router.pending_outbound.len(), 1);
+        assert_eq!(
+            mgr.router.pending_outbound[0].delivery_attempts,
+            MAX_PATHLESS_TRIES + 2
+        );
+        let nda = mgr.router.pending_outbound[0].next_delivery_attempt;
+        assert!(
+            nda > now + PATH_REQUEST_WAIT as f64 - 2.0
+                && nda < now + PATH_REQUEST_WAIT as f64 + 2.0,
+            "rediscovery branch must defer PATH_REQUEST_WAIT (7s), got {}",
+            nda - now
+        );
+
+        match rx.try_recv().unwrap() {
+            TransportMessage::Rpc {
+                query: TransportQuery::DropPath { dest: dropped },
+                ..
+            } => assert_eq!(dropped, dest),
+            other => panic!("expected DropPath RPC, got {other:?}"),
+        }
+        match rx.try_recv().unwrap() {
+            TransportMessage::RequestPath { destination_hash } => {
+                assert_eq!(destination_hash, dest)
+            }
+            other => panic!("expected RequestPath, got {other:?}"),
+        }
     }
 
     #[test]
