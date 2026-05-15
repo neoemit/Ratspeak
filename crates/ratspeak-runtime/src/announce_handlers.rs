@@ -184,6 +184,21 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
         mgr.router.set_stamp_cost(event.destination_hash, cost);
     }
 
+    let triggered = if let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_mut()
+    {
+        if let Some(ref public_key) = event.public_key {
+            mgr.update_remote_crypto(&hash_hex, public_key, event.ratchet.as_ref());
+        }
+        mgr.router
+            .trigger_outbound_for_delivery_announce(event.destination_hash)
+    } else {
+        0
+    };
+    if triggered > 0 {
+        state.lxmf_notify.notify_one();
+    }
+
     let iface = lookup_path_iface(state, event.destination_hash).await;
 
     let identity_hash_hex = event.identity_hash.map(hex::encode);
@@ -305,6 +320,9 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
     if let Ok(mut lxmf) = state.lxmf.lock()
         && let Some(mgr) = lxmf.as_mut()
     {
+        if let Some(ref public_key) = event.public_key {
+            mgr.update_remote_crypto(&hash_hex, public_key, event.ratchet.as_ref());
+        }
         mgr.router
             .set_stamp_cost(event.destination_hash, pn.stamp_cost);
     }
@@ -377,6 +395,18 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
         crate::propagation::mark_relay_path_success(state, event.destination_hash);
         state.trim_propagation_nodes();
         crate::propagation::maybe_reselect_on_announce(state).await;
+        let triggered = if let Some(app_data) = event.app_data.as_deref()
+            && let Ok(mut lxmf) = state.lxmf.lock()
+            && let Some(mgr) = lxmf.as_mut()
+        {
+            mgr.router
+                .trigger_outbound_for_propagation_node_announce(event.destination_hash, app_data)
+        } else {
+            0
+        };
+        if triggered > 0 {
+            state.lxmf_notify.notify_one();
+        }
     }
 }
 

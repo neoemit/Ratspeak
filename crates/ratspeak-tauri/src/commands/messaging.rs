@@ -156,6 +156,15 @@ pub(crate) fn validate_delivery_preference(
     Ok(())
 }
 
+fn destination_identity_known(state: &AppState, dest_hash: &str) -> bool {
+    state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|lxmf| lxmf.as_ref().map(|mgr| mgr.is_destination_known(dest_hash)))
+        .unwrap_or(false)
+}
+
 pub(crate) async fn ensure_propagation_ready_for_send(
     state: &Arc<AppState>,
     dest_hash: &str,
@@ -184,21 +193,27 @@ pub(crate) async fn ensure_propagation_ready_for_send(
     }
 
     let readiness = crate::propagation::ensure_relay_ready_for_send(state).await;
-    if readiness == crate::propagation::RelayReadiness::Ready {
+    if readiness == crate::propagation::RelayReadiness::Ready
+        && destination_identity_known(state, dest_hash)
+    {
         return Ok(());
     }
 
-    let message = match readiness {
-        crate::propagation::RelayReadiness::Offline => {
-            "Network is offline. Offline Inbox will be checked again when an interface is online."
+    let message = if readiness == crate::propagation::RelayReadiness::Ready {
+        "Recipient identity key is not known yet. Scan or import their contact card, or wait for their LXMF announce before using Offline Inbox."
+    } else {
+        match readiness {
+            crate::propagation::RelayReadiness::Offline => {
+                "Network is offline. Offline Inbox will be checked again when an interface is online."
+            }
+            crate::propagation::RelayReadiness::Waiting => {
+                "No reachable Offline Inbox is available yet. Ratspeak is looking for one."
+            }
+            crate::propagation::RelayReadiness::Unavailable => {
+                "No Offline Inbox node is configured. Check Settings > Network."
+            }
+            crate::propagation::RelayReadiness::Ready => unreachable!(),
         }
-        crate::propagation::RelayReadiness::Waiting => {
-            "No reachable Offline Inbox is available yet. Ratspeak is looking for one."
-        }
-        crate::propagation::RelayReadiness::Unavailable => {
-            "No Offline Inbox node is configured. Check Settings > Network."
-        }
-        crate::propagation::RelayReadiness::Ready => unreachable!(),
     };
 
     state.emit_to_all(
@@ -348,6 +363,10 @@ pub async fn send_lxmf_message(
 
 /// Resolve identity+path before send; no-ops if transport not ready.
 async fn resolve_before_send(state: &AppState, dest_hash: &str) {
+    if crate::commands::shared::hydrate_contact_identity_for_send(state, dest_hash).await {
+        return;
+    }
+
     let tx = state
         .lxmf
         .lock()

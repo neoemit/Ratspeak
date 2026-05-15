@@ -4,11 +4,16 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use rns_identity::destination::Destination;
+use rns_identity::identity::Identity;
 use serde_json::{Value, json};
 
 use crate::db;
+use crate::helpers::{active_identity_id, validate_hex};
 use crate::lxmf::resolve_destination;
 use crate::state::AppState;
+
+const LXMF_APP_NAME: &str = "lxmf.delivery";
 
 pub(crate) fn transport_sender(
     state: &AppState,
@@ -246,9 +251,86 @@ pub(crate) fn emit_hub_interfaces(state: &AppState, ifaces: serde_json::Value) {
     state.emit_to_all("hub_interfaces_update", ifaces);
 }
 
+pub(crate) async fn hydrate_contact_identity_for_send(state: &AppState, dest_hash: &str) -> bool {
+    let dest_hash = dest_hash.trim().to_ascii_lowercase();
+    if !validate_hex(&dest_hash, 32, 32) {
+        return false;
+    }
+
+    if state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|lxmf| {
+            lxmf.as_ref()
+                .map(|mgr| mgr.is_destination_known(&dest_hash))
+        })
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    let identity_id = active_identity_id(state);
+    let dest_for_db = dest_hash.clone();
+    let contact = match db::spawn_db(state.db.clone(), move |p| {
+        db::get_contact(&p, &dest_for_db, &identity_id)
+    })
+    .await
+    {
+        Ok(Some(contact)) => contact,
+        _ => return false,
+    };
+
+    let Some(pubkey_hex) = contact
+        .get("identity_pubkey")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| validate_hex(s, 128, 128))
+    else {
+        return false;
+    };
+    let Ok(pubkey_bytes) = hex::decode(pubkey_hex) else {
+        return false;
+    };
+    if pubkey_bytes.len() != 64 {
+        return false;
+    }
+    let mut public_key = [0u8; 64];
+    public_key.copy_from_slice(&pubkey_bytes);
+
+    let Ok(identity) = Identity::from_public_key(&public_key) else {
+        tracing::warn!(dest = %dest_hash, "contact identity public key is invalid");
+        return false;
+    };
+    let expected_lxmf =
+        Destination::hash_from_name_and_identity(LXMF_APP_NAME, Some(&identity.hash));
+    if hex::encode(expected_lxmf) != dest_hash {
+        tracing::warn!(
+            dest = %dest_hash,
+            expected = %hex::encode(expected_lxmf),
+            "contact identity public key does not match LXMF destination"
+        );
+        return false;
+    }
+
+    if let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_mut()
+    {
+        mgr.update_remote_crypto(&dest_hash, &public_key, None);
+        mgr.save_crypto_state();
+        tracing::debug!(dest = %dest_hash, "hydrated LXMF identity from contact card");
+        return true;
+    }
+    false
+}
+
 // Extracts transport_tx then calls resolve_destination outside the lock
 // (clippy::await_holding_lock). Failure does not block sending.
 pub(crate) async fn resolve_before_send(state: &AppState, dest_hash: &str) {
+    if hydrate_contact_identity_for_send(state, dest_hash).await {
+        return;
+    }
+
     let transport_tx = {
         if let Ok(lxmf) = state.lxmf.lock() {
             lxmf.as_ref()

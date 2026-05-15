@@ -1723,6 +1723,11 @@ fn propagated_send_paths_run_relay_readiness_preflight() {
 
     let messaging = read_source(root.join("crates/ratspeak-tauri/src/commands/messaging.rs"))
         .expect("messaging commands");
+    let shared = read_source(root.join("crates/ratspeak-tauri/src/commands/shared.rs"))
+        .expect("shared command helpers");
+    let announce_handlers =
+        read_source(root.join("crates/ratspeak-runtime/src/announce_handlers.rs"))
+            .expect("announce handlers");
     for fn_name in [
         "send_lxmf_message",
         "send_reaction",
@@ -1740,6 +1745,17 @@ fn propagated_send_paths_run_relay_readiness_preflight() {
             "{fn_name} must not bypass propagation relay readiness checks"
         );
     }
+    assert!(messaging.contains("destination_identity_known(state, dest_hash)"));
+    assert!(messaging.contains("Recipient identity key is not known yet"));
+    assert!(shared.contains("hydrate_contact_identity_for_send"));
+    assert!(shared.contains("db::get_contact(&p, &dest_for_db, &identity_id)"));
+    assert!(shared.contains("mgr.update_remote_crypto(&dest_hash, &public_key, None)"));
+    assert!(
+        announce_handlers
+            .contains("trigger_outbound_for_delivery_announce(event.destination_hash)")
+    );
+    assert!(announce_handlers.contains("trigger_outbound_for_propagation_node_announce("));
+    assert!(announce_handlers.contains("state.lxmf_notify.notify_one()"));
 
     let games = read_source(root.join("crates/ratspeak-tauri/src/commands/games.rs"))
         .expect("game commands");
