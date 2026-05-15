@@ -9,7 +9,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use serde_json::{Value, json};
 
-use lxmf_core::constants::{DeliveryMethod, STRUCT_OVERHEAD, TIMESTAMP_SIZE};
+use lxmf_core::constants::{
+    DeliveryMethod, MAX_DELIVERY_ATTEMPTS, STRUCT_OVERHEAD, TIMESTAMP_SIZE,
+};
 use lxmf_core::message::LxMessage;
 use lxmf_core::router::{LxmRouter, OutboundAction, RouterConfig};
 use rns_identity::destination::Destination;
@@ -18,7 +20,9 @@ use rns_identity::ratchet::{
     RatchetRing, ReceivedRatchet, clean_received_ratchets_dir, purge_expired_ratchets_in_memory,
 };
 
-use rns_transport::messages::TransportMessage;
+use rns_transport::messages::{
+    PathTableRpcEntry, TransportMessage, TransportQuery, TransportQueryResponse,
+};
 
 use crate::db;
 use crate::state::{AppState, DbPool};
@@ -192,6 +196,7 @@ pub struct LxmfManager {
     pub received_ratchets: HashMap<String, ReceivedRatchet>,
     pub known_identities: HashMap<String, [u8; 64]>,
     route_hops: HashMap<[u8; 16], u8>,
+    route_entries: HashMap<[u8; 16], PathTableRpcEntry>,
     /// Held so identity-switch can re-register with the transport actor.
     pub delivery_tx:
         Option<tokio::sync::mpsc::Sender<rns_transport::link_messages::DestinationEvent>>,
@@ -400,6 +405,7 @@ impl LxmfManager {
             received_ratchets,
             known_identities,
             route_hops: HashMap::new(),
+            route_entries: HashMap::new(),
             delivery_tx: None,
             link_delivery: None,
             propagation_sync: None,
@@ -1755,8 +1761,10 @@ impl LxmfManager {
         entries: &[rns_transport::messages::PathTableRpcEntry],
     ) {
         self.route_hops.clear();
+        self.route_entries.clear();
         for entry in entries {
             self.route_hops.insert(entry.hash, entry.hops.max(1));
+            self.route_entries.insert(entry.hash, entry.clone());
         }
     }
 
@@ -1766,6 +1774,99 @@ impl LxmfManager {
 
     fn delivery_link_hops(&self, dest_hash: [u8; 16]) -> u8 {
         self.route_hops.get(&dest_hash).copied().unwrap_or(1).max(1)
+    }
+
+    fn direct_route_entry(&self, dest_hash: [u8; 16], now: f64) -> Option<&PathTableRpcEntry> {
+        self.route_entries
+            .get(&dest_hash)
+            .filter(|entry| entry.expires > now)
+    }
+
+    fn queue_path_rediscovery(&self, dest_hash: [u8; 16], drop_existing: bool, reason: &str) {
+        let Some(ref tx) = self.router.transport_tx else {
+            return;
+        };
+
+        if drop_existing {
+            let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+            if let Err(e) = tx.try_send(TransportMessage::Rpc {
+                query: TransportQuery::DropPath { dest: dest_hash },
+                response_tx,
+            }) {
+                tracing::warn!(
+                    dest = %hex::encode(dest_hash),
+                    error = %e,
+                    reason,
+                    "failed to queue path drop after direct link failure"
+                );
+            }
+        }
+
+        if let Err(e) = tx.try_send(TransportMessage::RequestPath {
+            destination_hash: dest_hash,
+        }) {
+            tracing::warn!(
+                dest = %hex::encode(dest_hash),
+                error = %e,
+                reason,
+                "failed to queue path request after direct link failure"
+            );
+        }
+    }
+
+    fn requeue_direct_after_link_failure(
+        &mut self,
+        message: LxMessage,
+        dest_hash: [u8; 16],
+        reason: &str,
+    ) -> bool {
+        let retryable = matches!(
+            reason,
+            "link establishment timeout" | "link closed" | "transport full" | "transport closed"
+        );
+        if !matches!(
+            message.method,
+            DeliveryMethod::Direct | DeliveryMethod::Opportunistic
+        ) || message.delivery_attempts >= MAX_DELIVERY_ATTEMPTS
+            || !retryable
+        {
+            return false;
+        }
+
+        let drop_existing = matches!(reason, "link establishment timeout" | "link closed");
+        self.queue_path_rediscovery(dest_hash, drop_existing, reason);
+        tracing::warn!(
+            dest = %hex::encode(dest_hash),
+            attempts = message.delivery_attempts,
+            max_attempts = MAX_DELIVERY_ATTEMPTS,
+            reason,
+            "direct link delivery failed before completion; rediscovering path and re-queuing"
+        );
+        self.router.send(message);
+        true
+    }
+
+    fn log_direct_route_state(&self, dest_hash: [u8; 16], now: f64) {
+        let dest_hex = hex::encode(dest_hash);
+        if let Some(entry) = self.direct_route_entry(dest_hash, now) {
+            tracing::info!(
+                dest = %dest_hex,
+                has_path = true,
+                hops = entry.hops,
+                interface = %entry.interface,
+                path_age_secs = now - entry.timestamp,
+                path_expires_in_secs = entry.expires - now,
+                next_hop = ?entry.via.map(hex::encode),
+                "outbound LXMF: starting Direct delivery via Link"
+            );
+        } else {
+            tracing::warn!(
+                dest = %dest_hex,
+                has_path = false,
+                cached_hops = self.route_hops.get(&dest_hash).copied(),
+                "outbound LXMF: Direct delivery has no current path snapshot"
+            );
+        }
     }
 
     pub fn update_lxmf_announce_app_data(
@@ -1990,9 +2091,17 @@ impl LxmfManager {
                         }
                     }
                     lxmf_core::link_delivery::DeliveryResult::Failed {
-                        msg_hash, reason, ..
+                        msg_hash,
+                        dest_hash,
+                        message,
+                        reason,
+                        ..
                     } => {
-                        tracing::warn!(reason = %reason, "link delivery failed");
+                        tracing::warn!(
+                            dest = %hex::encode(dest_hash),
+                            reason = %reason,
+                            "link delivery failed"
+                        );
                         if let Some(hash) = msg_hash {
                             if self.ephemeral_outbound.remove(&hash) {
                                 continue;
@@ -2000,8 +2109,17 @@ impl LxmfManager {
                             if let Some(prop_hash) = self.in_flight_propagation.remove(&hash) {
                                 self.failed_propagation_deposits
                                     .push((prop_hash, reason.clone()));
+                                results.push((hex::encode(hash), "failed"));
+                                continue;
+                            }
+                            if self.requeue_direct_after_link_failure(message, dest_hash, &reason) {
+                                results.push((hex::encode(hash), "routing"));
+                                continue;
                             }
                             results.push((hex::encode(hash), "failed"));
+                        } else {
+                            let _ =
+                                self.requeue_direct_after_link_failure(message, dest_hash, &reason);
                         }
                     }
                 }
@@ -2238,10 +2356,23 @@ impl LxmfManager {
         }
 
         if let Some(ref mut ld) = self.link_delivery {
-            ld.start_packed_delivery(message, prop_hash, 1, packed, false);
-            if let Some(hash) = msg_hash {
-                self.in_flight_propagation.insert(hash, prop_hash);
-                results.push((hex::encode(hash), "propagating"));
+            match ld.start_packed_delivery(message, prop_hash, 1, packed, false) {
+                Ok(_) => {
+                    if let Some(hash) = msg_hash {
+                        self.in_flight_propagation.insert(hash, prop_hash);
+                        results.push((hex::encode(hash), "propagating"));
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        prop = %hex::encode(prop_hash),
+                        "failed to start propagation link delivery"
+                    );
+                    if let Some(hash) = msg_hash {
+                        results.push((hex::encode(hash), "failed"));
+                    }
+                }
             }
         } else if let Some(hash) = msg_hash {
             results.push((hex::encode(hash), "failed"));
@@ -2324,6 +2455,31 @@ impl LxmfManager {
                     continue;
                 }
 
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64();
+                message.delivery_attempts += 1;
+                message.last_delivery_attempt = now;
+
+                if self.direct_route_entry(dest_hash, now).is_none() {
+                    let had_expired_snapshot = self.route_entries.contains_key(&dest_hash);
+                    self.queue_path_rediscovery(dest_hash, had_expired_snapshot, "no current path");
+                    tracing::warn!(
+                        dest = %dest_hex,
+                        attempts = message.delivery_attempts,
+                        expired_snapshot = had_expired_snapshot,
+                        "outbound LXMF: Direct delivery has no current path, re-queuing"
+                    );
+                    self.router.send(message);
+                    if let Some(hash) = msg_hash
+                        && !is_ephemeral
+                    {
+                        results.push((hex::encode(hash), "routing"));
+                    }
+                    continue;
+                }
+
                 if self.link_delivery.is_none()
                     && let Some(ref tx) = self.router.transport_tx
                 {
@@ -2335,12 +2491,42 @@ impl LxmfManager {
                 }
 
                 let hops = self.delivery_link_hops(dest_hash);
+                self.log_direct_route_state(dest_hash, now);
                 if let Some(ref mut ld) = self.link_delivery {
-                    ld.start_delivery(message, dest_hash, hops);
-                    if let Some(hash) = msg_hash
-                        && !is_ephemeral
-                    {
-                        results.push((hex::encode(hash), "sending_via_link"));
+                    let attempts = message.delivery_attempts;
+                    match ld.start_delivery(message, dest_hash, hops) {
+                        Ok(_) => {
+                            if let Some(hash) = msg_hash
+                                && !is_ephemeral
+                            {
+                                results.push((hex::encode(hash), "sending_via_link"));
+                            }
+                        }
+                        Err(err) => {
+                            let reason = err.error.to_string();
+                            tracing::warn!(
+                                dest = %dest_hex,
+                                attempts,
+                                reason = %reason,
+                                "outbound LXMF: failed to start Direct link delivery"
+                            );
+                            if self.requeue_direct_after_link_failure(
+                                err.message,
+                                dest_hash,
+                                &reason,
+                            ) {
+                                if let Some(hash) = msg_hash
+                                    && !is_ephemeral
+                                {
+                                    results.push((hex::encode(hash), "routing"));
+                                }
+                            } else if let Some(hash) = msg_hash {
+                                if self.ephemeral_outbound.remove(&hash) {
+                                    continue;
+                                }
+                                results.push((hex::encode(hash), "failed"));
+                            }
+                        }
                     }
                 } else if let Some(hash) = msg_hash {
                     if self.ephemeral_outbound.remove(&hash) {
@@ -2441,13 +2627,68 @@ impl LxmfManager {
                     ));
                 }
 
-                let hops = self.delivery_link_hops(dest_hash);
-                if let Some(ref mut ld) = self.link_delivery {
-                    ld.start_delivery(message, dest_hash, hops);
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64();
+                message.delivery_attempts += 1;
+                message.last_delivery_attempt = now;
+
+                if self.direct_route_entry(dest_hash, now).is_none() {
+                    let had_expired_snapshot = self.route_entries.contains_key(&dest_hash);
+                    self.queue_path_rediscovery(dest_hash, had_expired_snapshot, "no current path");
+                    tracing::warn!(
+                        dest = %dest_hex,
+                        attempts = message.delivery_attempts,
+                        expired_snapshot = had_expired_snapshot,
+                        "outbound LXMF: oversized Link delivery has no current path, re-queuing"
+                    );
+                    self.router.send(message);
                     if let Some(hash) = msg_hash
                         && !is_ephemeral
                     {
-                        results.push((hex::encode(hash), "sending_via_link"));
+                        results.push((hex::encode(hash), "routing"));
+                    }
+                    continue;
+                }
+
+                let hops = self.delivery_link_hops(dest_hash);
+                self.log_direct_route_state(dest_hash, now);
+                if let Some(ref mut ld) = self.link_delivery {
+                    let attempts = message.delivery_attempts;
+                    match ld.start_delivery(message, dest_hash, hops) {
+                        Ok(_) => {
+                            if let Some(hash) = msg_hash
+                                && !is_ephemeral
+                            {
+                                results.push((hex::encode(hash), "sending_via_link"));
+                            }
+                        }
+                        Err(err) => {
+                            let reason = err.error.to_string();
+                            tracing::warn!(
+                                dest = %dest_hex,
+                                attempts,
+                                reason = %reason,
+                                "outbound LXMF: failed to start oversized Link delivery"
+                            );
+                            if self.requeue_direct_after_link_failure(
+                                err.message,
+                                dest_hash,
+                                &reason,
+                            ) {
+                                if let Some(hash) = msg_hash
+                                    && !is_ephemeral
+                                {
+                                    results.push((hex::encode(hash), "routing"));
+                                }
+                            } else if let Some(hash) = msg_hash {
+                                if self.ephemeral_outbound.remove(&hash) {
+                                    continue;
+                                }
+                                results.push((hex::encode(hash), "failed"));
+                            }
+                        }
                     }
                 } else if let Some(hash) = msg_hash {
                     if self.ephemeral_outbound.remove(&hash) {
@@ -2518,15 +2759,6 @@ pub async fn resolve_destination(
     dest_hash_hex: &str,
     transport_tx: &tokio::sync::mpsc::Sender<TransportMessage>,
 ) -> bool {
-    {
-        if let Ok(lxmf) = state.lxmf.lock()
-            && let Some(mgr) = lxmf.as_ref()
-            && mgr.is_destination_known(dest_hash_hex)
-        {
-            return true;
-        }
-    }
-
     let dest = match hex::decode(dest_hash_hex) {
         Ok(bytes) if bytes.len() == 16 => {
             let mut d = [0u8; 16];
@@ -2536,11 +2768,63 @@ pub async fn resolve_destination(
         _ => return false,
     };
 
-    tracing::info!(dest = %dest_hash_hex, "resolving destination identity...");
-    if let Err(e) = transport_tx.try_send(TransportMessage::RequestPath {
-        destination_hash: dest,
-    }) {
-        tracing::warn!(dest = %dest_hash_hex, error = %e, "path request drop during identity resolve");
+    let identity_known = if let Ok(lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_ref()
+    {
+        mgr.is_destination_known(dest_hash_hex)
+    } else {
+        false
+    };
+
+    if let Some(entries) = query_path_table(transport_tx).await {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let path_entry = entries
+            .iter()
+            .find(|entry| entry.hash == dest && entry.expires > now)
+            .cloned();
+        cache_route_hops_from_entries(state, &entries);
+        if let Some(entry) = path_entry {
+            tracing::debug!(
+                dest = %dest_hash_hex,
+                identity_known,
+                has_path = true,
+                hops = entry.hops,
+                interface = %entry.interface,
+                path_age_secs = now - entry.timestamp,
+                path_expires_in_secs = entry.expires - now,
+                "destination path already available before send"
+            );
+            if !identity_known {
+                pull_identity_from_announces(state, transport_tx, dest_hash_hex).await;
+            }
+            return if identity_known {
+                true
+            } else if let Ok(lxmf) = state.lxmf.lock()
+                && let Some(mgr) = lxmf.as_ref()
+            {
+                mgr.is_destination_known(dest_hash_hex)
+            } else {
+                false
+            };
+        }
+    }
+
+    tracing::info!(
+        dest = %dest_hash_hex,
+        identity_known,
+        "resolving destination path before send..."
+    );
+    if let Err(e) = transport_tx
+        .send(TransportMessage::RequestPath {
+            destination_hash: dest,
+        })
+        .await
+    {
+        tracing::warn!(dest = %dest_hash_hex, error = %e, "path request failed during destination resolve");
+        return false;
     }
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -2571,33 +2855,57 @@ pub async fn resolve_destination(
     };
 
     if known {
-        tracing::info!(dest = %dest_hash_hex, "destination resolved via AwaitPath");
+        tracing::info!(dest = %dest_hash_hex, path_found, "destination resolved before send");
     } else if path_found {
         tracing::debug!(dest = %dest_hash_hex, "path found but identity key pending; will retry");
     } else {
         tracing::warn!(dest = %dest_hash_hex, "destination resolution timed out after 5s");
     }
-    known
+    known && path_found
+}
+
+async fn query_path_table(
+    transport_tx: &tokio::sync::mpsc::Sender<TransportMessage>,
+) -> Option<Vec<PathTableRpcEntry>> {
+    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+    if let Err(e) = transport_tx
+        .send(TransportMessage::Rpc {
+            query: TransportQuery::GetPathTable,
+            response_tx: resp_tx,
+        })
+        .await
+    {
+        tracing::warn!(error = %e, "path-table RPC failed during route-hop refresh");
+        return None;
+    }
+
+    match resp_rx.await {
+        Ok(TransportQueryResponse::PathTable(entries)) => Some(entries),
+        Ok(other) => {
+            tracing::warn!(response = ?other, "unexpected path-table RPC response");
+            None
+        }
+        Err(_) => {
+            tracing::warn!("path-table RPC response channel closed");
+            None
+        }
+    }
+}
+
+fn cache_route_hops_from_entries(state: &AppState, entries: &[PathTableRpcEntry]) {
+    if let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_mut()
+    {
+        mgr.replace_route_hops_from_path_table(entries);
+    }
 }
 
 async fn refresh_route_hops_from_transport(
     state: &AppState,
     transport_tx: &tokio::sync::mpsc::Sender<TransportMessage>,
 ) {
-    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-    if let Err(e) = transport_tx.try_send(TransportMessage::Rpc {
-        query: rns_transport::messages::TransportQuery::GetPathTable,
-        response_tx: resp_tx,
-    }) {
-        tracing::warn!(error = %e, "path-table RPC drop during route-hop refresh");
-        return;
-    }
-
-    if let Ok(rns_transport::messages::TransportQueryResponse::PathTable(entries)) = resp_rx.await
-        && let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-    {
-        mgr.replace_route_hops_from_path_table(&entries);
+    if let Some(entries) = query_path_table(transport_tx).await {
+        cache_route_hops_from_entries(state, &entries);
     }
 }
 
@@ -2708,6 +3016,79 @@ mod tests {
 
         mgr.update_route_hop(dest, 0);
         assert_eq!(mgr.delivery_link_hops(dest), 1);
+    }
+
+    #[test]
+    fn direct_delivery_without_path_requeues_and_requests_path() {
+        let mut mgr = test_manager();
+        let dest = [0x43; 16];
+        let dest_hex = hex::encode(dest);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(tx);
+        mgr.known_identities
+            .insert(dest_hex, Identity::new().get_public_key());
+
+        let mut msg = LxMessage::new(
+            dest,
+            mgr.lxmf_dest_hash,
+            "No Path",
+            "hello",
+            DeliveryMethod::Direct,
+        );
+        msg.sign(&mgr.identity.get_signing_key().unwrap()).unwrap();
+        let msg_hash = msg.hash.unwrap();
+
+        let results = mgr.execute_encrypted_actions(vec![OutboundAction::DeliverDirect {
+            message: msg,
+            dest_hash: dest,
+        }]);
+
+        assert_eq!(results, vec![(hex::encode(msg_hash), "routing")]);
+        assert_eq!(mgr.router.pending_outbound.len(), 1);
+        assert_eq!(mgr.router.pending_outbound[0].delivery_attempts, 1);
+        assert!(mgr.router.pending_outbound[0].last_delivery_attempt > 0.0);
+
+        match rx.try_recv().unwrap() {
+            TransportMessage::RequestPath { destination_hash } => {
+                assert_eq!(destination_hash, dest)
+            }
+            other => panic!("expected RequestPath, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn establishment_failure_drops_path_requests_path_and_requeues() {
+        let mut mgr = test_manager();
+        let dest = [0x44; 16];
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(tx);
+
+        let mut msg = LxMessage::new(
+            dest,
+            mgr.lxmf_dest_hash,
+            "Retry",
+            "hello",
+            DeliveryMethod::Direct,
+        );
+        msg.delivery_attempts = 1;
+        msg.last_delivery_attempt = 1.0;
+
+        assert!(mgr.requeue_direct_after_link_failure(msg, dest, "link establishment timeout"));
+        assert_eq!(mgr.router.pending_outbound.len(), 1);
+
+        match rx.try_recv().unwrap() {
+            TransportMessage::Rpc {
+                query: TransportQuery::DropPath { dest: dropped },
+                ..
+            } => assert_eq!(dropped, dest),
+            other => panic!("expected DropPath RPC, got {other:?}"),
+        }
+        match rx.try_recv().unwrap() {
+            TransportMessage::RequestPath { destination_hash } => {
+                assert_eq!(destination_hash, dest)
+            }
+            other => panic!("expected RequestPath, got {other:?}"),
+        }
     }
 
     #[test]

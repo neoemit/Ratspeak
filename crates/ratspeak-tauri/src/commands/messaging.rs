@@ -363,9 +363,7 @@ pub async fn send_lxmf_message(
 
 /// Resolve identity+path before send; no-ops if transport not ready.
 async fn resolve_before_send(state: &AppState, dest_hash: &str) {
-    if crate::commands::shared::hydrate_contact_identity_for_send(state, dest_hash).await {
-        return;
-    }
+    let _ = crate::commands::shared::hydrate_contact_identity_for_send(state, dest_hash).await;
 
     let tx = state
         .lxmf

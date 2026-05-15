@@ -327,9 +327,7 @@ pub(crate) async fn hydrate_contact_identity_for_send(state: &AppState, dest_has
 // Extracts transport_tx then calls resolve_destination outside the lock
 // (clippy::await_holding_lock). Failure does not block sending.
 pub(crate) async fn resolve_before_send(state: &AppState, dest_hash: &str) {
-    if hydrate_contact_identity_for_send(state, dest_hash).await {
-        return;
-    }
+    let _ = hydrate_contact_identity_for_send(state, dest_hash).await;
 
     let transport_tx = {
         if let Ok(lxmf) = state.lxmf.lock() {
