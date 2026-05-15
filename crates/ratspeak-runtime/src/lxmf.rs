@@ -10,7 +10,8 @@ use bytes::Bytes;
 use serde_json::{Value, json};
 
 use lxmf_core::constants::{
-    DeliveryMethod, MAX_DELIVERY_ATTEMPTS, STRUCT_OVERHEAD, TIMESTAMP_SIZE,
+    DeliveryMethod, MAX_DELIVERY_ATTEMPTS, MAX_PATHLESS_TRIES, PATH_REQUEST_WAIT, STRUCT_OVERHEAD,
+    TIMESTAMP_SIZE,
 };
 use lxmf_core::message::LxMessage;
 use lxmf_core::router::{LxmRouter, OutboundAction, RouterConfig};
@@ -960,6 +961,7 @@ impl LxmfManager {
             Some(delivery_method_name(msg.method)),
         );
 
+        self.preempt_opportunistic_path(&mut msg);
         self.router.send(msg);
 
         Some(msg_id)
@@ -984,6 +986,7 @@ impl LxmfManager {
         if let Some(hash) = msg.hash {
             self.ephemeral_outbound.insert(hash);
         }
+        self.preempt_opportunistic_path(&mut msg);
         self.router.send(msg);
         true
     }
@@ -1110,6 +1113,7 @@ impl LxmfManager {
             Some(delivery_method_name(msg.method)),
         );
 
+        self.preempt_opportunistic_path(&mut msg);
         self.router.send(msg);
         Some(msg_id)
     }
@@ -1219,6 +1223,7 @@ impl LxmfManager {
         // LRGP payloads not persisted to messages; game session is the surface.
         let _ = (db_pool, identity_id, fallback_text);
 
+        self.preempt_opportunistic_path(&mut msg);
         self.router.send(msg);
         let msg_id_short: String = msg_id.chars().take(8).collect();
         tracing::info!(
@@ -1599,6 +1604,7 @@ impl LxmfManager {
                 return;
             }
 
+            self.preempt_opportunistic_path(&mut msg);
             self.router.send(msg);
         }
     }
@@ -1877,9 +1883,28 @@ impl LxmfManager {
         }
     }
 
+    /// Python `handle_outbound` pre-emptively requests an unknown path for
+    /// Opportunistic messages and defers the first attempt by
+    /// `PATH_REQUEST_WAIT` (LXMRouter.py:1675-1679). No-op when a path is
+    /// already known or the method is not Opportunistic.
+    fn preempt_opportunistic_path(&mut self, msg: &mut LxMessage) {
+        if msg.method != DeliveryMethod::Opportunistic {
+            return;
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        if self.direct_route_entry(msg.destination_hash, now).is_some() {
+            return;
+        }
+        self.queue_path_rediscovery(msg.destination_hash, false, "opportunistic preempt");
+        msg.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
+    }
+
     fn requeue_direct_after_link_failure(
         &mut self,
-        message: LxMessage,
+        mut message: LxMessage,
         dest_hash: [u8; 16],
         reason: &str,
     ) -> bool {
@@ -1890,7 +1915,7 @@ impl LxmfManager {
         if !matches!(
             message.method,
             DeliveryMethod::Direct | DeliveryMethod::Opportunistic
-        ) || message.delivery_attempts >= MAX_DELIVERY_ATTEMPTS
+        ) || message.delivery_attempts > MAX_DELIVERY_ATTEMPTS
             || !retryable
         {
             return false;
@@ -1898,6 +1923,13 @@ impl LxmfManager {
 
         let drop_existing = matches!(reason, "link establishment timeout" | "link closed");
         self.queue_path_rediscovery(dest_hash, drop_existing, reason);
+        // Python sets next_delivery_attempt = now + PATH_REQUEST_WAIT in the
+        // closed/never-activated branch (LXMRouter.py:2640/2669).
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
         tracing::warn!(
             dest = %hex::encode(dest_hash),
             attempts = message.delivery_attempts,
@@ -2449,6 +2481,9 @@ impl LxmfManager {
             .unwrap_or_default()
             .as_secs_f64();
         message.last_delivery_attempt = now;
+        // Waiting on propagation-node path/identity/stamp — Python defers
+        // PATH_REQUEST_WAIT after the path request (LXMRouter.py:2726).
+        message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
         if let Some(ref tx) = self.router.transport_tx {
             let _ = tx.try_send(TransportMessage::RequestPath {
                 destination_hash: request_hash,
@@ -2772,6 +2807,7 @@ impl LxmfManager {
                         });
                     }
 
+                    message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
                     tracing::warn!(
                         dest = %dest_hex,
                         attempts = message.delivery_attempts,
@@ -2797,6 +2833,7 @@ impl LxmfManager {
                         expired_snapshot = had_expired_snapshot,
                         "outbound LXMF: Direct delivery has no current path, re-queuing"
                     );
+                    message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
                     self.router.send(message);
                     if let Some(hash) = msg_hash
                         && !is_ephemeral
@@ -2863,6 +2900,37 @@ impl LxmfManager {
                 continue;
             }
 
+            // Opportunistic path escalation (LXMRouter.py:2566-2592): try
+            // pathless up to MAX_PATHLESS_TRIES, then request a path, then
+            // drop+rediscover once, before resuming best-effort sends.
+            {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64();
+                let has_path = self.direct_route_entry(dest_hash, now).is_some();
+                let escalate = if message.delivery_attempts >= MAX_PATHLESS_TRIES && !has_path {
+                    Some(("opportunistic pathless", false))
+                } else if message.delivery_attempts == MAX_PATHLESS_TRIES + 1 && has_path {
+                    Some(("opportunistic rediscover", true))
+                } else {
+                    None
+                };
+                if let Some((reason, drop_existing)) = escalate {
+                    message.delivery_attempts += 1;
+                    message.last_delivery_attempt = now;
+                    message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
+                    self.queue_path_rediscovery(dest_hash, drop_existing, reason);
+                    self.router.send(message);
+                    if let Some(hash) = msg_hash
+                        && !is_ephemeral
+                    {
+                        results.push((hex::encode(hash), "routing"));
+                    }
+                    continue;
+                }
+            }
+
             let packed = match message.pack() {
                 Ok(p) => p,
                 Err(_) => continue,
@@ -2909,6 +2977,7 @@ impl LxmfManager {
                     });
                 }
 
+                message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
                 tracing::warn!(
                     dest = %dest_hex,
                     attempts = message.delivery_attempts,
@@ -2969,6 +3038,7 @@ impl LxmfManager {
                         expired_snapshot = had_expired_snapshot,
                         "outbound LXMF: oversized Link delivery has no current path, re-queuing"
                     );
+                    message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
                     self.router.send(message);
                     if let Some(hash) = msg_hash
                         && !is_ephemeral
@@ -3492,6 +3562,20 @@ mod tests {
         assert_eq!(mgr.router.pending_outbound[0].delivery_attempts, 1);
         assert!(mgr.router.pending_outbound[0].last_delivery_attempt > 0.0);
 
+        // D1: a path-request requeue defers PATH_REQUEST_WAIT (7s), not the
+        // 10s link-retry cadence.
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let nda = mgr.router.pending_outbound[0].next_delivery_attempt;
+        assert!(
+            nda > now + PATH_REQUEST_WAIT as f64 - 2.0
+                && nda < now + PATH_REQUEST_WAIT as f64 + 2.0,
+            "expected next_delivery_attempt ~ now+{PATH_REQUEST_WAIT}s, got {}",
+            nda - now
+        );
+
         match rx.try_recv().unwrap() {
             TransportMessage::RequestPath { destination_hash } => {
                 assert_eq!(destination_hash, dest)
@@ -3533,6 +3617,120 @@ mod tests {
             }
             other => panic!("expected RequestPath, got {other:?}"),
         }
+
+        // D1: link-failure rediscovery requeue defers PATH_REQUEST_WAIT (7s).
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let nda = mgr.router.pending_outbound[0].next_delivery_attempt;
+        assert!(
+            nda > now + PATH_REQUEST_WAIT as f64 - 2.0
+                && nda < now + PATH_REQUEST_WAIT as f64 + 2.0,
+            "link-failure requeue must defer PATH_REQUEST_WAIT (7s), got {}",
+            nda - now
+        );
+    }
+
+    /// D2: Python `handle_outbound` pre-emptively requests an unknown path for
+    /// Opportunistic messages and defers PATH_REQUEST_WAIT (LXMRouter.py:1675).
+    #[test]
+    fn opportunistic_preempt_requests_path_and_defers() {
+        let mut mgr = test_manager();
+        let dest = [0x55; 16];
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(tx);
+
+        let mut msg = LxMessage::new(
+            dest,
+            mgr.lxmf_dest_hash,
+            "Opp",
+            "hi",
+            DeliveryMethod::Opportunistic,
+        );
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        mgr.preempt_opportunistic_path(&mut msg);
+
+        assert!(
+            msg.next_delivery_attempt > now + PATH_REQUEST_WAIT as f64 - 2.0
+                && msg.next_delivery_attempt < now + PATH_REQUEST_WAIT as f64 + 2.0,
+            "opportunistic pre-empt must defer PATH_REQUEST_WAIT (7s), got {}",
+            msg.next_delivery_attempt - now
+        );
+        match rx.try_recv().unwrap() {
+            TransportMessage::RequestPath { destination_hash } => {
+                assert_eq!(destination_hash, dest)
+            }
+            other => panic!("expected RequestPath, got {other:?}"),
+        }
+
+        // Non-opportunistic is a no-op.
+        let mut direct = LxMessage::new(dest, mgr.lxmf_dest_hash, "D", "hi", DeliveryMethod::Direct);
+        mgr.preempt_opportunistic_path(&mut direct);
+        assert_eq!(direct.next_delivery_attempt, 0.0);
+    }
+
+    /// D2: opportunistic pathless escalation (LXMRouter.py:2566-2592). With no
+    /// path and delivery_attempts >= MAX_PATHLESS_TRIES, the dispatch branch
+    /// requests a path (no drop), defers PATH_REQUEST_WAIT, and re-queues as
+    /// "routing" instead of flooding another pathless packet.
+    #[test]
+    fn opportunistic_pathless_escalation_requests_path() {
+        let mut mgr = test_manager();
+        let dest = [0x56; 16];
+        let dest_hex = hex::encode(dest);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(tx);
+        mgr.known_identities
+            .insert(dest_hex, Identity::new().get_public_key());
+
+        let mut msg = LxMessage::new(
+            dest,
+            mgr.lxmf_dest_hash,
+            "Opp",
+            "hi",
+            DeliveryMethod::Opportunistic,
+        );
+        msg.sign(&mgr.identity.get_signing_key().unwrap()).unwrap();
+        let msg_hash = msg.hash.unwrap();
+        msg.delivery_attempts = MAX_PATHLESS_TRIES;
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let results = mgr.execute_encrypted_actions(vec![OutboundAction::DeliverOpportunistic {
+            message: msg,
+            dest_hash: dest,
+        }]);
+
+        assert_eq!(results, vec![(hex::encode(msg_hash), "routing")]);
+        assert_eq!(mgr.router.pending_outbound.len(), 1);
+        assert_eq!(
+            mgr.router.pending_outbound[0].delivery_attempts,
+            MAX_PATHLESS_TRIES + 1
+        );
+        let nda = mgr.router.pending_outbound[0].next_delivery_attempt;
+        assert!(
+            nda > now + PATH_REQUEST_WAIT as f64 - 2.0
+                && nda < now + PATH_REQUEST_WAIT as f64 + 2.0,
+            "pathless escalation must defer PATH_REQUEST_WAIT (7s), got {}",
+            nda - now
+        );
+        // drop_existing = false for the pathless branch: RequestPath only.
+        match rx.try_recv().unwrap() {
+            TransportMessage::RequestPath { destination_hash } => {
+                assert_eq!(destination_hash, dest)
+            }
+            other => panic!("expected RequestPath, got {other:?}"),
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "pathless branch must not drop the path"
+        );
     }
 
     #[test]
