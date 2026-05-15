@@ -1010,6 +1010,20 @@ pub fn save_identity(
     .ok();
 }
 
+pub fn set_identity_propagation_node(
+    pool: &DbPool,
+    hash_hex: &str,
+    propagation_node: &str,
+) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| format!("pool: {e}"))?;
+    conn.execute(
+        "UPDATE identities SET propagation_node = ?1 WHERE hash = ?2",
+        params![propagation_node, hash_hex],
+    )
+    .map_err(|e| format!("propagation_node: {e}"))?;
+    Ok(())
+}
+
 pub fn set_active_identity(pool: &DbPool, hash_hex: &str) -> Result<(), String> {
     let mut conn = pool.get().map_err(|e| format!("pool: {e}"))?;
     let now = now_ts();

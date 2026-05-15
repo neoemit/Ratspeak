@@ -16,7 +16,7 @@ use crate::static_nodes;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PropagationMode {
     /// Stops active client sync state and blocks new inbox sends/syncs. DB
-    /// `propagation_node` is kept dormant for later Auto/Manual use.
+    /// `propagation_node` is kept dormant as the Manual node preference.
     Off,
     /// Hop-count selection from `discovered_propagation_nodes`, optionally
     /// favoring Ratspeak static nodes.
@@ -849,20 +849,17 @@ pub async fn maybe_reselect_on_announce(state: &Arc<AppState>) {
     apply_auto_selection(state, new_winner).await;
 }
 
-/// Persist a winner: set node on LXMF mgr, update `auto_active_node`,
-/// emit `propagation_update`.
+/// Apply an Auto winner to the LXMF runtime without mutating the persisted
+/// Manual node preference.
 pub async fn apply_auto_selection(state: &Arc<AppState>, hash: [u8; 16]) {
-    let identity_id = crate::helpers::active_identity_id(state);
     let hex_hash = hex::encode(hash);
 
     let st = state.clone();
-    let id = identity_id.clone();
-    let hex_for_set = hex_hash.clone();
     let _ = tokio::task::spawn_blocking(move || {
         if let Ok(mut lxmf) = st.lxmf.lock()
             && let Some(mgr) = lxmf.as_mut()
         {
-            mgr.set_propagation_node(Some(&hex_for_set), &st.db, &id);
+            mgr.set_runtime_propagation_node(Some(hash));
         }
     })
     .await;
@@ -880,14 +877,12 @@ pub async fn apply_auto_selection(state: &Arc<AppState>, hash: [u8; 16]) {
 
 /// Clear the active Auto-selected relay without changing Off/Manual semantics.
 pub async fn clear_auto_selection(state: &Arc<AppState>) {
-    let identity_id = crate::helpers::active_identity_id(state);
     let st = state.clone();
-    let id = identity_id.clone();
     let _ = tokio::task::spawn_blocking(move || {
         if let Ok(mut lxmf) = st.lxmf.lock()
             && let Some(mgr) = lxmf.as_mut()
         {
-            mgr.set_propagation_node(None, &st.db, &id);
+            mgr.set_runtime_propagation_node(None);
         }
     })
     .await;
@@ -1338,6 +1333,18 @@ pub fn get_status_payload(state: &AppState) -> serde_json::Value {
         .ok()
         .and_then(|g| *g)
         .map(hex::encode);
+    let manual_node = if mode == PropagationMode::Manual {
+        db::get_active_identity(&state.db)
+            .and_then(|identity| {
+                identity
+                    .get("propagation_node")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .filter(|node| !node.is_empty())
+    } else {
+        None
+    };
     let static_nodes_known = static_nodes::load().len();
     let awaiting_discovery =
         mode == PropagationMode::Auto && auto_active.is_none() && auto_select_node(state).is_none();
@@ -1381,6 +1388,9 @@ pub fn get_status_payload(state: &AppState) -> serde_json::Value {
         if mode == PropagationMode::Off || mode == PropagationMode::Auto {
             obj.insert("node_hash".to_string(), json!(auto_active.clone()));
             obj.insert("propagation_node".to_string(), json!(auto_active.clone()));
+        } else if let Some(node) = manual_node.as_ref() {
+            obj.insert("node_hash".to_string(), json!(node));
+            obj.insert("propagation_node".to_string(), json!(node));
         }
         obj.insert("mode".to_string(), json!(mode.as_str()));
         obj.insert("favor_static".to_string(), json!(favor_static));
@@ -1429,6 +1439,7 @@ pub fn seed_static_nodes(state: &AppState) {
 mod tests {
     use super::*;
     use crate::config::DashboardConfig;
+    use crate::lxmf::LxmfManager;
     use r2d2_sqlite::SqliteConnectionManager;
     use rns_identity::identity::Identity;
     use std::collections::HashMap;
@@ -1535,6 +1546,25 @@ mod tests {
             .insert("path_status".to_string(), json!(status));
     }
 
+    fn install_lxmf_manager(state: &Arc<AppState>, mode: &str, manual_node: &str) -> String {
+        let mgr = LxmfManager::load_or_create(&state.config.data_dir, None).unwrap();
+        let identity_id = mgr.identity_hash.clone();
+        crate::db::save_identity(&state.db, &identity_id, &mgr.lxmf_hash, "test", "Test");
+        crate::db::set_active_identity(&state.db, &identity_id).unwrap();
+        let conn = state.db.get().unwrap();
+        conn.execute(
+            "UPDATE identities
+                SET propagation_mode = ?1,
+                    propagation_node = ?2,
+                    propagation_auto_favor_static = 1
+              WHERE hash = ?3",
+            rusqlite::params![mode, manual_node, identity_id],
+        )
+        .unwrap();
+        state.set_lxmf(mgr);
+        identity_id
+    }
+
     fn sync_hub_hash() -> [u8; 16] {
         let bytes = hex::decode("deadbeefbadfceeae39c1aceb911e205").unwrap();
         let mut hash = [0u8; 16];
@@ -1566,6 +1596,90 @@ mod tests {
         );
         assert_eq!(PropagationMode::parse("garbage"), None);
         assert_eq!(PropagationMode::default(), PropagationMode::Auto);
+    }
+
+    #[tokio::test]
+    async fn auto_selection_does_not_overwrite_or_clear_manual_node_preference() {
+        let state = make_state();
+        let manual_node = "12121212121212121212121212121212";
+        let auto_node = [0x34; 16];
+        let identity_id = install_lxmf_manager(&state, "auto", manual_node);
+
+        if let Ok(mut lxmf) = state.lxmf.lock()
+            && let Some(mgr) = lxmf.as_mut()
+        {
+            mgr.enable_propagation(true, &state.db, &identity_id);
+        }
+
+        apply_auto_selection(&state, auto_node).await;
+
+        assert_eq!(
+            crate::db::get_active_identity(&state.db).and_then(|v| v
+                .get("propagation_node")
+                .and_then(|h| h.as_str())
+                .map(String::from)),
+            Some(manual_node.to_string())
+        );
+        assert_eq!(
+            state.auto_active_node.read().ok().and_then(|node| *node),
+            Some(auto_node)
+        );
+        assert_eq!(
+            state.lxmf.lock().ok().and_then(|lxmf| lxmf
+                .as_ref()
+                .and_then(|mgr| mgr.configured_propagation_node)),
+            Some(auto_node)
+        );
+
+        clear_auto_selection(&state).await;
+
+        assert_eq!(
+            crate::db::get_active_identity(&state.db).and_then(|v| v
+                .get("propagation_node")
+                .and_then(|h| h.as_str())
+                .map(String::from)),
+            Some(manual_node.to_string())
+        );
+        assert_eq!(
+            state.lxmf.lock().ok().and_then(|lxmf| lxmf
+                .as_ref()
+                .and_then(|mgr| mgr.configured_propagation_node)),
+            None
+        );
+    }
+
+    #[test]
+    fn manual_status_reports_saved_node_without_lxmf_runtime() {
+        let state = make_state();
+        let manual_node = "45454545454545454545454545454545";
+        crate::db::save_identity(
+            &state.db,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "test",
+            "Test",
+        );
+        crate::db::set_active_identity(&state.db, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        state
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE identities
+                    SET propagation_mode = 'manual',
+                        propagation_node = ?1
+                  WHERE hash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+                rusqlite::params![manual_node],
+            )
+            .unwrap();
+
+        let status = get_status_payload(&state);
+
+        assert_eq!(
+            status.get("propagation_node").and_then(|v| v.as_str()),
+            Some(manual_node)
+        );
+        assert_eq!(status.get("mode").and_then(|v| v.as_str()), Some("manual"));
     }
 
     #[test]

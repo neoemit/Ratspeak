@@ -230,6 +230,8 @@ pub async fn set_propagation_mode(
 
             if let Some(winner) = propagation::auto_select_node(&st) {
                 propagation::apply_auto_selection(&st, winner).await;
+            } else {
+                propagation::clear_auto_selection(&st).await;
             }
 
             // Kick path requests on Auto entry / favor_static toggle.
@@ -257,8 +259,10 @@ pub async fn set_propagation_mode(
                     && let Some(mgr) = lxmf.as_mut()
                 {
                     mgr.enable_propagation(true, &st_for_man.db, &identity_id);
-                    if !stored.is_empty() {
+                    if !stored.is_empty() && validate_hex(&stored, 32, 32) {
                         mgr.set_propagation_node(Some(&stored), &st_for_man.db, &identity_id);
+                    } else {
+                        mgr.set_runtime_propagation_node(None);
                     }
                 }
             })
@@ -472,24 +476,42 @@ pub async fn set_propagation_node(
             "Offline Inbox node hash must be 32 hex characters",
         ));
     }
+    let runtime_node = if dest_hash.is_empty() {
+        None
+    } else {
+        let bytes = hex::decode(&dest_hash)
+            .map_err(|_| AppError::bad_request("Offline Inbox node hash must be hex"))?;
+        let mut node = [0u8; 16];
+        node.copy_from_slice(&bytes);
+        Some(node)
+    };
+    let mode = crate::propagation::read_settings(&state).0;
 
-    let st: Arc<AppState> = Arc::clone(&state);
-    let dh = dest_hash.clone();
-    let id_c = identity_id.clone();
-    tokio::task::spawn_blocking(move || {
-        let node = if dh.is_empty() {
-            None
-        } else {
-            Some(dh.as_str())
-        };
-        if let Ok(mut lxmf) = st.lxmf.lock()
-            && let Some(mgr) = lxmf.as_mut()
-        {
-            mgr.set_propagation_node(node, &st.db, &id_c);
-        }
+    let db = state.db.clone();
+    let dh_for_db = dest_hash.clone();
+    let id_for_db = identity_id.clone();
+    crate::db::spawn_db(db, move |p| {
+        crate::db::set_identity_propagation_node(&p, &id_for_db, &dh_for_db)
     })
     .await
-    .map_err(|_| AppError::internal("set_propagation_node task panicked"))?;
+    .map_err(|_| AppError::internal("set_propagation_node db task panicked"))?
+    .map_err(|e| AppError::internal(format!("Failed to save Offline Inbox node: {e}")))?;
+
+    let st: Arc<AppState> = Arc::clone(&state);
+    if mode == crate::propagation::PropagationMode::Manual {
+        tokio::task::spawn_blocking(move || {
+            if let Ok(mut lxmf) = st.lxmf.lock()
+                && let Some(mgr) = lxmf.as_mut()
+            {
+                mgr.set_runtime_propagation_node(runtime_node);
+            }
+        })
+        .await
+        .map_err(|_| AppError::internal("set_propagation_node task panicked"))?;
+        if let Ok(mut slot) = state.auto_active_node.write() {
+            *slot = None;
+        }
+    }
 
     crate::propagation::emit_propagation_update(&state);
     Ok(crate::propagation::get_status_payload(&state))

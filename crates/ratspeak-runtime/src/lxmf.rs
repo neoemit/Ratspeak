@@ -1189,12 +1189,12 @@ impl LxmfManager {
     }
 
     pub fn get_propagation_status(&self) -> Value {
-        let (node_hash, sync_state) = if let Some(ref sync) = self.propagation_sync {
-            let node = sync.node_dest_hash().map(hex::encode);
+        let node_hash = self.configured_propagation_node.map(hex::encode);
+        let sync_state = if let Some(ref sync) = self.propagation_sync {
             let state = format!("{:?}", sync.state);
-            (node, state)
+            state
         } else {
-            (None, "disabled".to_string())
+            "disabled".to_string()
         };
         let client_state = self
             .propagation_client
@@ -1352,32 +1352,38 @@ impl LxmfManager {
         db_pool: &DbPool,
         identity_id: &str,
     ) {
-        let node_str = node_hash.unwrap_or("");
-        let decoded_node = if node_str.is_empty() {
-            None
-        } else {
-            match hex::decode(node_str) {
-                Ok(bytes) if bytes.len() == 16 => {
-                    let mut dest = [0u8; 16];
-                    dest.copy_from_slice(&bytes);
-                    Some(dest)
-                }
-                _ => {
-                    tracing::warn!(node = %node_str, "invalid propagation node hash ignored");
-                    return;
-                }
-            }
+        let Some(decoded_node) = Self::decode_propagation_node_hash(node_hash) else {
+            return;
         };
+        let node_str = node_hash.unwrap_or("");
 
-        if let Ok(conn) = db_pool.get() {
-            conn.execute(
-                "UPDATE identities SET propagation_node = ?1 WHERE hash = ?2",
-                rusqlite::params![node_str, identity_id],
-            )
-            .ok();
+        if let Err(e) = db::set_identity_propagation_node(db_pool, identity_id, node_str) {
+            tracing::warn!(error = %e, "failed to persist propagation node setting");
         }
 
-        if let Some(dest) = decoded_node {
+        self.set_runtime_propagation_node(decoded_node);
+    }
+
+    fn decode_propagation_node_hash(node_hash: Option<&str>) -> Option<Option<[u8; 16]>> {
+        let node_str = node_hash.unwrap_or("");
+        if node_str.is_empty() {
+            return Some(None);
+        }
+        match hex::decode(node_str) {
+            Ok(bytes) if bytes.len() == 16 => {
+                let mut dest = [0u8; 16];
+                dest.copy_from_slice(&bytes);
+                Some(Some(dest))
+            }
+            _ => {
+                tracing::warn!(node = %node_str, "invalid propagation node hash ignored");
+                None
+            }
+        }
+    }
+
+    pub fn set_runtime_propagation_node(&mut self, node: Option<[u8; 16]>) {
+        if let Some(dest) = node {
             let previous = self.configured_propagation_node;
             self.configured_propagation_node = Some(dest);
             if let Some(prev) = previous.filter(|p| p != &dest) {
@@ -2864,6 +2870,64 @@ mod tests {
         assert_eq!(mgr.configured_propagation_node, Some(node));
         assert_eq!(mgr.router.outbound_propagation_node, None);
         assert!(!mgr.client_propagation_enabled);
+    }
+
+    #[test]
+    fn runtime_auto_node_does_not_replace_manual_node_preference() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let identity_id = mgr.identity_hash.clone();
+        db::save_identity(&pool, &identity_id, &mgr.lxmf_hash, "Me", "Me");
+
+        let manual = [0x12; 16];
+        let auto = [0x34; 16];
+        let manual_hex = hex::encode(manual);
+        mgr.client_propagation_enabled = true;
+
+        mgr.set_propagation_node(Some(&manual_hex), &pool, &identity_id);
+        assert_eq!(mgr.configured_propagation_node, Some(manual));
+        assert_eq!(mgr.router.outbound_propagation_node, Some(manual));
+
+        mgr.set_runtime_propagation_node(Some(auto));
+        assert_eq!(mgr.configured_propagation_node, Some(auto));
+        assert_eq!(mgr.router.outbound_propagation_node, Some(auto));
+        assert_eq!(
+            db::get_identity(&pool, &identity_id).and_then(|v| v
+                .get("propagation_node")
+                .and_then(|h| h.as_str())
+                .map(String::from)),
+            Some(manual_hex.clone())
+        );
+
+        mgr.set_runtime_propagation_node(None);
+        assert_eq!(mgr.configured_propagation_node, None);
+        assert_eq!(mgr.router.outbound_propagation_node, None);
+        assert_eq!(
+            db::get_identity(&pool, &identity_id).and_then(|v| v
+                .get("propagation_node")
+                .and_then(|h| h.as_str())
+                .map(String::from)),
+            Some(manual_hex)
+        );
+    }
+
+    #[test]
+    fn propagation_status_reports_configured_node_without_sync_task() {
+        let mut mgr = test_manager();
+        let node = [0x44; 16];
+        let node_hex = hex::encode(node);
+
+        mgr.set_runtime_propagation_node(Some(node));
+        let status = mgr.get_propagation_status();
+
+        assert_eq!(
+            status.get("propagation_node").and_then(|v| v.as_str()),
+            Some(node_hex.as_str())
+        );
+        assert_eq!(
+            status.get("sync_state").and_then(|v| v.as_str()),
+            Some("disabled")
+        );
     }
 
     #[test]

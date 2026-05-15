@@ -713,6 +713,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         *pn = Some(prop_node.clone());
                     }
 
+                    let local_identity_hash = identity.hash;
                     let mut link_mgr = rns_runtime::link_manager::LinkManager::with_destination(
                         rns_mgr.handle.transport_tx.clone(),
                         prop_rx,
@@ -771,6 +772,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                     remote_identity_hash.is_some(),
                                     false,
                                     true,
+                                    Some(&local_identity_hash),
                                     remote_identity_hash.as_ref(),
                                 ))
                             } else {
