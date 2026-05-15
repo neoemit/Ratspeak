@@ -1111,6 +1111,17 @@ pub fn save_contact(
     trust: &str,
     identity_id: &str,
 ) {
+    save_contact_with_identity_pubkey(pool, dest_hash, display_name, None, trust, identity_id);
+}
+
+pub fn save_contact_with_identity_pubkey(
+    pool: &DbPool,
+    dest_hash: &str,
+    display_name: Option<&str>,
+    identity_pubkey: Option<&str>,
+    trust: &str,
+    identity_id: &str,
+) {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return,
@@ -1128,20 +1139,31 @@ pub fn save_contact(
     if exists {
         if let Some(dn) = display_name {
             conn.execute(
-                "UPDATE contacts SET display_name = ?1, trust = ?2, last_seen = ?3 WHERE dest_hash = ?4 AND identity_id = ?5",
-                params![dn, trust, now, dest_hash, identity_id],
-            ).ok();
+                "UPDATE contacts
+                 SET display_name = ?1,
+                     identity_pubkey = COALESCE(?2, identity_pubkey),
+                     trust = ?3,
+                     last_seen = ?4
+                 WHERE dest_hash = ?5 AND identity_id = ?6",
+                params![dn, identity_pubkey, trust, now, dest_hash, identity_id],
+            )
+            .ok();
         } else {
             conn.execute(
-                "UPDATE contacts SET trust = ?1, last_seen = ?2 WHERE dest_hash = ?3 AND identity_id = ?4",
-                params![trust, now, dest_hash, identity_id],
-            ).ok();
+                "UPDATE contacts
+                 SET identity_pubkey = COALESCE(?1, identity_pubkey),
+                     trust = ?2,
+                     last_seen = ?3
+                 WHERE dest_hash = ?4 AND identity_id = ?5",
+                params![identity_pubkey, trust, now, dest_hash, identity_id],
+            )
+            .ok();
         }
     } else {
         let dn = display_name.unwrap_or("");
         conn.execute(
-            "INSERT INTO contacts (dest_hash, identity_id, display_name, first_seen, last_seen, trust, notes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, '')",
-            params![dest_hash, identity_id, dn, now, now, trust],
+            "INSERT INTO contacts (dest_hash, identity_id, display_name, identity_pubkey, first_seen, last_seen, trust, notes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '')",
+            params![dest_hash, identity_id, dn, identity_pubkey, now, now, trust],
         ).ok();
     }
 }

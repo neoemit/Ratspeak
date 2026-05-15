@@ -429,7 +429,7 @@ pub async fn api_export_identity_base64(
     }
 }
 
-fn export_identity_key_bytes(state: &AppState, hash_hex: &str) -> AppResult<Vec<u8>> {
+pub(crate) fn export_identity_key_bytes(state: &AppState, hash_hex: &str) -> AppResult<Vec<u8>> {
     if !validate_hex(hash_hex, 16, 128) {
         return Err(AppError::bad_request("Invalid hash"));
     }

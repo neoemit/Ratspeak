@@ -144,7 +144,7 @@ pub struct AddContactArgs {
 }
 
 /// Emit single-row `peers_updated` if visible, else `peer_removed`.
-async fn emit_peer_delta_for(state: &Arc<AppState>, dest_hash: &str) {
+pub(crate) async fn emit_peer_delta_for(state: &Arc<AppState>, dest_hash: &str) {
     let pool = state.db.clone();
     let key = dest_hash.to_string();
     let identity_id = crate::helpers::active_identity_id(state);

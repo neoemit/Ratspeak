@@ -1045,10 +1045,8 @@ fn contacts_tab_is_first_class_on_desktop_and_shows_full_addresses() {
     assert!(
         renderer.contains("'<span class=\"contacts-row-hash\">' + escapeHtml(c.hash) + '</span>'")
     );
-    assert!(lxmf.contains("function openAddContactPrompt()"));
-    assert!(
-        lxmf.contains("RS.gestures.bindViewFabClick('contacts-add-fab', openAddContactPrompt);")
-    );
+    assert!(lxmf.contains("function openAddContactPrompt(trigger)"));
+    assert!(lxmf.contains("RS.gestures.bindViewFabClick('contacts-add-fab', function()"));
     assert!(
         !renderer.contains("shortHash(c.hash"),
         "standalone Contacts tab must not shorten LXMF addresses"
@@ -1063,6 +1061,47 @@ fn contacts_tab_is_first_class_on_desktop_and_shows_full_addresses() {
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
     assert!(responsive_css.contains(".contacts-add-btn"));
     assert!(responsive_css.contains("display: none;"));
+}
+
+#[test]
+fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("index html");
+    let identity = read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
+    let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    let contact_card_js =
+        read_source(root.join("dashboard/static/js/contact_card.js")).expect("contact card js");
+    let contact_card_rs =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/contact_card.rs"))
+            .expect("contact card command");
+    let lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+    let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("db");
+
+    assert!(index.contains(r#"/static/js/contact_card.js"#));
+    assert!(identity.contains("Share Contact Card"));
+    assert!(identity.contains("openIdentityShareScreen(identityHash)"));
+    assert!(lxmf.contains("openContactAddOptions(trigger)"));
+    assert!(lxmf.contains("openAddContactPrompt(document.getElementById('contacts-add-fab'))"));
+
+    assert!(contact_card_js.contains("BarcodeDetector"));
+    assert!(contact_card_js.contains("RS.mediaPermissions.ensure({ camera: true })"));
+    assert!(contact_card_js.contains("RS.invoke('api_preview_contact_card'"));
+    assert!(contact_card_js.contains("RS.invoke('import_contact_card'"));
+    assert!(contact_card_js.contains("renderQrCanvas(canvas, card.payload || '')"));
+
+    assert!(contact_card_rs.contains(r#"const CONTACT_CARD_PREFIX: &str = "RSCP1:""#));
+    assert!(contact_card_rs.contains("Identity::from_public_key(&public_key)"));
+    assert!(contact_card_rs.contains("Destination::hash_from_name_and_identity(LXMF_APP_NAME"));
+    assert!(
+        contact_card_rs.contains("mgr.update_remote_crypto(&dest_hash, &card.public_key, None)")
+    );
+    assert!(contact_card_rs.contains("mgr.save_crypto_state()"));
+    assert!(contact_card_rs.contains("save_contact_with_identity_pubkey"));
+    assert!(db.contains("pub fn save_contact_with_identity_pubkey"));
+
+    assert!(lib.contains("commands::contact_card::api_contact_card"));
+    assert!(lib.contains("commands::contact_card::api_preview_contact_card"));
+    assert!(lib.contains("commands::contact_card::import_contact_card"));
 }
 
 #[test]

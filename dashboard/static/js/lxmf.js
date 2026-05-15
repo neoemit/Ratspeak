@@ -2103,11 +2103,15 @@ function renderNetworkContactList() {
 document.addEventListener('DOMContentLoaded', function() {
     var addBtn = document.getElementById('dashboard-contacts-add-btn');
     if (addBtn) {
-        addBtn.addEventListener('click', function() {
+        addBtn.addEventListener('click', function(e) {
+            if (typeof openContactAddOptions === 'function') {
+                openContactAddOptions(addBtn);
+                return;
+            }
             rsPromptContact({ title: 'Add Contact' }).then(function(result) {
                 if (!result) return;
                 RS.invoke('add_contact', { args: { hash: result.hash, display_name: result.display_name } }).catch(function() {});
-                showToast('Adding contact\u2026', 'toast-orange', 2000);
+                showToast('Adding contact...', 'toast-orange', 2000);
             });
         });
     }
@@ -2329,17 +2333,25 @@ document.addEventListener('DOMContentLoaded', function() {
             if (e.key === 'Enter') { e.preventDefault(); this.blur(); }
         });
     }
-    function openAddContactPrompt() {
+    function openAddContactPrompt(trigger) {
+        if (typeof openContactAddOptions === 'function' && trigger) {
+            openContactAddOptions(trigger);
+            return;
+        }
         rsPromptContact({ title: 'Add Contact' }).then(function(result) {
             if (!result) return;
             RS.invoke('add_contact', { args: { hash: result.hash, display_name: result.display_name } }).catch(function() {});
-            showToast('Adding contact\u2026', 'toast-orange', 2000);
+            showToast('Adding contact...', 'toast-orange', 2000);
         });
     }
 
-    RS.gestures.bindViewFabClick('contacts-add-fab', openAddContactPrompt);
+    RS.gestures.bindViewFabClick('contacts-add-fab', function() {
+        openAddContactPrompt(document.getElementById('contacts-add-fab'));
+    });
     var contactsHeaderAddBtn = document.getElementById('contacts-add-btn');
-    if (contactsHeaderAddBtn) contactsHeaderAddBtn.addEventListener('click', openAddContactPrompt);
+    if (contactsHeaderAddBtn) contactsHeaderAddBtn.addEventListener('click', function() {
+        openAddContactPrompt(contactsHeaderAddBtn);
+    });
 });
 
 window.renderConversation = renderConversation;

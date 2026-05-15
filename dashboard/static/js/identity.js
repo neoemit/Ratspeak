@@ -512,8 +512,8 @@ function renderActiveIdentityCard() {
                 '<span>Export Identity</span>' +
             '</button>' +
             '<button class="identity-action-row" id="identity-share-address-btn">' +
-                '<span class="identity-action-icon"><svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.59 13.51l6.82 3.98"/><path d="M15.41 6.51L8.59 10.49"/></svg></span>' +
-                '<span>Share Address</span>' +
+                '<span class="identity-action-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/></svg></span>' +
+                '<span>Share Contact Card</span>' +
             '</button>' +
             '<button class="identity-action-row identity-action-row--danger" id="identity-delete-btn"' + (canDelete ? '' : ' disabled aria-disabled="true"') + ' title="' + escapeHtml(deleteTitle) + '">' +
                 '<span class="identity-action-icon"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg></span>' +
@@ -536,7 +536,11 @@ function renderActiveIdentityCard() {
 
     var shareBtn = document.getElementById('identity-share-address-btn');
     if (shareBtn) shareBtn.addEventListener('click', function() {
-        shareAddress(lxmfHash || identityHash, identityDisplayName(identity));
+        if (typeof openIdentityShareScreen === 'function') {
+            openIdentityShareScreen(identityHash);
+        } else {
+            shareAddress(lxmfHash || identityHash, identityDisplayName(identity));
+        }
     });
 
     var deleteBtn = document.getElementById('identity-delete-btn');
@@ -955,7 +959,7 @@ function openIdentityActions(hash) {
         choices.push({ label: 'Switch to Identity', value: 'switch' });
     }
     choices.push({ label: 'Export Identity', value: 'export', hint: 'Ratspeak or Reticulum format.' });
-    choices.push({ label: 'Share Address', value: 'share' });
+    choices.push({ label: 'Share Contact Card', value: 'share' });
     if (!isOriginalIdentity(target.hash) && (!target.is_active || identityList.length > 1)) {
         choices.push({ label: 'Delete Identity', value: 'delete', danger: true });
     }
@@ -967,7 +971,10 @@ function openIdentityActions(hash) {
     }).then(function(choice) {
         if (choice === 'switch') switchToIdentity(target.hash);
         if (choice === 'export') exportIdentityBackup(target.hash);
-        if (choice === 'share') shareAddress(target.lxmf_hash || target.hash || '', identityDisplayName(target));
+        if (choice === 'share') {
+            if (typeof openIdentityShareScreen === 'function') openIdentityShareScreen(target.hash);
+            else shareAddress(target.lxmf_hash || target.hash || '', identityDisplayName(target));
+        }
         if (choice === 'delete') deleteIdentityByHash(target.hash);
     });
 }
