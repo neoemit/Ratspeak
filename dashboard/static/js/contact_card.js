@@ -15,9 +15,6 @@
         if (name === 'address') {
             return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s7-4.35 7-11a7 7 0 1 0-14 0c0 6.65 7 11 7 11Z"/><circle cx="12" cy="10" r="2.5"/></svg>';
         }
-        if (name === 'check') {
-            return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
-        }
         return '';
     }
 
@@ -584,7 +581,6 @@ z`,
         var name = card.display_name || 'Unnamed Contact';
         parent.innerHTML =
             '<div class="contact-scan-success">' +
-                '<div class="contact-scan-check">' + iconSvg('check') + '</div>' +
                 '<div class="contact-scan-avatar">' + (typeof identityAvatar === 'function' ? identityAvatar(card.lxmf_hash, 72) : '') + '</div>' +
                 '<div class="contact-scan-name">' + escapeHtml(name) + '</div>' +
                 '<div class="contact-scan-subtitle">Contact card verified</div>' +

@@ -3384,20 +3384,32 @@ body.setup-active .bottom-bar {
     text-align: center;
 }
 
-.contact-share-avatar,
-.contact-scan-avatar {
+.contact-share-avatar {
     width: 56px;
     height: 56px;
-    border-radius: var(--radius-xl);
+    border-radius: var(--radius-full);
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+}
+
+.contact-scan-avatar {
+    width: 72px;
+    height: 72px;
+    border-radius: var(--radius-full);
     overflow: hidden;
     box-shadow: var(--shadow-sm);
 }
 
 .contact-share-avatar svg,
-.contact-scan-avatar svg {
+.contact-share-avatar img,
+.contact-scan-avatar svg,
+.contact-scan-avatar img,
+.contact-scan-avatar canvas {
     display: block;
     width: 100%;
     height: 100%;
+    border-radius: var(--radius-full);
+    object-fit: cover;
 }
 
 .contact-share-name,
@@ -3536,24 +3548,6 @@ body.setup-active .bottom-bar {
     gap: var(--space-3);
     padding: var(--space-2) 0 0;
     text-align: center;
-}
-
-.contact-scan-check {
-    width: 52px;
-    height: 52px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: var(--radius-full);
-    color: var(--accent);
-    background: var(--accent-bg);
-    border: 1px solid var(--accent-border);
-    animation: contactCardSuccessPop 360ms cubic-bezier(0.2, 1.2, 0.2, 1);
-}
-
-.contact-scan-check svg {
-    width: 28px;
-    height: 28px;
 }
 
 .contact-card-detail-list {
