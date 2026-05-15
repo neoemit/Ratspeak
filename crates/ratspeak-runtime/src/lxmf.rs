@@ -3152,108 +3152,99 @@ impl LxmfManager {
                     "outbound LXMF packet exceeds MTU — routing to link delivery"
                 );
 
-                if self.link_delivery.is_none()
-                    && let Some(ref tx) = self.router.transport_tx
-                {
-                    self.link_delivery = Some(lxmf_core::link_delivery::LinkDeliveryManager::new(
-                        tx.clone(),
-                        Some(self.identity.get_public_key()),
-                        self.identity.get_signing_key(),
-                    ));
-                }
-
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs_f64();
-                message.delivery_attempts += 1;
-                message.last_delivery_attempt = now;
+                let route = self
+                    .direct_route_entry(dest_hash, now)
+                    .map(|entry| direct_route_snapshot_from_entry(dest_hash, entry));
+                let identity_known = self.known_identities.contains_key(&dest_hex);
+                let had_expired_snapshot = identity_known
+                    && route.is_none()
+                    && self.route_entries.contains_key(&dest_hash);
+                let plan = plan_direct_delivery(
+                    &mut message,
+                    DirectDeliveryPlanInput {
+                        identity_known,
+                        route,
+                        reusable_link: self.direct_reusable_link_state(dest_hash),
+                    },
+                    now,
+                );
 
-                if self.direct_route_entry(dest_hash, now).is_none() {
-                    let had_expired_snapshot = self.route_entries.contains_key(&dest_hash);
-                    self.queue_path_rediscovery(dest_hash, had_expired_snapshot, "no current path");
-                    tracing::warn!(
-                        dest = %dest_hex,
-                        attempts = message.delivery_attempts,
-                        expired_snapshot = had_expired_snapshot,
-                        "outbound LXMF: oversized Link delivery has no current path, re-queuing"
-                    );
-                    message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
-                    self.router.send(message);
-                    if let Some(hash) = msg_hash
-                        && !is_ephemeral
-                    {
-                        results.push((hex::encode(hash), "routing"));
-                    }
-                    continue;
-                }
-
-                if message.delivery_attempts >= MAX_DELIVERY_ATTEMPTS {
-                    message.next_delivery_attempt = now + DELIVERY_RETRY_WAIT as f64;
-                    tracing::warn!(
-                        dest = %dest_hex,
-                        attempts = message.delivery_attempts,
-                        max_attempts = MAX_DELIVERY_ATTEMPTS,
-                        "outbound LXMF: oversized Link delivery attempt budget reached; deferring terminal failure"
-                    );
-                    self.router.send(message);
-                    continue;
-                }
-
-                let hops = self.delivery_link_hops(dest_hash);
-                self.log_direct_route_state(dest_hash, now);
-                if let Some(ref mut ld) = self.link_delivery {
-                    let attempts = message.delivery_attempts;
-                    match ld.start_delivery_with_report(message, dest_hash, hops) {
-                        Ok(report) => {
-                            let step = direct_link_start_step(report.kind);
-                            tracing::info!(
-                                link_id = %hex::encode(report.link_id),
-                                dest = %dest_hex,
-                                kind = ?report.kind,
-                                link_state = ?report.link_state,
-                                delivery_state = ?report.delivery_state,
-                                queued = report.queued_deliveries,
-                                in_flight = report.in_flight_deliveries,
-                                "outbound LXMF: oversized Direct Link delivery accepted"
-                            );
-                            if let Some(hash) = msg_hash
-                                && !is_ephemeral
-                            {
-                                results.push((hex::encode(hash), step));
-                            }
-                        }
-                        Err(err) => {
-                            let reason = err.error.to_string();
-                            tracing::warn!(
-                                dest = %dest_hex,
-                                attempts,
-                                reason = %reason,
-                                "outbound LXMF: failed to start oversized Link delivery"
-                            );
-                            if self.requeue_direct_after_link_failure(
-                                err.message,
-                                dest_hash,
-                                &reason,
-                            ) {
-                                if let Some(hash) = msg_hash
-                                    && !is_ephemeral
-                                {
-                                    results.push((hex::encode(hash), "routing"));
-                                }
-                            } else if let Some(hash) = msg_hash {
-                                if self.ephemeral_outbound.remove(&hash) {
-                                    continue;
-                                }
-                                results.push((hex::encode(hash), "failed"));
-                            }
+                match plan {
+                    DirectDeliveryPlan::RequestPath { drop_existing } => {
+                        let drop_existing = drop_existing || had_expired_snapshot;
+                        self.queue_path_rediscovery(
+                            dest_hash,
+                            drop_existing,
+                            "oversized Link delivery path request",
+                        );
+                        tracing::warn!(
+                            dest = %dest_hex,
+                            attempts = message.delivery_attempts,
+                            drop_existing,
+                            identity_known,
+                            expired_snapshot = had_expired_snapshot,
+                            "outbound LXMF: oversized Link delivery waiting for path"
+                        );
+                        self.router.send(message);
+                        if identity_known
+                            && let Some(hash) = msg_hash
+                            && !is_ephemeral
+                        {
+                            results.push((hex::encode(hash), "routing"));
                         }
                     }
-                } else if let Some(hash) = msg_hash {
-                    if self.ephemeral_outbound.remove(&hash) {
-                        continue;
+                    DirectDeliveryPlan::DeferTerminalFailure => {
+                        tracing::warn!(
+                            dest = %dest_hex,
+                            attempts = message.delivery_attempts,
+                            max_attempts = MAX_DELIVERY_ATTEMPTS,
+                            "outbound LXMF: oversized Link delivery attempt budget reached; deferring terminal failure"
+                        );
+                        self.router.send(message);
                     }
-                    results.push((hex::encode(hash), "failed"));
+                    DirectDeliveryPlan::WaitForReusableLink => {
+                        tracing::debug!(
+                            dest = %dest_hex,
+                            attempts = message.delivery_attempts,
+                            "outbound LXMF: oversized Link delivery waiting for reusable Link"
+                        );
+                        self.router.send(message);
+                        if let Some(hash) = msg_hash
+                            && !is_ephemeral
+                        {
+                            results.push((hex::encode(hash), "sending_via_link"));
+                        }
+                    }
+                    DirectDeliveryPlan::UseReusableLink => {
+                        let hops = self.delivery_link_hops(dest_hash);
+                        self.start_direct_link_delivery_with_results(
+                            message,
+                            dest_hash,
+                            hops,
+                            now,
+                            msg_hash,
+                            is_ephemeral,
+                            &mut results,
+                        );
+                    }
+                    DirectDeliveryPlan::StartNewLink { hops } => {
+                        self.start_direct_link_delivery_with_results(
+                            message,
+                            dest_hash,
+                            hops,
+                            now,
+                            msg_hash,
+                            is_ephemeral,
+                            &mut results,
+                        );
+                    }
+                    DirectDeliveryPlan::Fail => {
+                        self.push_failed_outbound_state(msg_hash, &mut results);
+                    }
                 }
                 continue;
             }
