@@ -365,15 +365,11 @@ var blockies = (function() {
             }
         }
 
-        var r = gridSize / 2;
-        var clipId = 'bc' + (++blockies._uid);
         return '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgSize +
             '" height="' + svgSize + '" viewBox="0 0 ' + gridSize + ' ' + gridSize +
-            '" shape-rendering="crispEdges">' +
-            '<clipPath id="' + clipId + '"><circle cx="' + r + '" cy="' + r + '" r="' + r + '"/></clipPath>' +
-            '<g clip-path="url(#' + clipId + ')">' + rects + '</g></svg>';
+            '" shape-rendering="crispEdges" style="display:block;border-radius:50%;clip-path:circle(50% at 50% 50%);overflow:hidden;">' +
+            rects + '</svg>';
     };
-    fn._uid = 0;
     return fn;
 })();
 
@@ -382,8 +378,10 @@ var _avatarCache = {};
 function identityAvatar(hashValue, size) {
     if (!hashValue) {
         var color = 'var(--text-muted)';
-        return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '">' +
-            '<rect width="' + size + '" height="' + size + '" rx="6" fill="' + color + '" opacity="0.3"/>' +
+        var radius = size / 2;
+        return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size +
+            '" style="display:block;border-radius:50%;clip-path:circle(50% at 50% 50%);overflow:hidden;">' +
+            '<circle cx="' + radius + '" cy="' + radius + '" r="' + radius + '" fill="' + color + '" opacity="0.3"/>' +
             '</svg>';
     }
     var key = hashValue + '|' + size;

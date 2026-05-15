@@ -989,6 +989,39 @@ fn peers_avatars_are_circle_cropped_like_contacts() {
 }
 
 #[test]
+fn identity_avatars_are_circle_cropped_everywhere() {
+    let root = repo_root();
+    let identity_js =
+        read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
+    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+    let responsive_css =
+        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
+
+    assert!(
+        !identity_js.contains("<clipPath id="),
+        "cached avatar SVGs must not reuse DOM clip-path ids"
+    );
+    assert!(identity_js.contains("clip-path:circle(50% at 50% 50%)"));
+    assert!(identity_js.contains("<circle cx=\""));
+    assert!(views_css.contains(
+        ".identity-avatar {\n    flex-shrink: 0;\n    border-radius: var(--radius-full);"
+    ));
+    assert!(views_css.contains(
+        ".identity-list-avatar {\n    flex-shrink: 0;\n    width: 32px;\n    height: 32px;\n    border-radius: var(--radius-full);"
+    ));
+    assert!(views_css.contains(
+        ".identity-detail-avatar {\n    width: 72px;\n    height: 72px;\n    border-radius: var(--radius-full);"
+    ));
+    assert!(views_css.contains(
+        ".settings-identity-avatar {\n    flex-shrink: 0;\n    border-radius: var(--radius-full);"
+    ));
+    assert!(views_css.contains(
+        ".identity-summary-avatar {\n    flex-shrink: 0;\n    border-radius: var(--radius-full);"
+    ));
+    assert!(responsive_css.contains(".identity-list-avatar,\n    .identity-list-avatar svg,"));
+}
+
+#[test]
 fn lxmf_conversation_rows_use_peer_display_names_when_available() {
     let lxmf = read_source(repo_root().join("dashboard/static/js/lxmf.js")).expect("lxmf js");
 
