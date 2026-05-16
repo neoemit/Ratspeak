@@ -932,6 +932,13 @@ fn mobile_primary_lists_share_readable_row_scale() {
     );
     assert!(responsive_css.contains(".activity-level-btn,\n    .activity-filter-chip"));
     assert!(responsive_css.contains("font-size: var(--mobile-list-meta-size);"));
+    assert!(
+        responsive_css.contains(
+            ".pulse-throughput-value {\n        font-size: var(--mobile-list-detail-size);"
+        )
+    );
+    assert!(responsive_css.contains(".pulse-announce-btn {\n        min-height: 38px;"));
+    assert!(responsive_css.contains(".pulse-announce-btn svg {\n        width: 16px;"));
     assert!(responsive_css.contains(".contacts-standalone .contacts-row-hash"));
     assert!(responsive_css.contains(".games-session-game {\n        display: none;"));
     assert!(responsive_css.contains(".peers-list-scroll,\n    #lxmf-conversations-list,"));
