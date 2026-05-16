@@ -315,6 +315,7 @@ pub struct LxmfManager {
     downloaded_propagation_messages: Vec<Vec<u8>>,
     delivery_progress_updates: Vec<LxmfDeliveryProgressUpdate>,
     ephemeral_outbound: HashSet<[u8; 32]>,
+    last_reported_steps: HashMap<String, &'static str>,
 }
 
 impl LxmfManager {
@@ -526,6 +527,7 @@ impl LxmfManager {
             downloaded_propagation_messages: Vec::new(),
             delivery_progress_updates: Vec::new(),
             ephemeral_outbound: HashSet::new(),
+            last_reported_steps: HashMap::new(),
         })
     }
 
@@ -576,6 +578,7 @@ impl LxmfManager {
         self.link_delivery = None;
         self.lxmf_backchannel_command_rx = None;
         self.delivery_progress_updates.clear();
+        self.last_reported_steps.clear();
         if let Some(tx) = old_transport_tx {
             self.router.set_transport(tx.clone());
 
@@ -2544,7 +2547,27 @@ impl LxmfManager {
             }
         }
 
-        results
+        self.filter_repeated_steps(results)
+    }
+
+    fn filter_repeated_steps(
+        &mut self,
+        results: Vec<(String, &'static str)>,
+    ) -> Vec<(String, &'static str)> {
+        let mut filtered = Vec::with_capacity(results.len());
+        for (msg_id, step) in results {
+            if self.last_reported_steps.get(&msg_id).copied() == Some(step) {
+                tracing::trace!(
+                    msg_id = %msg_id,
+                    step,
+                    "suppressing repeated LXMF step"
+                );
+                continue;
+            }
+            self.last_reported_steps.insert(msg_id.clone(), step);
+            filtered.push((msg_id, step));
+        }
+        filtered
     }
 
     pub fn start_propagation_sync(&mut self, node_dest_hash: [u8; 16]) {
@@ -4200,6 +4223,15 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "pending router-owned Direct message must not emit a second LinkRequest"
+        );
+
+        assert!(
+            mgr.tick().is_empty(),
+            "pending reusable Direct poll must not re-emit the same sending step"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "suppressed pending poll must still not emit another LinkRequest"
         );
     }
 
