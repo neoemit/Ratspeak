@@ -940,6 +940,8 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     );
                     let (link_identified_tx, link_identified_rx) =
                         tokio::sync::mpsc::channel::<([u8; 16], [u8; 16])>(CHANNEL_BUFFER_SIZE);
+                    let (link_closed_tx, link_closed_rx) =
+                        tokio::sync::mpsc::channel::<[u8; 16]>(CHANNEL_BUFFER_SIZE);
                     let (link_packet_proof_tx, link_packet_proof_rx) =
                         tokio::sync::mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(
                             CHANNEL_BUFFER_SIZE,
@@ -951,6 +953,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     lxmf_link_mgr.set_link_packet_channel(link_pkt_tx);
                     lxmf_link_mgr.set_resource_completed_channel(link_res_tx);
                     lxmf_link_mgr.set_link_identified_channel(link_identified_tx);
+                    lxmf_link_mgr.set_link_closed_channel(link_closed_tx);
                     lxmf_link_mgr.set_link_packet_proof_channel(link_packet_proof_tx);
                     lxmf_link_mgr.set_outbound_resource_proof_channel(link_resource_proof_tx);
 
@@ -960,6 +963,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         mgr.set_lxmf_link_control(
                             link_command_tx,
                             link_identified_rx,
+                            link_closed_rx,
                             link_packet_proof_rx,
                             link_resource_proof_rx,
                         );
