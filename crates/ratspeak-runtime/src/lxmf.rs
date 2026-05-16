@@ -52,6 +52,16 @@ fn direct_link_start_step(kind: DirectLinkStartKind) -> &'static str {
     }
 }
 
+struct DirectLinkDeliveryStartInput {
+    message: LxMessage,
+    dest_hash: [u8; 16],
+    hops: u8,
+    now: f64,
+    msg_hash: Option<[u8; 32]>,
+    is_ephemeral: bool,
+    router_owned: bool,
+}
+
 fn direct_route_snapshot_from_entry(
     dest_hash: [u8; 16],
     entry: &PathTableRpcEntry,
@@ -2124,17 +2134,66 @@ impl LxmfManager {
         true
     }
 
+    fn expire_direct_retry_window(&mut self, now: f64, results: &mut Vec<(String, &'static str)>) {
+        let expired = self
+            .direct_retry_started_at
+            .iter()
+            .filter_map(|(hash, started_at)| {
+                (now - *started_at >= DIRECT_LINK_FALLBACK_AFTER_SECS).then_some(*hash)
+            })
+            .collect::<Vec<_>>();
+
+        for hash in expired {
+            if !self.direct_retry_started_at.contains_key(&hash) {
+                continue;
+            }
+
+            let reason = "direct fallback timeout";
+            let forced_results = self
+                .link_delivery
+                .as_mut()
+                .map(|ld| ld.fail_delivery_by_message_hash(hash, reason))
+                .unwrap_or_default();
+
+            if !forced_results.is_empty() {
+                tracing::warn!(
+                    msg = %hex::encode(hash),
+                    "direct retry window exceeded; aborting in-flight Link delivery"
+                );
+                for result in forced_results {
+                    self.handle_link_delivery_result(result, results);
+                }
+                continue;
+            }
+
+            if let Some(message) = self
+                .router
+                .pending_outbound
+                .iter()
+                .find(|message| message.hash == Some(hash))
+                .cloned()
+            {
+                let dest_hash = message.destination_hash;
+                let _ =
+                    self.elevate_direct_to_propagation_or_fail(message, dest_hash, reason, results);
+            }
+        }
+    }
+
     fn start_direct_link_delivery_with_results(
         &mut self,
-        message: LxMessage,
-        dest_hash: [u8; 16],
-        hops: u8,
-        now: f64,
-        msg_hash: Option<[u8; 32]>,
-        is_ephemeral: bool,
-        router_owned: bool,
+        input: DirectLinkDeliveryStartInput,
         results: &mut Vec<(String, &'static str)>,
     ) {
+        let DirectLinkDeliveryStartInput {
+            message,
+            dest_hash,
+            hops,
+            now,
+            msg_hash,
+            is_ephemeral,
+            router_owned,
+        } = input;
         let dest_hex = hex::encode(dest_hash);
         if !self.ensure_link_delivery_manager() {
             self.push_failed_outbound_state(msg_hash, results);
@@ -2173,12 +2232,12 @@ impl LxmfManager {
                     );
                     let requeued = if router_owned {
                         self.requeue_or_defer_direct_after_link_failure(
-                            err.message,
+                            *err.message,
                             dest_hash,
                             &reason,
                         )
                     } else {
-                        self.requeue_direct_after_link_failure(err.message, dest_hash, &reason)
+                        self.requeue_direct_after_link_failure(*err.message, dest_hash, &reason)
                     };
                     if requeued {
                         if let Some(hash) = msg_hash
@@ -2598,6 +2657,8 @@ impl LxmfManager {
             }
             self.drain_link_delivery_progress_updates();
         }
+
+        self.expire_direct_retry_window(now, &mut results);
 
         if let Some(ref mut ps) = self.propagation_sync {
             ps.drain_events(&self.known_identities);
@@ -3209,7 +3270,7 @@ impl LxmfManager {
                                 continue;
                             }
                             Err(err) => {
-                                message = err.message;
+                                message = *err.message;
                                 message.delivery_attempts =
                                     message.delivery_attempts.saturating_sub(1);
                                 direct_plan = None;
@@ -3310,25 +3371,29 @@ impl LxmfManager {
                     DirectDeliveryPlan::UseReusableLink => {
                         let hops = self.delivery_link_hops(dest_hash);
                         self.start_direct_link_delivery_with_results(
-                            message,
-                            dest_hash,
-                            hops,
-                            now,
-                            msg_hash,
-                            is_ephemeral,
-                            router_owned,
+                            DirectLinkDeliveryStartInput {
+                                message,
+                                dest_hash,
+                                hops,
+                                now,
+                                msg_hash,
+                                is_ephemeral,
+                                router_owned,
+                            },
                             &mut results,
                         );
                     }
                     DirectDeliveryPlan::StartNewLink { hops } => {
                         self.start_direct_link_delivery_with_results(
-                            message,
-                            dest_hash,
-                            hops,
-                            now,
-                            msg_hash,
-                            is_ephemeral,
-                            router_owned,
+                            DirectLinkDeliveryStartInput {
+                                message,
+                                dest_hash,
+                                hops,
+                                now,
+                                msg_hash,
+                                is_ephemeral,
+                                router_owned,
+                            },
                             &mut results,
                         );
                     }
@@ -3528,25 +3593,29 @@ impl LxmfManager {
                     DirectDeliveryPlan::UseReusableLink => {
                         let hops = self.delivery_link_hops(dest_hash);
                         self.start_direct_link_delivery_with_results(
-                            message,
-                            dest_hash,
-                            hops,
-                            now,
-                            msg_hash,
-                            is_ephemeral,
-                            false,
+                            DirectLinkDeliveryStartInput {
+                                message,
+                                dest_hash,
+                                hops,
+                                now,
+                                msg_hash,
+                                is_ephemeral,
+                                router_owned: false,
+                            },
                             &mut results,
                         );
                     }
                     DirectDeliveryPlan::StartNewLink { hops } => {
                         self.start_direct_link_delivery_with_results(
-                            message,
-                            dest_hash,
-                            hops,
-                            now,
-                            msg_hash,
-                            is_ephemeral,
-                            false,
+                            DirectLinkDeliveryStartInput {
+                                message,
+                                dest_hash,
+                                hops,
+                                now,
+                                msg_hash,
+                                is_ephemeral,
+                                router_owned: false,
+                            },
                             &mut results,
                         );
                     }
@@ -4486,6 +4555,78 @@ mod tests {
         ));
 
         assert_eq!(results, vec![(hex::encode(hash), "propagating")]);
+        assert!(mgr.router.pending_outbound.is_empty());
+        assert_eq!(mgr.in_flight_propagation.get(&hash), Some(&node));
+        assert!(!mgr.auto_direct_fallback.contains(&hash));
+        assert!(!mgr.direct_retry_started_at.contains_key(&hash));
+    }
+
+    #[test]
+    fn direct_retry_window_aborts_in_flight_link_and_falls_back() {
+        let mut mgr = test_manager();
+        let dest = [0x59; 16];
+        let node = [0x5A; 16];
+        let dest_hex = hex::encode(dest);
+        let node_hex = hex::encode(node);
+        let remote = Identity::new();
+        let relay = Identity::new();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(tx);
+        mgr.known_identities
+            .insert(dest_hex.clone(), remote.get_public_key());
+        mgr.known_identities
+            .insert(node_hex, relay.get_public_key());
+        mgr.router.set_stamp_cost(node, 0);
+        mgr.router.set_outbound_propagation_node(Some(node));
+        mgr.configured_propagation_node = Some(node);
+        mgr.client_propagation_enabled = true;
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
+            hash: dest,
+            timestamp: now,
+            via: None,
+            hops: 2,
+            expires: now + 60.0,
+            interface: "test".to_string(),
+        }]);
+
+        let msg = mgr
+            .create_message(
+                &dest_hex,
+                "fallback from stuck link",
+                "",
+                DeliveryMethod::Direct,
+            )
+            .expect("message created");
+        let hash = msg.hash.expect("message hash");
+        mgr.router.send(msg);
+        mgr.auto_direct_fallback.insert(hash);
+        mgr.direct_retry_started_at.insert(hash, now);
+
+        assert_eq!(mgr.tick(), vec![(hex::encode(hash), "link_establishing")]);
+        assert_eq!(mgr.link_delivery.as_ref().unwrap().pending_count(), 1);
+
+        mgr.direct_retry_started_at
+            .insert(hash, now - DIRECT_LINK_FALLBACK_AFTER_SECS - 1.0);
+        let results = mgr.tick();
+
+        assert!(
+            results
+                .iter()
+                .any(|(msg, step)| msg == &hex::encode(hash) && *step == "propagating"),
+            "stale in-flight Direct link should be elevated through the normal fallback policy"
+        );
+        assert!(
+            mgr.link_delivery
+                .as_ref()
+                .unwrap()
+                .direct_link_snapshot(dest)
+                .is_none()
+        );
         assert!(mgr.router.pending_outbound.is_empty());
         assert_eq!(mgr.in_flight_propagation.get(&hash), Some(&node));
         assert!(!mgr.auto_direct_fallback.contains(&hash));
