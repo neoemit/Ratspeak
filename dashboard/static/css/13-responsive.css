@@ -2980,6 +2980,8 @@
     .games-session-status,
     .games-session-game,
     .conn-iface-stats,
+    .conn-iface-empty,
+    .activity-empty,
     .activity-entry,
     .system-subsection-desc,
     .relay-card-details,
@@ -3095,6 +3097,11 @@
     .network-subtab-btn {
         min-height: 44px;
         font-size: var(--mobile-list-detail-size);
+    }
+    .activity-level-btn,
+    .activity-filter-chip {
+        min-height: 34px;
+        font-size: var(--mobile-list-meta-size);
     }
     .conn-section-header {
         min-height: 56px;
