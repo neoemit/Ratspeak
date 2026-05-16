@@ -666,7 +666,7 @@
         bottom: 0;
         left: 0;
         right: 0;
-        height: calc(56px + var(--sab));
+        height: calc(62px + var(--sab));
         padding: 0 4px;
         padding-bottom: var(--sab);
         background: var(--glass-bg);
@@ -730,7 +730,7 @@
     }
 
     .main-content {
-        padding-bottom: calc(56px + var(--sab));
+        padding-bottom: calc(62px + var(--sab));
         position: relative;
         background: none;
     }

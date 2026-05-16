@@ -978,6 +978,8 @@ fn mobile_peers_toolbar_uses_search_plus_icon_sort_only() {
     assert!(
         responsive_css.contains(".bottom-bar-item span:not(.bottom-bar-badge) { display: none; }")
     );
+    assert!(responsive_css.contains("height: calc(62px + var(--sab));"));
+    assert!(responsive_css.contains("padding-bottom: calc(62px + var(--sab));"));
     assert!(responsive_css.contains(".bottom-bar-item svg {\n        width: 26px;"));
     assert!(responsive_css.contains("right: calc(50% - 18px);"));
 
@@ -1512,7 +1514,7 @@ fn first_run_announce_hint_waits_for_online_mobile_interface() {
     assert!(system.contains("remove app-private Reticulum config"));
     assert!(runtime.contains("strip_legacy_default_auto_interface(&source_content)"));
     assert!(rns_config.contains("pub fn strip_legacy_default_auto_interface"));
-    assert!(animations.contains("bottom: calc(56px + var(--sab, 0px) + 20px);"));
+    assert!(animations.contains("bottom: calc(62px + var(--sab, 0px) + 20px);"));
     assert!(animations.contains("background: var(--surface-sheet);"));
     assert!(animations.contains(".first-run-hint-icon"));
     assert!(animations.contains("background: var(--accent-a12);"));
