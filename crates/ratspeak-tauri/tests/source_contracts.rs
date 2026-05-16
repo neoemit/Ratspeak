@@ -995,10 +995,10 @@ fn mobile_peers_toolbar_uses_search_plus_icon_sort_only() {
     assert!(responsive_css.contains("right: calc(50% - 18px);"));
 
     assert!(!index.contains("id=\"header-mobile-hash\""));
-    assert!(responsive_css.contains(".header-mobile-avatar {\n        width: 42px;"));
-    assert!(responsive_css.contains(".header-mobile-name {\n        font-size: var(--text-lg);"));
-    assert!(lxmf_js.contains("identityAvatar(hash, 42)"));
-    assert!(settings_js.contains("identityAvatar(hash, 42)"));
+    assert!(responsive_css.contains(".header-mobile-avatar {\n        width: 36px;"));
+    assert!(responsive_css.contains(".header-mobile-name {\n        font-size: var(--text-xl);"));
+    assert!(lxmf_js.contains("identityAvatar(hash, 36)"));
+    assert!(settings_js.contains("identityAvatar(hash, 36)"));
 }
 
 #[test]
@@ -1271,6 +1271,7 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
     let identity = read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
     let contact_card_js =
         read_source(root.join("dashboard/static/js/contact_card.js")).expect("contact card js");
     let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
@@ -1286,6 +1287,19 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(index.contains(r#"/static/js/contact_card.js"#));
     assert!(identity.contains("Share Contact Card"));
     assert!(identity.contains("openIdentityShareScreen(identityHash)"));
+    assert!(settings.contains("function openActiveIdentityContactCard()"));
+    assert!(settings.contains("openIdentityShareScreen(identityHash);"));
+    assert!(settings.contains("mobileId.addEventListener('keydown'"));
+    assert!(index.contains("id=\"header-mobile-identity\" title=\"Share contact card\""));
+    assert!(index.contains("id=\"header-identity-pill\" title=\"Share contact card\""));
+    let header_mobile_start = index
+        .find("id=\"header-mobile-identity\"")
+        .expect("mobile identity header");
+    let header_mobile_tail = &index[header_mobile_start..];
+    let header_mobile_end = header_mobile_tail
+        .find("</div>\n    </div>\n    <div class=\"header-right\">")
+        .expect("mobile identity header end");
+    assert!(!header_mobile_tail[..header_mobile_end].contains("header-identity-chevron"));
     assert!(lxmf.contains("openContactAddOptions(trigger)"));
     assert!(lxmf.contains("openAddContactPrompt(document.getElementById('contacts-add-fab'))"));
 

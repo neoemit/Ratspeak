@@ -338,6 +338,23 @@ RS.invoke('api_ble_peer_status').then(function(data) {
 }).catch(function() {});
 
 // Loads before identity.js — cross-file calls MUST use typeof guards.
+function openActiveIdentityContactCard() {
+    var identityHash = null;
+    if (typeof activeIdentityHash !== 'undefined' && activeIdentityHash) {
+        identityHash = activeIdentityHash;
+    } else if (typeof activeIdentity === 'function') {
+        var active = activeIdentity();
+        identityHash = active && active.hash ? active.hash : null;
+    }
+    if (typeof openIdentityShareScreen === 'function') {
+        openIdentityShareScreen(identityHash);
+    } else if (window.RSContactCard && typeof window.RSContactCard.openIdentityShareScreen === 'function') {
+        window.RSContactCard.openIdentityShareScreen(identityHash);
+    } else if (typeof showToast === 'function') {
+        showToast('Contact card is not ready yet', 'toast-orange', 2500);
+    }
+}
+
 function updateHeaderIdentity(hash, displayName) {
     var pill = document.getElementById('header-identity-pill');
     var iconEl = document.getElementById('header-identity-icon');
@@ -352,7 +369,7 @@ function updateHeaderIdentity(hash, displayName) {
         if (!pill._copyWired) {
             pill._copyWired = true;
             pill.addEventListener('click', function() {
-                if (typeof switchView === 'function') switchView('identity');
+                openActiveIdentityContactCard();
             });
         }
     }
@@ -390,10 +407,11 @@ function updateHeaderIdentity(hash, displayName) {
     }
     var hdrAvatar = document.getElementById('header-mobile-avatar');
     var hdrName = document.getElementById('header-mobile-name');
-    if (hash && hdrAvatar) hdrAvatar.innerHTML = (typeof identityAvatar === 'function') ? identityAvatar(hash, 42) : '';
+    if (hash && hdrAvatar) hdrAvatar.innerHTML = (typeof identityAvatar === 'function') ? identityAvatar(hash, 36) : '';
     if (hdrName) hdrName.textContent = displayName || localStorage.getItem('ratspeak_identity_name') || 'Account 1';
 
-    // JS fallback for WebView CSS caching.
+    // JS fallback for WebView CSS caching. Header profile controls no longer
+    // include chevrons; sidebar identity management keeps its switch affordance.
     var _chevrons = document.querySelectorAll('.header-identity-chevron');
     var _showChevron = typeof identityList !== 'undefined' && identityList.length > 1;
     for (var ci = 0; ci < _chevrons.length; ci++) {
@@ -404,7 +422,13 @@ function updateHeaderIdentity(hash, displayName) {
     if (mobileId && !mobileId._wired) {
         mobileId._wired = true;
         mobileId.addEventListener('click', function() {
-            if (typeof switchView === 'function') switchView('identity');
+            openActiveIdentityContactCard();
+        });
+        mobileId.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                openActiveIdentityContactCard();
+            }
         });
     }
 }

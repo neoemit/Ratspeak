@@ -169,8 +169,8 @@
         touch-action: manipulation;
     }
     .header-mobile-avatar {
-        width: 42px;
-        height: 42px;
+        width: 36px;
+        height: 36px;
         border-radius: var(--radius-full);
         overflow: hidden;
         flex-shrink: 0;
@@ -193,7 +193,7 @@
         min-width: 0;
     }
     .header-mobile-name {
-        font-size: var(--text-lg);
+        font-size: var(--text-xl);
         font-weight: var(--type-weight-semibold);
         line-height: 1.15;
         color: var(--text-primary);

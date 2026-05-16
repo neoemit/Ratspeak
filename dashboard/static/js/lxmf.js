@@ -1350,7 +1350,7 @@ function renderMsgProfileStrip() {
         var hdrAvatar = document.getElementById('header-mobile-avatar');
         var hdrName = document.getElementById('header-mobile-name');
         var mobileName = active.display_name || active.nickname || 'Account 1';
-        if (hdrAvatar) hdrAvatar.innerHTML = identityAvatar(hash, 42);
+        if (hdrAvatar) hdrAvatar.innerHTML = identityAvatar(hash, 36);
         if (hdrName) hdrName.textContent = mobileName;
     }
 }
