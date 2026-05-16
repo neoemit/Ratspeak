@@ -53,10 +53,28 @@ window.RS = window.RS || {};
 window.RS.blockMobileNavigation = blockMobileNavigation;
 window.RS.isMobileNavigationBlocked = _isMobileNavigationBlocked;
 
+var HAPTICS_STORAGE_KEY = 'rs-haptics-enabled';
+
+function getHapticsEnabled() {
+    try { return localStorage.getItem(HAPTICS_STORAGE_KEY) === '1'; } catch(e) {}
+    return false;
+}
+
+function setHapticsEnabled(enabled) {
+    try { localStorage.setItem(HAPTICS_STORAGE_KEY, enabled ? '1' : '0'); } catch(e) {}
+}
+
+window.RS.haptics = window.RS.haptics || {};
+window.RS.haptics.isEnabled = getHapticsEnabled;
+window.RS.haptics.setEnabled = setHapticsEnabled;
+window.getHapticsEnabled = getHapticsEnabled;
+window.setHapticsEnabled = setHapticsEnabled;
+
 // Accepts semantic names, duration-ish intensity numbers, or a vibration-style
 // pattern array. Mobile routes through tauri-plugin-haptics on both iOS and
 // Android; browser fallback uses navigator.vibrate.
 function haptic(pattern) {
+    if (!getHapticsEnabled()) return;
     if (!isTauriMobile()) {
         if (navigator.vibrate) {
             var fallback = _hapticFallbackPattern(pattern);
@@ -362,6 +380,7 @@ var VIEW_LIFECYCLE = {
 
     settings: function() {
         if (typeof initThemeToggle === 'function') initThemeToggle();
+        if (typeof initHapticsToggle === 'function') initHapticsToggle();
         if (typeof initSettingsSectionNav === 'function') initSettingsSectionNav();
     },
 

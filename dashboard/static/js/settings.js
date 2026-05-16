@@ -1,6 +1,7 @@
 function openSettings() {
     switchView('settings');
     initSettingsSectionNav();
+    initHapticsToggle();
     renderSettingsVersion();
     // Re-seal every System Data subsection on each visit. The collapse IS the
     // safety feature for destructive ops — a stale-open Delete Data section
@@ -66,7 +67,7 @@ function handleSystemSubsectionKey(e) {
     }
 }
 
-var SETTINGS_DEFAULT_PANEL_ID = 'panel-settings-appearance';
+var SETTINGS_DEFAULT_PANEL_ID = 'panel-settings-general';
 var _settingsSectionNavBound = false;
 var _settingsSectionResizeBound = false;
 
@@ -824,6 +825,7 @@ function confirmDangerAction(action, onClose) {
 }
 
 var _themeToggleInitialized = false;
+var _hapticsToggleInitialized = false;
 
 function initThemeToggle() {
     var toggle = document.getElementById('theme-toggle');
@@ -851,8 +853,25 @@ function initThemeToggle() {
     }
 }
 
+function initHapticsToggle() {
+    var toggle = document.getElementById('haptics-enabled-toggle');
+    if (!toggle) return;
+
+    toggle.checked = typeof getHapticsEnabled === 'function' ? getHapticsEnabled() : false;
+
+    if (!_hapticsToggleInitialized) {
+        _hapticsToggleInitialized = true;
+        toggle.addEventListener('change', function() {
+            var enabled = !!this.checked;
+            if (typeof setHapticsEnabled === 'function') setHapticsEnabled(enabled);
+            if (enabled && typeof haptic === 'function') haptic('selection');
+        });
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     initThemeToggle();
+    initHapticsToggle();
     initSettingsSectionNav();
     renderSettingsVersion();
 });

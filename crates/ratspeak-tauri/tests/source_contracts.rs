@@ -1261,6 +1261,9 @@ fn mobile_haptics_use_tauri_plugin_commands_and_semantic_feedback() {
     let root = repo_root();
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
     let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    let settings_js =
+        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let index_html = read_source(root.join("dashboard/index.html")).expect("dashboard html");
     let gestures = read_source(root.join("dashboard/static/js/gestures.js")).expect("gestures js");
     let constants =
         read_source(root.join("dashboard/static/js/constants.js")).expect("constants js");
@@ -1280,6 +1283,15 @@ fn mobile_haptics_use_tauri_plugin_commands_and_semantic_feedback() {
     assert!(nav.contains("step.kind === 'notify'    ? 'notification_feedback'"));
     assert!(nav.contains("'selection_feedback'"));
     assert!(!nav.contains("{ payload: step.payload }"));
+    assert!(nav.contains("var HAPTICS_STORAGE_KEY = 'rs-haptics-enabled';"));
+    assert!(nav.contains("if (!getHapticsEnabled()) return;"));
+    assert!(settings_js.contains("function initHapticsToggle()"));
+    assert!(index_html.contains("data-settings-title=\"General\""));
+    assert!(index_html.contains("id=\"haptics-enabled-toggle\""));
+    assert!(
+        !index_html.contains("id=\"haptics-enabled-toggle\" checked"),
+        "haptics should default off"
+    );
     assert!(gestures.contains("if (typeof haptic === 'function') haptic(name);"));
     assert!(gestures.contains("G.bindViewFabClick = function(target, handler, opts)"));
     assert!(gestures.contains("RIPPLE_HAPTIC_SELECTORS"));

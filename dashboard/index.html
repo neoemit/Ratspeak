@@ -832,8 +832,8 @@
                             <span class="settings-sidebar-title">Settings</span>
                         </div>
                         <nav class="settings-nav" id="settings-section-nav">
-                            <button class="settings-nav-item active" type="button" aria-current="page" data-settings-panel="panel-settings-appearance" data-settings-title="Appearance" data-settings-desc="Theme and visual preferences.">
-                                <span class="settings-nav-label">Appearance</span>
+                            <button class="settings-nav-item active" type="button" aria-current="page" data-settings-panel="panel-settings-general" data-settings-title="General" data-settings-desc="Theme, haptics, and app preferences.">
+                                <span class="settings-nav-label">General</span>
                             </button>
                             <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-network" data-settings-title="Network" data-settings-desc="Transport behavior and announce cadence.">
                                 <span class="settings-nav-label">Network</span>
@@ -857,13 +857,13 @@
                         <div class="settings-detail-header">
                             <div>
                                 <span class="settings-detail-eyebrow">Ratspeak</span>
-                                <h2 id="settings-detail-title">Appearance</h2>
+                                <h2 id="settings-detail-title">General</h2>
                             </div>
-                            <p id="settings-detail-desc">Theme and visual preferences.</p>
+                            <p id="settings-detail-desc">Theme, haptics, and app preferences.</p>
                         </div>
                         <div class="settings-page-inner settings-detail-panels">
-                            <div class="panel settings-panel settings-panel-selected" id="panel-settings-appearance">
-                        <div class="panel-header">Appearance</div>
+                            <div class="panel settings-panel settings-panel-selected" id="panel-settings-general">
+                        <div class="panel-header">General</div>
                         <div class="panel-body">
                             <div class="settings-row">
                                 <div class="settings-row-info">
@@ -881,6 +881,16 @@
                                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
                                     </button>
                                 </div>
+                            </div>
+                            <div class="settings-row">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Vibration</span>
+                                    <span class="settings-row-desc">Enable haptic feedback for taps and gestures</span>
+                                </div>
+                                <label class="prop-toggle" aria-label="Enable vibration">
+                                    <input type="checkbox" id="haptics-enabled-toggle">
+                                    <span class="prop-slider"></span>
+                                </label>
                             </div>
                         </div>
                     </div>
