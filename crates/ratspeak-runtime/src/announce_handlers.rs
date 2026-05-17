@@ -199,24 +199,30 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
         state.lxmf_notify.notify_one();
     }
 
-    let iface = lookup_path_iface(state, event.destination_hash).await;
+    if should_touch_peer_activity(&event) {
+        let iface = lookup_path_iface(state, event.destination_hash).await;
+        let identity_hash_hex = event.identity_hash.map(hex::encode);
+        let activity = vec![(hash_hex.clone(), now_f64(), display_name, iface)];
 
-    let identity_hash_hex = event.identity_hash.map(hex::encode);
-    let activity = vec![(hash_hex.clone(), now_f64(), display_name, iface)];
-
-    let pool = state.db.clone();
-    let activity_owned = activity.clone();
-    let identity_hash_for_db = identity_hash_hex.as_deref().map(str::to_owned);
-    db::spawn_db(pool, move |p| {
-        db::touch_identity_activity_for_service(
-            &p,
-            &activity_owned,
-            identity_hash_for_db.as_deref(),
-            db::PEER_SERVICE_LXMF_DELIVERY,
+        let pool = state.db.clone();
+        let activity_owned = activity.clone();
+        let identity_hash_for_db = identity_hash_hex.as_deref().map(str::to_owned);
+        db::spawn_db(pool, move |p| {
+            db::touch_identity_activity_for_service(
+                &p,
+                &activity_owned,
+                identity_hash_for_db.as_deref(),
+                db::PEER_SERVICE_LXMF_DELIVERY,
+            );
+        })
+        .await
+        .expect("db task panicked");
+    } else {
+        tracing::debug!(
+            dest = %hash_hex,
+            "lxmf.delivery path response refreshed route data without touching peer last_seen"
         );
-    })
-    .await
-    .expect("db task panicked");
+    }
 
     let pool = state.db.clone();
     let hashes = vec![hash_hex];
@@ -250,21 +256,29 @@ async fn process_lxst_telephony_announce(state: &Arc<AppState>, event: AnnounceH
     let lxmf_dest = Destination::hash_from_name_and_identity("lxmf.delivery", Some(&identity_hash));
     let lxmf_dest_hex = hex::encode(lxmf_dest);
     let identity_hash_hex = hex::encode(identity_hash);
-    let iface = lookup_path_iface(state, event.destination_hash).await;
-    let activity = vec![(lxmf_dest_hex.clone(), now_f64(), None, iface)];
+    if should_touch_peer_activity(&event) {
+        let iface = lookup_path_iface(state, event.destination_hash).await;
+        let activity = vec![(lxmf_dest_hex.clone(), now_f64(), None, iface)];
 
-    let pool = state.db.clone();
-    let identity_hash_for_db = identity_hash_hex.clone();
-    db::spawn_db(pool, move |p| {
-        db::touch_identity_activity_for_service(
-            &p,
-            &activity,
-            Some(&identity_hash_for_db),
-            db::PEER_SERVICE_LXST_TELEPHONY,
+        let pool = state.db.clone();
+        let identity_hash_for_db = identity_hash_hex.clone();
+        db::spawn_db(pool, move |p| {
+            db::touch_identity_activity_for_service(
+                &p,
+                &activity,
+                Some(&identity_hash_for_db),
+                db::PEER_SERVICE_LXST_TELEPHONY,
+            );
+        })
+        .await
+        .expect("db task panicked");
+    } else {
+        tracing::debug!(
+            dest = %hex::encode(event.destination_hash),
+            lxmf_dest = %lxmf_dest_hex,
+            "lxst.telephony path response refreshed route data without touching peer last_seen"
         );
-    })
-    .await
-    .expect("db task panicked");
+    }
 
     let pool = state.db.clone();
     let hashes = vec![lxmf_dest_hex];
@@ -448,6 +462,10 @@ fn now_f64() -> f64 {
         .as_secs_f64()
 }
 
+fn should_touch_peer_activity(event: &AnnounceHandlerEvent) -> bool {
+    !event.is_path_response
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,5 +494,25 @@ mod tests {
                 other => panic!("unexpected transport message: {other:?}"),
             }
         }
+    }
+
+    fn event_with_path_response(is_path_response: bool) -> AnnounceHandlerEvent {
+        AnnounceHandlerEvent {
+            destination_hash: [0x11; 16],
+            identity_hash: Some([0x22; 16]),
+            announce_packet_hash: [0x33; 32],
+            is_path_response,
+            hops: 10,
+            app_data: None,
+            public_key: None,
+            ratchet: None,
+            name_hash: [0x44; 10],
+        }
+    }
+
+    #[test]
+    fn path_responses_do_not_touch_peer_activity() {
+        assert!(!should_touch_peer_activity(&event_with_path_response(true)));
+        assert!(should_touch_peer_activity(&event_with_path_response(false)));
     }
 }
