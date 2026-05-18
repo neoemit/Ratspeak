@@ -71,6 +71,8 @@ fn ratspeak_capability_marker_drives_avatar_glow() {
     let identity_js =
         read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
     assert!(identity_js.contains("function ratspeakAvatarSupported"));
+    assert!(identity_js.contains("function ratspeakAvatarRingMarkup"));
+    assert!(identity_js.contains("ratspeak-avatar-ring-core"));
     assert!(identity_js.contains("ratspeak.client"));
     assert!(identity_js.contains("ratspeak-avatar-glow"));
 

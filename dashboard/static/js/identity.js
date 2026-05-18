@@ -398,6 +398,11 @@ function ratspeakAvatarSupported(hashValue) {
     return false;
 }
 
+function ratspeakAvatarRingMarkup() {
+    return '<circle class="ratspeak-avatar-ring-halo" cx="4" cy="4" r="3.62" fill="none" shape-rendering="geometricPrecision"/>' +
+        '<circle class="ratspeak-avatar-ring-core" cx="4" cy="4" r="3.62" fill="none" shape-rendering="geometricPrecision"/>';
+}
+
 function identityAvatar(hashValue, size) {
     if (!hashValue) {
         var color = 'var(--text-muted)';
@@ -413,6 +418,7 @@ function identityAvatar(hashValue, size) {
     var svg = blockies(hashValue, size);
     if (ratspeakCapable) {
         svg = svg.replace('<svg ', '<svg class="ratspeak-avatar-glow" ');
+        svg = svg.replace('</svg>', ratspeakAvatarRingMarkup() + '</svg>');
     }
     _avatarCache[key] = svg;
     return svg;
