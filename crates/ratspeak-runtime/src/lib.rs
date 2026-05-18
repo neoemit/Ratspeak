@@ -952,7 +952,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         tokio::sync::mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(
                             CHANNEL_BUFFER_SIZE,
                         );
-                    lxmf_link_mgr.set_link_packet_channel(link_pkt_tx);
+                    lxmf_link_mgr.set_link_packet_channel(link_pkt_tx.clone());
                     lxmf_link_mgr.set_resource_completed_channel(link_res_tx);
                     lxmf_link_mgr.set_link_identified_channel(link_identified_tx);
                     lxmf_link_mgr.set_link_closed_channel(link_closed_tx);
@@ -964,6 +964,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     {
                         mgr.set_lxmf_link_control(
                             link_command_tx,
+                            link_pkt_tx.clone(),
                             link_identified_rx,
                             link_closed_rx,
                             link_packet_proof_rx,
@@ -991,14 +992,14 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         .clone();
                     tokio::spawn(async move {
                         loop {
-                            let data = tokio::select! {
+                            let (data, link_id) = tokio::select! {
                                 _ = link_inbound_shutdown.wait() => break,
                                 item = link_pkt_rx.recv() => match item {
-                                    Some((data, _link_id)) => data,
+                                    Some((data, link_id)) => (data, link_id),
                                     None => break,
                                 },
                                 item = link_res_rx.recv() => match item {
-                                    Some((data, _link_id)) => data,
+                                    Some((data, link_id)) => (data, link_id),
                                     None => break,
                                 },
                             };
@@ -1006,7 +1007,13 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             // Link deliveries arrive already decrypted. Payload
                             // is the full LXMF wire format:
                             //   [dest:16][src:16][sig:64][msgpack].
-                            handle_link_delivered_lxmf(&link_inbound_state, data, true).await;
+                            handle_link_delivered_lxmf(
+                                &link_inbound_state,
+                                data,
+                                true,
+                                Some(link_id),
+                            )
+                            .await;
                         }
                     });
 
@@ -1332,7 +1339,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
 
                     let downloaded_count = downloaded_propagation_messages.len();
                     for data in downloaded_propagation_messages {
-                        handle_link_delivered_lxmf(&tick_state, data, false).await;
+                        handle_link_delivered_lxmf(&tick_state, data, false, None).await;
                     }
                     if downloaded_count > 0 {
                         tick_state.emit_to_all(
@@ -2358,7 +2365,12 @@ async fn handle_inbound_lxmf(
 }
 
 // Direct (link-decrypted) delivery: data = [dest:16][src:16][sig:64][msgpack].
-async fn handle_link_delivered_lxmf(state: &AppState, data: Vec<u8>, mark_sender_seen: bool) {
+async fn handle_link_delivered_lxmf(
+    state: &AppState,
+    data: Vec<u8>,
+    mark_sender_seen: bool,
+    link_id: Option<[u8; 16]>,
+) {
     let mut msg = match lxmf_core::message::LxMessage::unpack(&data) {
         Ok(m) => m,
         Err(e) => {
@@ -2396,7 +2408,19 @@ async fn handle_link_delivered_lxmf(state: &AppState, data: Vec<u8>, mark_sender
             .and_then(|mgr| mgr.verify_inbound_signature(&mut msg))
     });
     match sig_valid {
-        Some(true) => {}
+        Some(true) => {
+            if let Some(link_id) = link_id
+                && let Ok(mut lxmf) = state.lxmf.lock()
+                && let Some(mgr) = lxmf.as_mut()
+                && mgr.register_direct_backchannel(msg.source_hash, link_id)
+            {
+                tracing::debug!(
+                    from = %source_hash,
+                    link_id = %hex::encode(link_id),
+                    "registered verified Direct reply backchannel from inbound LXMF payload"
+                );
+            }
+        }
         Some(false) => {
             tracing::warn!("link-delivered signature INVALID — dropping");
             return;

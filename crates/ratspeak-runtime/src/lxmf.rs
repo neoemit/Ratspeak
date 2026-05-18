@@ -569,6 +569,7 @@ pub struct LxmfManager {
         Option<tokio::sync::mpsc::Sender<rns_transport::link_messages::DestinationEvent>>,
     pub link_delivery: Option<lxmf_core::link_delivery::LinkDeliveryManager>,
     lxmf_link_command_tx: Option<mpsc::Sender<rns_runtime::link_manager::LinkManagerCommand>>,
+    lxmf_direct_link_packet_tx: Option<mpsc::Sender<(Vec<u8>, [u8; 16])>>,
     lxmf_backchannel_command_rx: Option<mpsc::Receiver<BackchannelSendCommand>>,
     lxmf_link_identified_rx: Option<mpsc::Receiver<([u8; 16], [u8; 16])>>,
     lxmf_link_closed_rx: Option<mpsc::Receiver<[u8; 16]>>,
@@ -788,6 +789,7 @@ impl LxmfManager {
             delivery_tx: None,
             link_delivery: None,
             lxmf_link_command_tx: None,
+            lxmf_direct_link_packet_tx: None,
             lxmf_backchannel_command_rx: None,
             lxmf_link_identified_rx: None,
             lxmf_link_closed_rx: None,
@@ -985,18 +987,32 @@ impl LxmfManager {
     pub fn set_lxmf_link_control(
         &mut self,
         command_tx: mpsc::Sender<rns_runtime::link_manager::LinkManagerCommand>,
+        direct_link_packet_tx: mpsc::Sender<(Vec<u8>, [u8; 16])>,
         identified_rx: mpsc::Receiver<([u8; 16], [u8; 16])>,
         closed_rx: mpsc::Receiver<[u8; 16]>,
         packet_proof_rx: mpsc::Receiver<rns_runtime::link_manager::LinkPacketProof>,
         resource_proof_rx: mpsc::Receiver<rns_runtime::link_manager::LinkResourceProof>,
     ) {
         self.lxmf_link_command_tx = Some(command_tx);
+        self.lxmf_direct_link_packet_tx = Some(direct_link_packet_tx);
         self.lxmf_link_identified_rx = Some(identified_rx);
         self.lxmf_link_closed_rx = Some(closed_rx);
         self.lxmf_link_packet_proof_rx = Some(packet_proof_rx);
         self.lxmf_link_resource_proof_rx = Some(resource_proof_rx);
         self.lxmf_backchannel_command_rx = None;
         self.ensure_link_delivery_backchannel_sender();
+        self.ensure_link_delivery_inbound_sender();
+    }
+
+    pub fn register_direct_backchannel(&mut self, dest_hash: [u8; 16], link_id: [u8; 16]) -> bool {
+        if !self.ensure_link_delivery_manager() {
+            return false;
+        }
+        if let Some(ref mut ld) = self.link_delivery {
+            ld.register_backchannel(dest_hash, link_id);
+            return true;
+        }
+        false
     }
 
     /// `key_bytes` must be exactly 64 bytes (X25519 || Ed25519 seed).
@@ -2353,9 +2369,19 @@ impl LxmfManager {
         }
     }
 
+    fn ensure_link_delivery_inbound_sender(&mut self) {
+        let Some(tx) = self.lxmf_direct_link_packet_tx.clone() else {
+            return;
+        };
+        if let Some(ref mut ld) = self.link_delivery {
+            ld.set_inbound_packet_sender(tx);
+        }
+    }
+
     fn ensure_link_delivery_manager(&mut self) -> bool {
         if self.link_delivery.is_some() {
             self.ensure_link_delivery_backchannel_sender();
+            self.ensure_link_delivery_inbound_sender();
             return true;
         }
 
@@ -2369,6 +2395,7 @@ impl LxmfManager {
             self.identity.get_signing_key(),
         ));
         self.ensure_link_delivery_backchannel_sender();
+        self.ensure_link_delivery_inbound_sender();
         true
     }
 
@@ -4464,12 +4491,20 @@ mod tests {
         let (command_tx, _command_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::channel::<(Vec<u8>, [u8; 16])>(4);
         let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
         let (_packet_tx, packet_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
         let (_resource_tx, resource_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
-        mgr.set_lxmf_link_control(command_tx, identified_rx, closed_rx, packet_rx, resource_rx);
+        mgr.set_lxmf_link_control(
+            command_tx,
+            direct_tx,
+            identified_rx,
+            closed_rx,
+            packet_rx,
+            resource_rx,
+        );
 
         let link_id = [0x11; 16];
         let identity_hash = [0x22; 16];
@@ -4498,12 +4533,20 @@ mod tests {
         let (command_tx, mut command_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::channel::<(Vec<u8>, [u8; 16])>(4);
         let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
         let (_packet_tx, packet_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
         let (_resource_tx, resource_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
-        mgr.set_lxmf_link_control(command_tx, identified_rx, closed_rx, packet_rx, resource_rx);
+        mgr.set_lxmf_link_control(
+            command_tx,
+            direct_tx,
+            identified_rx,
+            closed_rx,
+            packet_rx,
+            resource_rx,
+        );
 
         let dest = [0x33; 16];
         let link_id = [0x44; 16];
@@ -4570,12 +4613,20 @@ mod tests {
         let (command_tx, _command_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::channel::<(Vec<u8>, [u8; 16])>(4);
         let (closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
         let (_packet_tx, packet_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
         let (_resource_tx, resource_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
-        mgr.set_lxmf_link_control(command_tx, identified_rx, closed_rx, packet_rx, resource_rx);
+        mgr.set_lxmf_link_control(
+            command_tx,
+            direct_tx,
+            identified_rx,
+            closed_rx,
+            packet_rx,
+            resource_rx,
+        );
 
         let dest = [0x35; 16];
         let link_id = [0x45; 16];
@@ -4614,12 +4665,20 @@ mod tests {
         let (command_tx, mut command_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::channel::<(Vec<u8>, [u8; 16])>(4);
         let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
         let (_packet_tx, packet_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
         let (_resource_tx, resource_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
-        mgr.set_lxmf_link_control(command_tx, identified_rx, closed_rx, packet_rx, resource_rx);
+        mgr.set_lxmf_link_control(
+            command_tx,
+            direct_tx,
+            identified_rx,
+            closed_rx,
+            packet_rx,
+            resource_rx,
+        );
 
         let dest = [0x36; 16];
         let link_id = [0x46; 16];
@@ -4693,11 +4752,19 @@ mod tests {
         let (command_tx, mut command_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::channel::<(Vec<u8>, [u8; 16])>(4);
         let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
         let (packet_tx, packet_rx) = mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
         let (_resource_tx, resource_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
-        mgr.set_lxmf_link_control(command_tx, identified_rx, closed_rx, packet_rx, resource_rx);
+        mgr.set_lxmf_link_control(
+            command_tx,
+            direct_tx,
+            identified_rx,
+            closed_rx,
+            packet_rx,
+            resource_rx,
+        );
 
         let dest = [0x55; 16];
         let link_id = [0x66; 16];
