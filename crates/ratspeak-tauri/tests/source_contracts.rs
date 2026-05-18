@@ -1503,6 +1503,36 @@ fn mobile_haptics_use_tauri_plugin_commands_and_semantic_feedback() {
 }
 
 #[test]
+fn message_actions_use_mobile_long_press_and_action_state() {
+    let root = repo_root();
+    let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    let messaging_css =
+        read_source(root.join("dashboard/static/css/09-messaging.css")).expect("messaging css");
+    let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    let runtime =
+        read_source(root.join("crates/ratspeak-runtime/src/lxmf.rs")).expect("runtime lxmf");
+    let inbound =
+        read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
+
+    assert!(lxmf.contains("RS.gestures.attachLongPress(bubble"));
+    assert!(lxmf.contains("window.RS.closeMessageActionMenu"));
+    assert!(lxmf.contains("function _copyToClipboardFallback(text)"));
+    assert!(lxmf.contains("function _optimisticApplyReaction"));
+    assert!(lxmf.contains("showToast(ok ? 'Message copied'"));
+    assert!(messaging_css.contains(".lxmf-messages.msg-action-mode .msg-row"));
+    assert!(messaging_css.contains(".msg-row.msg-action-selected .lxmf-msg"));
+    assert!(nav.contains("RS.closeMessageActionMenu()"));
+
+    assert!(runtime.contains("RATSPEAK_CHAT_CUSTOM_TYPE"));
+    assert!(runtime.contains("ratspeak.chat.v1"));
+    assert!(runtime.contains("decode_ratspeak_chat_extension"));
+    assert!(runtime.contains("reaction_fallback_text"));
+    assert!(inbound.contains("apply_inbound_ratspeak_reaction"));
+    assert!(inbound.contains("\"reply_to_id\": reply_to_id"));
+    assert!(inbound.contains("\"reaction_update\""));
+}
+
+#[test]
 fn first_run_announce_hint_waits_for_online_mobile_interface() {
     let root = repo_root();
     let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");

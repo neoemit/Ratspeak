@@ -2592,6 +2592,34 @@ fn get_reactions_batch(
     result
 }
 
+pub fn get_reactions_for_message(
+    pool: &DbPool,
+    message_id: &str,
+    identity_id: &str,
+) -> Vec<serde_json::Value> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT sender, emoji, timestamp FROM reactions WHERE message_id = ?1 AND identity_id = ?2 ORDER BY timestamp ASC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = match stmt.query_map(params![message_id, identity_id], |row| {
+        Ok(serde_json::json!({
+            "sender": row.get::<_, String>(0)?,
+            "emoji": row.get::<_, String>(1)?,
+            "timestamp": row.get::<_, f64>(2)?,
+        }))
+    }) {
+        Ok(rows) => rows,
+        Err(_) => return Vec::new(),
+    };
+    rows.flatten().collect()
+}
+
 pub fn get_connection_history(pool: &DbPool, limit: i64) -> Vec<serde_json::Value> {
     let conn = match pool.get() {
         Ok(c) => c,

@@ -484,7 +484,12 @@ function _handleAppBackNavigation(opts) {
     var fromPopState = opts.source === 'popstate';
     var state = opts.state || null;
 
-    if (_closeOpenBottomSheet() || _closeOpenFabPicker() || _closeOpenContactSheet()) {
+    if (
+        (window.RS && typeof RS.closeMessageActionMenu === 'function' && RS.closeMessageActionMenu()) ||
+        _closeOpenBottomSheet() ||
+        _closeOpenFabPicker() ||
+        _closeOpenContactSheet()
+    ) {
         if (fromPopState) _pushCurrentHistoryAnchor();
         return true;
     }

@@ -1824,6 +1824,64 @@ fn decode_lxmf_ticket_field(ticket_data: &[u8]) -> Option<([u8; 16], f64)> {
     None
 }
 
+fn clamp_chat_field(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+fn inbound_reply_fields(ext: Option<&lxmf::RatspeakChatExtension>) -> (String, String) {
+    match ext {
+        Some(lxmf::RatspeakChatExtension::Reply {
+            target, preview, ..
+        }) => (
+            clamp_chat_field(target, 128),
+            clamp_chat_field(preview, 200),
+        ),
+        _ => (String::new(), String::new()),
+    }
+}
+
+async fn apply_inbound_ratspeak_reaction(
+    state: &AppState,
+    source_hash: &str,
+    identity_id: &str,
+    target: &str,
+    emoji: &str,
+    action: &str,
+) {
+    let target = clamp_chat_field(target, 128);
+    let emoji = clamp_chat_field(emoji, 16);
+    if target.is_empty() || emoji.is_empty() {
+        return;
+    }
+    let action = if action == "remove" {
+        "remove".to_string()
+    } else {
+        "add".to_string()
+    };
+    let sender = source_hash.to_string();
+    let identity_id = identity_id.to_string();
+    let target_for_db = target.clone();
+    let emoji_for_db = emoji.clone();
+    let reactions = db::spawn_db(state.db.clone(), move |p| {
+        if action == "remove" {
+            db::remove_reaction(&p, &target_for_db, &sender, &emoji_for_db, &identity_id);
+        } else {
+            db::save_reaction(&p, &target_for_db, &sender, &emoji_for_db, &identity_id);
+        }
+        db::get_reactions_for_message(&p, &target_for_db, &identity_id)
+    })
+    .await
+    .unwrap_or_default();
+
+    state.emit_to_all(
+        "reaction_update",
+        json!({
+            "message_id": target,
+            "reactions": reactions,
+        }),
+    );
+}
+
 /// Handle inbound LXMF messages delivered by the transport actor.
 async fn handle_inbound_lxmf(
     state: Arc<AppState>,
@@ -2110,6 +2168,25 @@ async fn handle_inbound_lxmf(
 
         touch_peer_last_heard(state.as_ref(), &source_hash).await;
 
+        let chat_extension = lxmf::decode_ratspeak_chat_extension(&msg);
+        if let Some(lxmf::RatspeakChatExtension::Reaction {
+            target,
+            emoji,
+            action,
+        }) = chat_extension.as_ref()
+        {
+            apply_inbound_ratspeak_reaction(
+                state.as_ref(),
+                &source_hash,
+                &identity_id,
+                target,
+                emoji,
+                action,
+            )
+            .await;
+            continue;
+        }
+
         // LRGP keys sessions by LXMF hash (not identity hash).
         let lxmf_id = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
             .await
@@ -2120,7 +2197,10 @@ async fn handle_inbound_lxmf(
                     .map(String::from)
             })
             .unwrap_or_default();
-        let is_lrgp = try_handle_inbound_lrgp(&state, &msg, &source_hash, &lxmf_id);
+        let is_lrgp = !matches!(
+            chat_extension,
+            Some(lxmf::RatspeakChatExtension::Reply { .. })
+        ) && try_handle_inbound_lrgp(&state, &msg, &source_hash, &lxmf_id);
 
         // LRGP tunnels over LXMF; don't surface in conversation UI.
         if is_lrgp {
@@ -2130,6 +2210,7 @@ async fn handle_inbound_lxmf(
         let received_at =
             next_chat_observed_timestamp(state.as_ref(), &source_hash, &identity_id).await;
         let attachment_file = extract_and_save_attachment(&state, &msg);
+        let (reply_to_id, reply_to_preview) = inbound_reply_fields(chat_extension.as_ref());
         {
             let msg_id_for_save = msg_id.clone();
             let source_hash_for_save = source_hash.clone();
@@ -2138,6 +2219,8 @@ async fn handle_inbound_lxmf(
             let title_for_save = msg.title.clone();
             let timestamp_for_save = received_at;
             let identity_id_for_save = identity_id.clone();
+            let reply_to_id_for_save = reply_to_id.clone();
+            let reply_to_preview_for_save = reply_to_preview.clone();
             let (att_name, att_stored, img_name, img_stored) = match attachment_file.as_ref() {
                 Some(a) if a.is_image => (
                     String::new(),
@@ -2169,8 +2252,8 @@ async fn handle_inbound_lxmf(
                     &att_stored,
                     &img_name,
                     &img_stored,
-                    "",
-                    "",
+                    &reply_to_id_for_save,
+                    &reply_to_preview_for_save,
                     None,
                 );
             })
@@ -2206,6 +2289,8 @@ async fn handle_inbound_lxmf(
             "timestamp": received_at,
             "state": "received",
             "direction": "inbound",
+            "reply_to_id": reply_to_id,
+            "reply_to_preview": reply_to_preview,
         });
         if let Some(ref att) = attachment_file {
             let obj = event_data.as_object_mut().unwrap();
@@ -2379,13 +2464,30 @@ async fn handle_link_delivered_lxmf(state: &AppState, data: Vec<u8>, mark_sender
         touch_peer_last_heard(state, &source_hash).await;
     }
 
+    let chat_extension = lxmf::decode_ratspeak_chat_extension(&msg);
+    if let Some(lxmf::RatspeakChatExtension::Reaction {
+        target,
+        emoji,
+        action,
+    }) = chat_extension.as_ref()
+    {
+        apply_inbound_ratspeak_reaction(state, &source_hash, &identity_id, target, emoji, action)
+            .await;
+        return;
+    }
+
     // LRGP tunnels over LXMF (Direct or Opportunistic); don't surface in chat.
-    if try_handle_inbound_lrgp(state, &msg, &source_hash, &lxmf_id) {
+    if !matches!(
+        chat_extension,
+        Some(lxmf::RatspeakChatExtension::Reply { .. })
+    ) && try_handle_inbound_lrgp(state, &msg, &source_hash, &lxmf_id)
+    {
         return;
     }
 
     let received_at = next_chat_observed_timestamp(state, &source_hash, &identity_id).await;
     let attachment_file = extract_and_save_attachment(state, &msg);
+    let (reply_to_id, reply_to_preview) = inbound_reply_fields(chat_extension.as_ref());
     {
         let msg_id_for_save = msg_id.clone();
         let source_hash_for_save = source_hash.clone();
@@ -2394,6 +2496,8 @@ async fn handle_link_delivered_lxmf(state: &AppState, data: Vec<u8>, mark_sender
         let title_for_save = msg.title.clone();
         let timestamp_for_save = received_at;
         let identity_id_for_save = identity_id.clone();
+        let reply_to_id_for_save = reply_to_id.clone();
+        let reply_to_preview_for_save = reply_to_preview.clone();
         let (att_name, att_stored, img_name, img_stored) = match attachment_file.as_ref() {
             Some(a) if a.is_image => (
                 String::new(),
@@ -2425,8 +2529,8 @@ async fn handle_link_delivered_lxmf(state: &AppState, data: Vec<u8>, mark_sender
                 &att_stored,
                 &img_name,
                 &img_stored,
-                "",
-                "",
+                &reply_to_id_for_save,
+                &reply_to_preview_for_save,
                 None,
             );
         })
@@ -2462,6 +2566,8 @@ async fn handle_link_delivered_lxmf(state: &AppState, data: Vec<u8>, mark_sender
         "timestamp": received_at,
         "state": "received",
         "direction": "inbound",
+        "reply_to_id": reply_to_id,
+        "reply_to_preview": reply_to_preview,
     });
     if let Some(ref att) = attachment_file {
         let obj = event_data.as_object_mut().unwrap();

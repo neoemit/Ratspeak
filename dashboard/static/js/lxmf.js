@@ -21,6 +21,7 @@ var _lxmfMessageScrollTop = 0;
 var _lxmfLastUserScrollUpAt = 0;
 var _lxmfProgrammaticScrollUntil = 0;
 var _lxmfScrollSettleToken = 0;
+var _messageLongPressDetachFns = [];
 var lxmfLimits = {
     max_attachment_bytes: 134217727,
     max_message_bytes: 134217727,
@@ -28,6 +29,13 @@ var lxmfLimits = {
     default_propagation_limit_kb: 256,
     propagation_transfer_limit_kb: null,
 };
+
+function _detachMessageLongPressHandlers() {
+    while (_messageLongPressDetachFns.length) {
+        var detach = _messageLongPressDetachFns.pop();
+        try { detach(); } catch (e) {}
+    }
+}
 var lxstVoiceState = {
     available: false,
     running: false,
@@ -2367,6 +2375,8 @@ function renderConversation(options) {
     options = options || {};
     var container = document.getElementById('lxmf-messages');
     if (!container) return;
+    _dismissContextMenu();
+    _detachMessageLongPressHandlers();
     _wireLxmfMessageScroll(container);
     var scrollState = _captureLxmfMessageScrollState(container);
 
@@ -2608,16 +2618,8 @@ function renderConversation(options) {
             e.stopPropagation();
             var emoji = this.getAttribute('data-emoji');
             var msgId = this.getAttribute('data-msg-id');
-            var isMine = this.classList.contains('mine');
-            RS.invoke('send_reaction', {
-                args: {
-                    dest_hash: lxmfActiveContact,
-                    message_id: msgId,
-                    emoji: emoji,
-                    action: isMine ? 'remove' : 'add',
-                    delivery_method: 'auto'
-                }
-            }).catch(function() {});
+            var msgData = lxmfConversation.find(function(m) { return m.id === msgId; }) || { id: msgId };
+            _sendReactionForMessage(msgData, emoji, { dismiss: false });
         });
     });
 
@@ -2638,12 +2640,29 @@ function renderConversation(options) {
     });
 
     container.querySelectorAll('.lxmf-msg').forEach(function(bubble) {
+        if (window.RS && RS.gestures && typeof RS.gestures.attachLongPress === 'function') {
+            var detachLongPress = RS.gestures.attachLongPress(bubble, {
+                duration: 500,
+                moveCancelPx: 12,
+                hapticStages: [{ at: 0.55, level: 'light' }],
+                onFire: function(touch) {
+                    var msgId = bubble.getAttribute('data-msg-id');
+                    if (!msgId) return;
+                    var msgData = lxmfConversation.find(function(m) { return m.id === msgId; });
+                    if (!msgData) return;
+                    _suppressNextContextMenuUntil = Date.now() + 1200;
+                    _showMsgContextMenu(msgData, touch.clientX, touch.clientY, bubble);
+                }
+            });
+            if (typeof detachLongPress === 'function') _messageLongPressDetachFns.push(detachLongPress);
+        }
         bubble.addEventListener('contextmenu', function(e) {
             e.preventDefault();
+            if (Date.now() < _suppressNextContextMenuUntil) return;
             var msgId = this.getAttribute('data-msg-id');
             if (!msgId) return;
             var msgData = lxmfConversation.find(function(m) { return m.id === msgId; });
-            if (msgData) _showMsgContextMenu(msgData, e.clientX, e.clientY);
+            if (msgData) _showMsgContextMenu(msgData, e.clientX, e.clientY, this);
         });
     });
 
@@ -3011,47 +3030,169 @@ function _getContactName(hash) {
 }
 
 var _activeContextMenu = null;
+var _suppressNextContextMenuUntil = 0;
 
 function _dismissContextMenu() {
-    if (_activeContextMenu && _activeContextMenu.parentNode) {
-        _activeContextMenu.parentNode.removeChild(_activeContextMenu);
+    if (!_activeContextMenu) return false;
+    if (_activeContextMenu.menu && _activeContextMenu.menu.parentNode) {
+        _activeContextMenu.menu.parentNode.removeChild(_activeContextMenu.menu);
+    }
+    if (_activeContextMenu.row) {
+        _activeContextMenu.row.classList.remove('msg-action-selected');
+    }
+    if (_activeContextMenu.container) {
+        _activeContextMenu.container.classList.remove('msg-action-mode');
     }
     _activeContextMenu = null;
+    return true;
 }
 
-function _showMsgContextMenu(msgData, x, y) {
+function _messageActionIcon(name) {
+    if (name === 'reply') {
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>';
+    }
+    if (name === 'copy') {
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    }
+    return '';
+}
+
+function _ownReactionSender() {
+    return lxmfIdentity ? (lxmfIdentity.hash || lxmfIdentity.lxmf_hash || '') : '';
+}
+
+function _hasOwnReaction(msgId, emoji) {
+    var sender = _ownReactionSender();
+    if (!sender) return false;
+    var reactions = _msgReactions[msgId] || [];
+    return reactions.some(function(r) { return r.sender === sender && r.emoji === emoji; });
+}
+
+function _optimisticApplyReaction(msgId, emoji, action) {
+    var sender = _ownReactionSender();
+    if (!sender || !msgId || !emoji) return;
+    var reactions = (_msgReactions[msgId] || []).slice();
+    reactions = reactions.filter(function(r) {
+        return !(r.sender === sender && r.emoji === emoji);
+    });
+    if (action !== 'remove') {
+        reactions.push({ sender: sender, emoji: emoji, timestamp: Date.now() / 1000 });
+    }
+    _msgReactions[msgId] = reactions;
+    for (var i = 0; i < lxmfConversation.length; i++) {
+        if (lxmfConversation[i].id === msgId) {
+            lxmfConversation[i].reactions = reactions;
+            break;
+        }
+    }
+    renderConversation();
+}
+
+function _sendReactionForMessage(msgData, emoji, opts) {
+    opts = opts || {};
+    if (!msgData || !msgData.id || !emoji) return;
+    var action = _hasOwnReaction(msgData.id, emoji) ? 'remove' : 'add';
+    if (opts.dismiss !== false) _dismissContextMenu();
+    _optimisticApplyReaction(msgData.id, emoji, action);
+    if (typeof haptic === 'function') haptic('selection');
+    RS.invoke('send_reaction', {
+        args: {
+            dest_hash: lxmfActiveContact,
+            message_id: msgData.id,
+            emoji: emoji,
+            action: action,
+            delivery_method: 'auto'
+        }
+    }).catch(function() {
+        if (typeof showToast === 'function') showToast('Reaction failed', 'toast-red', 2500);
+    });
+}
+
+function _copyToClipboard(text) {
+    if (!text) return Promise.resolve(false);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text).then(function() { return true; }).catch(function() {
+            return _copyToClipboardFallback(text);
+        });
+    }
+    return _copyToClipboardFallback(text);
+}
+
+function _copyToClipboardFallback(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    if (ta.parentNode) ta.parentNode.removeChild(ta);
+    return Promise.resolve(ok);
+}
+
+function _positionMsgContextMenu(menu, x, y, bubble) {
+    var margin = 10;
+    var rect = bubble ? bubble.getBoundingClientRect() : null;
+    var menuRect = menu.getBoundingClientRect();
+    var isMobileWidth = window.innerWidth <= 768;
+    var left = x;
+    var top = y;
+
+    if (rect) {
+        left = isMobileWidth ? (window.innerWidth - menuRect.width) / 2 : x;
+        var above = rect.top - menuRect.height - 8;
+        var below = rect.bottom + 8;
+        top = above >= margin ? above : below;
+    }
+
+    left = Math.max(margin, Math.min(left, window.innerWidth - menuRect.width - margin));
+    top = Math.max(margin, Math.min(top, window.innerHeight - menuRect.height - margin));
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+}
+
+function _showMsgContextMenu(msgData, x, y, bubble) {
     _dismissContextMenu();
 
+    if (typeof haptic === 'function') haptic('selection');
+    var container = document.getElementById('lxmf-messages');
+    var row = bubble && bubble.closest ? bubble.closest('.msg-row') : null;
+    if (!row && container && msgData.id) {
+        var target = container.querySelector('[data-msg-id="' + msgData.id + '"]');
+        row = target && target.closest ? target.closest('.msg-row') : null;
+    }
+    if (container) container.classList.add('msg-action-mode');
+    if (row) row.classList.add('msg-action-selected');
+
     var menu = document.createElement('div');
-    menu.className = 'msg-context-menu';
+    menu.className = 'msg-context-menu msg-action-menu';
+    menu.setAttribute('role', 'menu');
 
     var reactBar = document.createElement('div');
     reactBar.className = 'msg-quick-react';
     var quickEmojis = ['\u2764\uFE0F', '\uD83D\uDC4D', '\uD83D\uDE02', '\uD83D\uDE2E', '\uD83D\uDE22', '\uD83D\uDD25'];
     quickEmojis.forEach(function(em) {
-        var btn = document.createElement('span');
+        var btn = document.createElement('button');
+        btn.type = 'button';
         btn.className = 'quick-react-emoji';
         btn.textContent = em;
+        btn.setAttribute('aria-label', 'React ' + em);
         btn.addEventListener('click', function(e) {
             e.stopPropagation();
-            RS.invoke('send_reaction', {
-                args: {
-                    dest_hash: lxmfActiveContact,
-                    message_id: msgData.id,
-                    emoji: em,
-                    action: 'add',
-                    delivery_method: 'auto'
-                }
-            }).catch(function() {});
-            _dismissContextMenu();
+            _sendReactionForMessage(msgData, em);
         });
         reactBar.appendChild(btn);
     });
 
-    var plusBtn = document.createElement('span');
+    var plusBtn = document.createElement('button');
+    plusBtn.type = 'button';
     plusBtn.className = 'quick-react-plus';
     plusBtn.textContent = '+';
     plusBtn.title = 'More emoji';
+    plusBtn.setAttribute('aria-label', 'More emoji');
     plusBtn.addEventListener('click', function(e) {
         e.stopPropagation();
         // Capture before dismiss removes plusBtn from the DOM.
@@ -3066,15 +3207,7 @@ function _showMsgContextMenu(msgData, x, y) {
                 anchor: tempAnchor,
                 container: document.getElementById('lxmf-chat-area'),
                 onSelect: function(emoji) {
-                    RS.invoke('send_reaction', {
-                        args: {
-                            dest_hash: lxmfActiveContact,
-                            message_id: msgData.id,
-                            emoji: emoji,
-                            action: 'add',
-                            delivery_method: 'auto'
-                        }
-                    }).catch(function() {});
+                    _sendReactionForMessage(msgData, emoji, { dismiss: false });
                     reactionPicker.close();
                     if (tempAnchor.parentNode) tempAnchor.parentNode.removeChild(tempAnchor);
                 },
@@ -3097,48 +3230,61 @@ function _showMsgContextMenu(msgData, x, y) {
 
     var replyBtn = document.createElement('button');
     replyBtn.className = 'msg-ctx-btn msg-ctx-reply';
-    replyBtn.textContent = 'Reply';
+    replyBtn.type = 'button';
+    replyBtn.innerHTML = _messageActionIcon('reply') + '<span>Reply</span>';
     replyBtn.addEventListener('click', function(e) {
         e.stopPropagation();
-        setReplyTarget(msgData);
         _dismissContextMenu();
+        setReplyTarget(msgData);
+        if (typeof haptic === 'function') haptic('light');
     });
     actions.appendChild(replyBtn);
 
     var copyBtn = document.createElement('button');
     copyBtn.className = 'msg-ctx-btn msg-ctx-copy';
-    copyBtn.textContent = 'Copy';
+    copyBtn.type = 'button';
+    copyBtn.innerHTML = _messageActionIcon('copy') + '<span>Copy</span>';
     copyBtn.addEventListener('click', function(e) {
         e.stopPropagation();
-        if (msgData.content && navigator.clipboard) {
-            navigator.clipboard.writeText(msgData.content);
-        }
         _dismissContextMenu();
+        _copyToClipboard(msgData.content || '').then(function(ok) {
+            if (typeof showToast === 'function') {
+                showToast(ok ? 'Message copied' : 'Could not copy', ok ? 'toast-green' : 'toast-orange', 1600);
+            }
+            if (typeof haptic === 'function') haptic(ok ? 'success' : 'warning');
+        });
     });
     actions.appendChild(copyBtn);
 
     menu.appendChild(actions);
 
-    menu.style.left = x + 'px';
-    menu.style.top = y + 'px';
     document.body.appendChild(menu);
-    _activeContextMenu = menu;
-
-    // Clamp to viewport.
-    var rect = menu.getBoundingClientRect();
-    if (rect.right > window.innerWidth) {
-        menu.style.left = (window.innerWidth - rect.width - 8) + 'px';
-    }
-    if (rect.bottom > window.innerHeight) {
-        menu.style.top = (y - rect.height) + 'px';
-    }
+    _activeContextMenu = { menu: menu, row: row, container: container };
+    _positionMsgContextMenu(menu, x, y, bubble);
 }
 
-document.addEventListener('mousedown', function(e) {
-    if (_activeContextMenu && !_activeContextMenu.contains(e.target)) {
+function _handleMessageActionPointer(e) {
+    if (!_activeContextMenu) return;
+    var menu = _activeContextMenu.menu;
+    var row = _activeContextMenu.row;
+    if ((menu && menu.contains(e.target)) || (row && row.contains(e.target))) return;
+    _dismissContextMenu();
+}
+
+document.addEventListener('pointerdown', _handleMessageActionPointer, true);
+document.addEventListener('mousedown', _handleMessageActionPointer, true);
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') _dismissContextMenu();
+}, true);
+
+window.RS = window.RS || {};
+window.RS.closeMessageActionMenu = function() {
+    if (_activeContextMenu) {
         _dismissContextMenu();
+        return true;
     }
-});
+    return false;
+};
 
 RS.listen('reaction_update', function(data) {
     if (data.message_id) {

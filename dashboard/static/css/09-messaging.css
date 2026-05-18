@@ -296,6 +296,10 @@
     font-size: var(--text-base);
     line-height: 1.4;
     box-shadow: var(--shadow-sm);
+    touch-action: pan-y;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
 }
 .msg-row {
     display: flex;
@@ -305,6 +309,20 @@
 .msg-row.outbound { align-items: flex-end; }
 .msg-row.inbound { align-items: flex-start; }
 .msg-row.has-reactions .lxmf-msg { padding-bottom: 14px; }
+.lxmf-messages.msg-action-mode .msg-row {
+    opacity: 0.34;
+    transition: opacity var(--transition-fast), transform var(--transition-fast), filter var(--transition-fast);
+}
+.lxmf-messages.msg-action-mode .msg-row.msg-action-selected {
+    opacity: 1;
+    z-index: calc(var(--z-modal) + 1);
+    filter: none;
+}
+.msg-row.msg-action-selected .lxmf-msg {
+    transform: translateY(-1px) scale(1.015);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    outline: 1px solid var(--accent-border);
+}
 
 .lxmf-msg.outbound {
     background: var(--accent-bg-strong);
@@ -1313,40 +1331,66 @@
     position: fixed; z-index: var(--z-modal);
     background: var(--bg-secondary);
     border: 1px solid var(--border);
-    border-radius: var(--radius-xl);
+    border-radius: var(--radius-lg);
     box-shadow: 0 4px 24px rgba(0,0,0,0.4);
     padding: var(--space-4);
     min-width: 220px;
+    max-width: calc(100vw - 20px);
+    user-select: none;
+    -webkit-user-select: none;
 }
 .msg-quick-react {
     display: flex; gap: 4px; padding: 4px 0;
     border-bottom: 1px solid var(--border);
     margin-bottom: var(--space-2);
 }
+.quick-react-emoji,
+.quick-react-plus {
+    border: 0;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+}
 .quick-react-emoji {
-    font-size: var(--text-2xl); cursor: pointer; padding: 4px 6px; border-radius: var(--radius-lg);
+    font-size: var(--text-2xl); cursor: pointer; padding: 4px 6px; border-radius: var(--radius-sm);
     transition: background var(--transition-fast);
+    line-height: 1;
 }
 .quick-react-emoji:hover { background: rgba(255,255,255,0.1); }
 .quick-react-plus {
-    font-size: var(--text-xl); cursor: pointer; padding: 4px 8px; border-radius: var(--radius-lg);
+    font-size: var(--text-xl); cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm);
     color: var(--text-muted); font-weight: 700;
     display: flex; align-items: center; justify-content: center;
     transition: background var(--transition-fast), color var(--transition-fast);
 }
 .quick-react-plus:hover { background: rgba(255,255,255,0.1); color: var(--text-primary); }
-.msg-context-actions { display: flex; gap: 4px; }
+.msg-context-actions { display: flex; gap: 6px; }
 .msg-ctx-btn {
-    flex: 1; padding: 6px 12px;
+    flex: 1; padding: 8px 10px;
     background: rgba(255,255,255,0.05);
     border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-sm);
     color: var(--text-primary);
     font-size: var(--text-sm); cursor: pointer;
     transition: background var(--transition-fast);
     font-family: var(--font-sans);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 36px;
 }
 .msg-ctx-btn:hover { background: rgba(255,255,255,0.1); }
+.msg-ctx-btn svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    flex-shrink: 0;
+}
 
 .reply-preview-bar {
     display: flex; align-items: center; gap: 8px;

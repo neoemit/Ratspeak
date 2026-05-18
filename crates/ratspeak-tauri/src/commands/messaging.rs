@@ -15,7 +15,7 @@ use crate::error::{AppError, AppResult};
 use crate::helpers::{active_identity_id, sanitize_text, validate_hex};
 use crate::lxmf::{
     AttachmentMessageRequest, DeliveryPreference, DeliveryProfile, MessageSendRequest,
-    ReactionSendRequest,
+    ReactionSendRequest, ReplyMessageSendRequest,
 };
 use crate::state::AppState;
 
@@ -478,6 +478,16 @@ pub async fn send_lxmf_reply(
     let content = sanitize_message_content(&args.content)?;
     let reply_to_id = sanitize_text(args.reply_to_id.as_deref().unwrap_or(""), 128);
     let reply_to_preview = sanitize_text(args.reply_to_preview.as_deref().unwrap_or(""), 200);
+    let wire_reply_to_id = state
+        .msg_id_map
+        .lock()
+        .ok()
+        .and_then(|map| {
+            map.iter()
+                .find(|(_, client_id)| client_id.as_str() == reply_to_id)
+                .map(|(msg_id, _)| msg_id.clone())
+        })
+        .unwrap_or_else(|| reply_to_id.clone());
     let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref());
     let client_msg_id = args.client_msg_id.clone();
 
@@ -505,13 +515,16 @@ pub async fn send_lxmf_reply(
     let dh = dest_hash.clone();
     let ct = content.clone();
     let id_c = identity_id.clone();
+    let reply_id_for_send = wire_reply_to_id.clone();
     let msg_id = tokio::task::spawn_blocking(move || {
         if let Ok(mut lxmf) = st.lxmf.lock() {
             lxmf.as_mut().and_then(|mgr| {
-                mgr.send_message_with_preference(MessageSendRequest {
+                mgr.send_reply_with_preference(ReplyMessageSendRequest {
                     dest_hash_hex: &dh,
                     content: &ct,
                     title: "",
+                    reply_to_id: &reply_id_for_send,
+                    reply_to_preview: &reply_to_preview,
                     db_pool: &st.db,
                     identity_id: &id_c,
                     preference: delivery_pref,
@@ -528,22 +541,6 @@ pub async fn send_lxmf_reply(
     match msg_id {
         Some(id) => {
             state.lxmf_notify.notify_one();
-            if !reply_to_id.is_empty() {
-                let pool = state.db.clone();
-                let rid = reply_to_id.clone();
-                let rpv = reply_to_preview.clone();
-                let id_for_update = id.clone();
-                let identity_for_update = identity_id.clone();
-                let _ = db::spawn_db(pool, move |p| {
-                    if let Ok(conn) = p.get() {
-                        conn.execute(
-                            "UPDATE messages SET reply_to_id = ?1, reply_to_preview = ?2 WHERE id = ?3 AND identity_id = ?4",
-                            rusqlite::params![rid, rpv, id_for_update, identity_for_update],
-                        ).ok();
-                    }
-                })
-                .await;
-            }
             if let Some(ref cid) = client_msg_id
                 && let Ok(mut map) = state.msg_id_map.lock()
             {

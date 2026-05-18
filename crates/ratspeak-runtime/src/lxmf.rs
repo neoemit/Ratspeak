@@ -44,6 +44,185 @@ const OPPORTUNISTIC_MAX_CONTENT_BYTES: usize = 295;
 const AUTO_PROPAGATION_CHECK_INTERVAL_SECS: f64 = 5.0 * 60.0;
 const BACKCHANNEL_COMMAND_BUFFER: usize = 64;
 const DIRECT_PATH_FAILURE_SUPPRESSION_SECS: f64 = 30.0;
+pub const RATSPEAK_CHAT_CUSTOM_TYPE: &[u8] = b"ratspeak.chat.v1";
+pub const LEGACY_RATSPEAK_REACTION_TYPE: &[u8] = b"ratspeak.reaction";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RatspeakChatExtension {
+    Reaction {
+        target: String,
+        emoji: String,
+        action: String,
+    },
+    Reply {
+        target: String,
+        preview: String,
+        target_sender: Option<String>,
+    },
+}
+
+fn chat_map_entry(key: &str, value: rmpv::Value) -> (rmpv::Value, rmpv::Value) {
+    (rmpv::Value::String(key.into()), value)
+}
+
+fn chat_string_value(map: &[(rmpv::Value, rmpv::Value)], key: &str) -> Option<String> {
+    map.iter().find_map(|(k, v)| {
+        if k.as_str() == Some(key) {
+            v.as_str().map(ToOwned::to_owned)
+        } else {
+            None
+        }
+    })
+}
+
+fn chat_custom_type(msg: &LxMessage) -> Option<&[u8]> {
+    msg.fields
+        .get(&lxmf_core::constants::FIELD_CUSTOM_TYPE)
+        .map(Vec::as_slice)
+}
+
+fn encode_chat_extension_data(ext: &RatspeakChatExtension) -> Option<Vec<u8>> {
+    let mut entries = vec![
+        chat_map_entry("v", rmpv::Value::Integer(1.into())),
+        chat_map_entry("type", rmpv::Value::String("ratspeak.chat.v1".into())),
+    ];
+    match ext {
+        RatspeakChatExtension::Reaction {
+            target,
+            emoji,
+            action,
+        } => {
+            entries.push(chat_map_entry(
+                "kind",
+                rmpv::Value::String("reaction".into()),
+            ));
+            entries.push(chat_map_entry(
+                "target",
+                rmpv::Value::String(target.as_str().into()),
+            ));
+            entries.push(chat_map_entry(
+                "emoji",
+                rmpv::Value::String(emoji.as_str().into()),
+            ));
+            entries.push(chat_map_entry(
+                "action",
+                rmpv::Value::String(action.as_str().into()),
+            ));
+        }
+        RatspeakChatExtension::Reply {
+            target,
+            preview,
+            target_sender,
+        } => {
+            entries.push(chat_map_entry("kind", rmpv::Value::String("reply".into())));
+            entries.push(chat_map_entry(
+                "target",
+                rmpv::Value::String(target.as_str().into()),
+            ));
+            entries.push(chat_map_entry(
+                "preview",
+                rmpv::Value::String(preview.as_str().into()),
+            ));
+            if let Some(sender) = target_sender {
+                entries.push(chat_map_entry(
+                    "target_sender",
+                    rmpv::Value::String(sender.as_str().into()),
+                ));
+            }
+        }
+    }
+
+    let mut bytes = Vec::new();
+    rmpv::encode::write_value(&mut bytes, &rmpv::Value::Map(entries)).ok()?;
+    Some(bytes)
+}
+
+pub fn ratspeak_chat_custom_fields(ext: &RatspeakChatExtension) -> Option<Vec<(u8, Vec<u8>)>> {
+    Some(vec![
+        (
+            lxmf_core::constants::FIELD_CUSTOM_TYPE,
+            RATSPEAK_CHAT_CUSTOM_TYPE.to_vec(),
+        ),
+        (
+            lxmf_core::constants::FIELD_CUSTOM_DATA,
+            encode_chat_extension_data(ext)?,
+        ),
+    ])
+}
+
+pub fn reaction_fallback_text(emoji: &str, action: &str) -> String {
+    if action == "remove" {
+        "Removed a reaction from your message.".to_string()
+    } else {
+        format!("Reacted to your message with {emoji}.")
+    }
+}
+
+pub fn decode_ratspeak_chat_extension(msg: &LxMessage) -> Option<RatspeakChatExtension> {
+    let custom_type = chat_custom_type(msg)?;
+    if custom_type == LEGACY_RATSPEAK_REACTION_TYPE {
+        let data: serde_json::Value = serde_json::from_str(&msg.content).ok()?;
+        let target = data
+            .get("message_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let emoji = data
+            .get("emoji")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let action = data
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("add")
+            .to_string();
+        if target.is_empty() || emoji.is_empty() {
+            return None;
+        }
+        return Some(RatspeakChatExtension::Reaction {
+            target,
+            emoji,
+            action,
+        });
+    }
+
+    if custom_type != RATSPEAK_CHAT_CUSTOM_TYPE {
+        return None;
+    }
+
+    let data = msg.fields.get(&lxmf_core::constants::FIELD_CUSTOM_DATA)?;
+    let value = rmpv::decode::read_value(&mut &data[..]).ok()?;
+    let map = value.as_map()?;
+    let kind = chat_string_value(map, "kind")?;
+    match kind.as_str() {
+        "reaction" => {
+            let target = chat_string_value(map, "target")?;
+            let emoji = chat_string_value(map, "emoji")?;
+            let action = chat_string_value(map, "action").unwrap_or_else(|| "add".to_string());
+            if target.is_empty() || emoji.is_empty() {
+                return None;
+            }
+            Some(RatspeakChatExtension::Reaction {
+                target,
+                emoji,
+                action,
+            })
+        }
+        "reply" => {
+            let target = chat_string_value(map, "target")?;
+            if target.is_empty() {
+                return None;
+            }
+            Some(RatspeakChatExtension::Reply {
+                target,
+                preview: chat_string_value(map, "preview").unwrap_or_default(),
+                target_sender: chat_string_value(map, "target_sender"),
+            })
+        }
+        _ => None,
+    }
+}
 
 fn direct_link_start_step(kind: DirectLinkStartKind) -> &'static str {
     match kind {
@@ -248,6 +427,18 @@ pub struct MessageSendRequest<'a> {
     pub profile: DeliveryProfile,
 }
 
+pub struct ReplyMessageSendRequest<'a> {
+    pub dest_hash_hex: &'a str,
+    pub content: &'a str,
+    pub title: &'a str,
+    pub reply_to_id: &'a str,
+    pub reply_to_preview: &'a str,
+    pub db_pool: &'a DbPool,
+    pub identity_id: &'a str,
+    pub preference: DeliveryPreference,
+    pub profile: DeliveryProfile,
+}
+
 struct MessageWithMethodRequest<'a> {
     dest_hash_hex: &'a str,
     content: &'a str,
@@ -256,6 +447,8 @@ struct MessageWithMethodRequest<'a> {
     identity_id: &'a str,
     delivery_method: DeliveryMethod,
     preference: DeliveryPreference,
+    reply_to_id: Option<&'a str>,
+    reply_to_preview: Option<&'a str>,
 }
 
 pub struct ReactionSendRequest<'a> {
@@ -882,6 +1075,17 @@ impl LxmfManager {
         title: &str,
         delivery_method: DeliveryMethod,
     ) -> Option<LxMessage> {
+        self.create_message_with_custom_fields(dest_hash_hex, content, title, delivery_method, &[])
+    }
+
+    fn create_message_with_custom_fields(
+        &mut self,
+        dest_hash_hex: &str,
+        content: &str,
+        title: &str,
+        delivery_method: DeliveryMethod,
+        custom_fields: &[(u8, Vec<u8>)],
+    ) -> Option<LxMessage> {
         let dest_bytes = hex::decode(dest_hash_hex).ok()?;
         if dest_bytes.len() != 16 {
             return None;
@@ -915,6 +1119,10 @@ impl LxmfManager {
             if rmpv::encode::write_value(&mut buf, &ticket_val).is_ok() {
                 msg.fields.insert(lxmf_core::constants::FIELD_TICKET, buf);
             }
+        }
+
+        for (field_id, bytes) in custom_fields {
+            msg.set_field(*field_id, bytes.clone());
         }
 
         // Sign with Ed25519 seed (second half of identity private key).
@@ -973,6 +1181,32 @@ impl LxmfManager {
             identity_id: request.identity_id,
             delivery_method: method,
             preference,
+            reply_to_id: None,
+            reply_to_preview: None,
+        })
+    }
+
+    pub fn send_reply_with_preference(
+        &mut self,
+        request: ReplyMessageSendRequest<'_>,
+    ) -> Option<String> {
+        let preference = request.preference;
+        let method = self.pick_delivery_method(
+            request.db_pool,
+            request.dest_hash_hex,
+            preference,
+            request.profile,
+        );
+        self.send_message_with_method_internal(MessageWithMethodRequest {
+            dest_hash_hex: request.dest_hash_hex,
+            content: request.content,
+            title: request.title,
+            db_pool: request.db_pool,
+            identity_id: request.identity_id,
+            delivery_method: method,
+            preference,
+            reply_to_id: Some(request.reply_to_id),
+            reply_to_preview: Some(request.reply_to_preview),
         })
     }
 
@@ -999,6 +1233,8 @@ impl LxmfManager {
                 DeliveryMethod::Propagated => DeliveryPreference::Propagated,
                 DeliveryMethod::Paper => DeliveryPreference::Auto,
             },
+            reply_to_id: None,
+            reply_to_preview: None,
         })
     }
 
@@ -1014,8 +1250,28 @@ impl LxmfManager {
             identity_id,
             delivery_method,
             preference,
+            reply_to_id,
+            reply_to_preview,
         } = request;
-        let mut msg = self.create_message(dest_hash_hex, content, title, delivery_method)?;
+        let reply_to_id = reply_to_id.unwrap_or("");
+        let reply_to_preview = reply_to_preview.unwrap_or("");
+        let custom_fields = if reply_to_id.is_empty() {
+            Vec::new()
+        } else {
+            ratspeak_chat_custom_fields(&RatspeakChatExtension::Reply {
+                target: reply_to_id.to_string(),
+                preview: reply_to_preview.to_string(),
+                target_sender: None,
+            })
+            .unwrap_or_default()
+        };
+        let mut msg = self.create_message_with_custom_fields(
+            dest_hash_hex,
+            content,
+            title,
+            delivery_method,
+            &custom_fields,
+        )?;
         normalize_protocol_delivery_method(&mut msg);
         if !message_within_resource_limit(&msg) {
             return None;
@@ -1047,8 +1303,8 @@ impl LxmfManager {
             "",
             "",
             "",
-            "",
-            "",
+            reply_to_id,
+            reply_to_preview,
             Some(delivery_method_name(msg.method)),
         );
 
@@ -1635,7 +1891,16 @@ impl LxmfManager {
     }
 
     pub fn send_reaction_with_preference(&mut self, request: ReactionSendRequest<'_>) {
-        if request.action == "remove" {
+        if !matches!(hex::decode(request.dest_hash_hex), Ok(bytes) if bytes.len() == 16) {
+            return;
+        }
+        let action = if request.action == "remove" {
+            "remove"
+        } else {
+            "add"
+        };
+
+        if action == "remove" {
             db::remove_reaction(
                 request.db_pool,
                 request.message_id,
@@ -1653,54 +1918,39 @@ impl LxmfManager {
             );
         }
 
-        if let Some(dest_bytes) = hex::decode(request.dest_hash_hex)
-            .ok()
-            .filter(|b| b.len() == 16)
-        {
-            let mut dest = [0u8; 16];
-            dest.copy_from_slice(&dest_bytes);
+        let custom_fields = match ratspeak_chat_custom_fields(&RatspeakChatExtension::Reaction {
+            target: request.message_id.to_string(),
+            emoji: request.emoji.to_string(),
+            action: action.to_string(),
+        }) {
+            Some(fields) => fields,
+            None => return,
+        };
 
-            let reaction_data = serde_json::json!({
-                "message_id": request.message_id,
-                "emoji": request.emoji,
-                "action": request.action,
-            });
+        let mut msg = match self.create_message_with_custom_fields(
+            request.dest_hash_hex,
+            &reaction_fallback_text(request.emoji, action),
+            "",
+            self.pick_delivery_method(
+                request.db_pool,
+                request.dest_hash_hex,
+                request.preference,
+                DeliveryProfile::Message,
+            ),
+            &custom_fields,
+        ) {
+            Some(msg) => msg,
+            None => return,
+        };
 
-            let mut msg = LxMessage::new(
-                dest,
-                self.lxmf_dest_hash,
-                "",
-                &reaction_data.to_string(),
-                self.pick_delivery_method(
-                    request.db_pool,
-                    request.dest_hash_hex,
-                    request.preference,
-                    DeliveryProfile::Message,
-                ),
-            );
-
-            msg.set_field(
-                lxmf_core::constants::FIELD_CUSTOM_TYPE,
-                b"ratspeak.reaction".to_vec(),
-            );
-
-            if let Some(prv_key) = self.identity.get_private_key() {
-                let mut ed_seed = [0u8; 32];
-                ed_seed.copy_from_slice(&prv_key[32..64]);
-                let signing_key = rns_crypto::ed25519::Ed25519PrivateKey::from_bytes(&ed_seed);
-                if msg.sign(&signing_key).is_err() {
-                    return;
-                }
-            }
-
-            normalize_protocol_delivery_method(&mut msg);
-            if !message_within_resource_limit(&msg) {
-                return;
-            }
-
-            self.preempt_opportunistic_path(&mut msg);
-            self.router.send(msg);
+        normalize_protocol_delivery_method(&mut msg);
+        if !message_within_resource_limit(&msg) {
+            return;
         }
+
+        self.preempt_opportunistic_path(&mut msg);
+        self.track_direct_retry_policy(&msg, request.preference);
+        self.router.send(msg);
     }
 
     pub fn create_announce_packet(&mut self) -> Result<Vec<u8>, String> {
@@ -3941,6 +4191,94 @@ mod tests {
                 .as_nanos()
         ));
         LxmfManager::load_or_create(&tmp, None).unwrap()
+    }
+
+    #[test]
+    fn ratspeak_chat_extension_round_trips_reaction_and_reply_fields() {
+        let mut mgr = test_manager();
+        let dest_hex = hex::encode([0x22; 16]);
+
+        let reaction_fields = ratspeak_chat_custom_fields(&RatspeakChatExtension::Reaction {
+            target: "message-a".to_string(),
+            emoji: "👍".to_string(),
+            action: "add".to_string(),
+        })
+        .expect("reaction fields");
+        let reaction_msg = mgr
+            .create_message_with_custom_fields(
+                &dest_hex,
+                &reaction_fallback_text("👍", "add"),
+                "",
+                DeliveryMethod::Direct,
+                &reaction_fields,
+            )
+            .expect("reaction msg");
+        assert_eq!(
+            decode_ratspeak_chat_extension(&reaction_msg),
+            Some(RatspeakChatExtension::Reaction {
+                target: "message-a".to_string(),
+                emoji: "👍".to_string(),
+                action: "add".to_string(),
+            })
+        );
+
+        let reply_fields = ratspeak_chat_custom_fields(&RatspeakChatExtension::Reply {
+            target: "message-b".to_string(),
+            preview: "original text".to_string(),
+            target_sender: None,
+        })
+        .expect("reply fields");
+        let reply_msg = mgr
+            .create_message_with_custom_fields(
+                &dest_hex,
+                "reply text",
+                "",
+                DeliveryMethod::Direct,
+                &reply_fields,
+            )
+            .expect("reply msg");
+        assert_eq!(
+            decode_ratspeak_chat_extension(&reply_msg),
+            Some(RatspeakChatExtension::Reply {
+                target: "message-b".to_string(),
+                preview: "original text".to_string(),
+                target_sender: None,
+            })
+        );
+    }
+
+    #[test]
+    fn reply_send_persists_reply_metadata_before_delivery() {
+        let mut mgr = test_manager();
+        let pool = test_pool();
+        let dest_hex = hex::encode([0x33; 16]);
+        let msg_id = mgr
+            .send_reply_with_preference(ReplyMessageSendRequest {
+                dest_hash_hex: &dest_hex,
+                content: "reply text",
+                title: "",
+                reply_to_id: "message-b",
+                reply_to_preview: "original text",
+                db_pool: &pool,
+                identity_id: "identity-a",
+                preference: DeliveryPreference::Direct,
+                profile: DeliveryProfile::Message,
+            })
+            .expect("reply send");
+
+        let rows = db::get_conversation(&pool, &dest_hex, "identity-a", 10);
+        let saved = rows
+            .iter()
+            .find(|row| row.get("id").and_then(|v| v.as_str()) == Some(msg_id.as_str()))
+            .expect("saved reply");
+        assert_eq!(
+            saved.get("reply_to_id").and_then(|v| v.as_str()),
+            Some("message-b")
+        );
+        assert_eq!(
+            saved.get("reply_to_preview").and_then(|v| v.as_str()),
+            Some("original text")
+        );
     }
 
     #[test]
