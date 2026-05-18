@@ -26,33 +26,33 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout Ratspeak
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: Ratspeak
 
       - name: Checkout rsReticulum
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/rsReticulum
           ref: ${{ env.RATSPEAK_RSRETICULUM_REF }}
           path: rsReticulum
 
       - name: Checkout rsLXMF
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/rsLXMF
           ref: ${{ env.RATSPEAK_RSLXMF_REF }}
           path: rsLXMF
 
       - name: Checkout rsLXST
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/rsLXST
           ref: ${{ env.RATSPEAK_RSLXST_REF }}
           path: rsLXST
 
       - name: Checkout lrgp-rs
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/lrgp-rs
           path: lrgp-rs
@@ -139,7 +139,7 @@ jobs:
         run: bash scripts/release/assert-no-tauri-dev-url.sh src-tauri/gen/apple/build
 
       - name: Upload iOS artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ratspeak-ios
           path: |

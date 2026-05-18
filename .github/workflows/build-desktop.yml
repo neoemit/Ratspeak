@@ -42,24 +42,24 @@ jobs:
       # Check out repos into $GITHUB_WORKSPACE as siblings so Cargo
       # `../rsReticulum` path deps resolve correctly.
       - name: Checkout Ratspeak
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: Ratspeak
 
       - name: Checkout rsReticulum sibling
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/rsReticulum
           path: rsReticulum
 
       - name: Checkout rsLXMF sibling
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/rsLXMF
           path: rsLXMF
 
       - name: Checkout lrgp-rs sibling
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/lrgp-rs
           path: lrgp-rs
@@ -105,7 +105,7 @@ jobs:
         run: ${{ matrix.build_command }}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_path }}

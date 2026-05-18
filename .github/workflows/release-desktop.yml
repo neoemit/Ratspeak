@@ -50,33 +50,33 @@ jobs:
             rpm_name: ""
     steps:
       - name: Checkout Ratspeak
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: Ratspeak
 
       - name: Checkout rsReticulum
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/rsReticulum
           ref: ${{ env.RATSPEAK_RSRETICULUM_REF }}
           path: rsReticulum
 
       - name: Checkout rsLXMF
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/rsLXMF
           ref: ${{ env.RATSPEAK_RSLXMF_REF }}
           path: rsLXMF
 
       - name: Checkout rsLXST
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/rsLXST
           ref: ${{ env.RATSPEAK_RSLXST_REF }}
           path: rsLXST
 
       - name: Checkout lrgp-rs
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/lrgp-rs
           path: lrgp-rs
@@ -199,7 +199,7 @@ jobs:
           fi
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
           path: |
@@ -213,7 +213,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Download Linux artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: ratspeak-linux-*
           path: Ratspeak/dist/linux
@@ -265,7 +265,7 @@ jobs:
           test -s "$checksum_file"
 
       - name: Upload combined artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ratspeak-linux
           path: |
@@ -276,7 +276,7 @@ jobs:
 
       - name: Publish GitHub Release
         if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
           prerelease: ${{ contains(github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name, '-') }}
