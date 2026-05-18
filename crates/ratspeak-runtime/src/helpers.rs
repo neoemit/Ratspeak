@@ -22,7 +22,7 @@ pub fn sanitize_text(value: &str, max_len: usize) -> String {
 pub fn sanitize_announced_display_name(value: &str) -> Result<String, String> {
     let sanitized = value.replace('\0', "");
     let trimmed = sanitized.trim();
-    if trimmed.as_bytes().len() > ANNOUNCED_DISPLAY_NAME_MAX_BYTES {
+    if trimmed.len() > ANNOUNCED_DISPLAY_NAME_MAX_BYTES {
         return Err(format!(
             "Display name must be {ANNOUNCED_DISPLAY_NAME_MAX_BYTES} UTF-8 bytes or less"
         ));
