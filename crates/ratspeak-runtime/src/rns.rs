@@ -235,6 +235,9 @@ mod tests {
             hops: 1,
             expires: timestamp + 60.0,
             interface: "test".to_string(),
+            interface_id: 1,
+            interface_mode: rns_transport::constants::InterfaceMode::Full,
+            interface_role: rns_transport::messages::InterfaceRole::Normal,
         }
     }
 

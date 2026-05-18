@@ -43,6 +43,7 @@ const MAX_LXMF_RESOURCE_BYTES: usize = rns_protocol::resource::MAX_RESOURCE_SIZE
 const OPPORTUNISTIC_MAX_CONTENT_BYTES: usize = 295;
 const AUTO_PROPAGATION_CHECK_INTERVAL_SECS: f64 = 5.0 * 60.0;
 const BACKCHANNEL_COMMAND_BUFFER: usize = 64;
+const DIRECT_PATH_FAILURE_SUPPRESSION_SECS: f64 = 30.0;
 
 fn direct_link_start_step(kind: DirectLinkStartKind) -> &'static str {
     match kind {
@@ -2261,12 +2262,38 @@ impl LxmfManager {
         self.drain_link_delivery_progress_updates();
     }
 
-    fn queue_path_rediscovery(&self, dest_hash: [u8; 16], drop_existing: bool, reason: &str) {
+    fn queue_path_rediscovery(
+        &mut self,
+        dest_hash: [u8; 16],
+        drop_existing: bool,
+        reason: &str,
+        suppress_current_path: bool,
+    ) {
         let Some(ref tx) = self.router.transport_tx else {
             return;
         };
 
+        if suppress_current_path {
+            let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+            if let Err(e) = tx.try_send(TransportMessage::Rpc {
+                query: TransportQuery::SuppressCurrentPathInterface {
+                    dest: dest_hash,
+                    duration: DIRECT_PATH_FAILURE_SUPPRESSION_SECS,
+                },
+                response_tx,
+            }) {
+                tracing::warn!(
+                    dest = %hex::encode(dest_hash),
+                    error = %e,
+                    reason,
+                    "failed to queue current path-interface suppression after direct link failure"
+                );
+            }
+        }
+
         if drop_existing {
+            self.route_hops.remove(&dest_hash);
+            self.route_entries.remove(&dest_hash);
             let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
             if let Err(e) = tx.try_send(TransportMessage::Rpc {
                 query: TransportQuery::DropPath { dest: dest_hash },
@@ -2308,7 +2335,7 @@ impl LxmfManager {
         if self.direct_route_entry(msg.destination_hash, now).is_some() {
             return;
         }
-        self.queue_path_rediscovery(msg.destination_hash, false, "opportunistic preempt");
+        self.queue_path_rediscovery(msg.destination_hash, false, "opportunistic preempt", false);
         msg.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
     }
 
@@ -2329,7 +2356,7 @@ impl LxmfManager {
         }
 
         let drop_existing = matches!(reason, "link establishment timeout" | "link closed");
-        self.queue_path_rediscovery(dest_hash, drop_existing, reason);
+        self.queue_path_rediscovery(dest_hash, drop_existing, reason, drop_existing);
         // Python sets next_delivery_attempt = now + PATH_REQUEST_WAIT in the
         // closed/never-activated branch (LXMRouter.py:2640/2669).
         let now = SystemTime::now()
@@ -2378,7 +2405,7 @@ impl LxmfManager {
         }
 
         let drop_existing = matches!(reason, "link establishment timeout" | "link closed");
-        self.queue_path_rediscovery(dest_hash, drop_existing, reason);
+        self.queue_path_rediscovery(dest_hash, drop_existing, reason, drop_existing);
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -3344,7 +3371,7 @@ impl LxmfManager {
                         } else {
                             "destination identity unknown"
                         };
-                        self.queue_path_rediscovery(dest_hash, drop_existing, reason);
+                        self.queue_path_rediscovery(dest_hash, drop_existing, reason, false);
                         tracing::warn!(
                             dest = %dest_hex,
                             attempts = message.delivery_attempts,
@@ -3450,7 +3477,7 @@ impl LxmfManager {
                     message.delivery_attempts += 1;
                     message.last_delivery_attempt = now;
                     message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
-                    self.queue_path_rediscovery(dest_hash, drop_existing, reason);
+                    self.queue_path_rediscovery(dest_hash, drop_existing, reason, false);
                     self.router.send(message);
                     if let Some(hash) = msg_hash
                         && !is_ephemeral
@@ -3572,6 +3599,7 @@ impl LxmfManager {
                             dest_hash,
                             drop_existing,
                             "oversized Link delivery path request",
+                            false,
                         );
                         tracing::warn!(
                             dest = %dest_hex,
@@ -4355,6 +4383,20 @@ mod tests {
 
         match rx.try_recv().unwrap() {
             TransportMessage::Rpc {
+                query:
+                    TransportQuery::SuppressCurrentPathInterface {
+                        dest: suppressed,
+                        duration,
+                    },
+                ..
+            } => {
+                assert_eq!(suppressed, dest);
+                assert_eq!(duration, DIRECT_PATH_FAILURE_SUPPRESSION_SECS);
+            }
+            other => panic!("expected SuppressCurrentPathInterface RPC, got {other:?}"),
+        }
+        match rx.try_recv().unwrap() {
+            TransportMessage::Rpc {
                 query: TransportQuery::DropPath { dest: dropped },
                 ..
             } => assert_eq!(dropped, dest),
@@ -4379,6 +4421,72 @@ mod tests {
             "link-failure requeue must defer PATH_REQUEST_WAIT (7s), got {}",
             nda - now
         );
+    }
+
+    #[test]
+    fn establishment_failure_suppresses_failed_route_owner() {
+        let mut mgr = test_manager();
+        let dest = [0x46; 16];
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
+            hash: dest,
+            timestamp: now,
+            via: None,
+            hops: 1,
+            expires: now + 60.0,
+            interface: "Local Network".to_string(),
+            interface_id: 7,
+            interface_mode: rns_transport::constants::InterfaceMode::Full,
+            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        }]);
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(tx);
+
+        let mut msg = LxMessage::new(
+            dest,
+            mgr.lxmf_dest_hash,
+            "Retry",
+            "hello",
+            DeliveryMethod::Direct,
+        );
+        msg.delivery_attempts = 1;
+        msg.last_delivery_attempt = 1.0;
+
+        assert!(mgr.requeue_direct_after_link_failure(msg, dest, "link establishment timeout"));
+        assert!(!mgr.route_entries.contains_key(&dest));
+        assert!(!mgr.route_hops.contains_key(&dest));
+
+        match rx.try_recv().unwrap() {
+            TransportMessage::Rpc {
+                query:
+                    TransportQuery::SuppressCurrentPathInterface {
+                        dest: suppressed,
+                        duration,
+                    },
+                ..
+            } => {
+                assert_eq!(suppressed, dest);
+                assert_eq!(duration, DIRECT_PATH_FAILURE_SUPPRESSION_SECS);
+            }
+            other => panic!("expected SuppressCurrentPathInterface RPC, got {other:?}"),
+        }
+        match rx.try_recv().unwrap() {
+            TransportMessage::Rpc {
+                query: TransportQuery::DropPath { dest: dropped },
+                ..
+            } => assert_eq!(dropped, dest),
+            other => panic!("expected DropPath RPC, got {other:?}"),
+        }
+        match rx.try_recv().unwrap() {
+            TransportMessage::RequestPath { destination_hash } => {
+                assert_eq!(destination_hash, dest)
+            }
+            other => panic!("expected RequestPath, got {other:?}"),
+        }
     }
 
     /// D3: Python increments before Link creation, but only opens a new Link
@@ -4406,6 +4514,9 @@ mod tests {
             hops: 1,
             expires: now + 60.0,
             interface: "test".to_string(),
+            interface_id: 1,
+            interface_mode: rns_transport::constants::InterfaceMode::Full,
+            interface_role: rns_transport::messages::InterfaceRole::Normal,
         }]);
 
         let mut msg = LxMessage::new(
@@ -4463,6 +4574,9 @@ mod tests {
             hops: 2,
             expires: now + 60.0,
             interface: "test".to_string(),
+            interface_id: 1,
+            interface_mode: rns_transport::constants::InterfaceMode::Full,
+            interface_role: rns_transport::messages::InterfaceRole::Normal,
         }]);
 
         let mut msg = LxMessage::new(
@@ -4540,6 +4654,9 @@ mod tests {
             hops: 2,
             expires: now + 60.0,
             interface: "test".to_string(),
+            interface_id: 1,
+            interface_mode: rns_transport::constants::InterfaceMode::Full,
+            interface_role: rns_transport::messages::InterfaceRole::Normal,
         }]);
 
         let msg = mgr
@@ -4601,6 +4718,9 @@ mod tests {
             hops: 2,
             expires: now + 60.0,
             interface: "test".to_string(),
+            interface_id: 1,
+            interface_mode: rns_transport::constants::InterfaceMode::Full,
+            interface_role: rns_transport::messages::InterfaceRole::Normal,
         }]);
 
         let mut first = LxMessage::new(
@@ -4739,6 +4859,9 @@ mod tests {
             hops: 2,
             expires: now + 60.0,
             interface: "test".to_string(),
+            interface_id: 1,
+            interface_mode: rns_transport::constants::InterfaceMode::Full,
+            interface_role: rns_transport::messages::InterfaceRole::Normal,
         }]);
 
         let msg = mgr
@@ -4947,6 +5070,9 @@ mod tests {
             hops: 2,
             expires: now + 60.0,
             interface: "test".to_string(),
+            interface_id: 1,
+            interface_mode: rns_transport::constants::InterfaceMode::Full,
+            interface_role: rns_transport::messages::InterfaceRole::Normal,
         }]);
 
         let mut msg = LxMessage::new(
