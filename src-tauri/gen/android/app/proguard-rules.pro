@@ -17,6 +17,9 @@
 -keep class org.ratspeak.android.RatspeakBlePeerClient { *; }
 -keep class org.ratspeak.android.RatspeakBlePeerClient$Companion { *; }
 
+# LXST voice audio bridge (called from Rust JNI by class and method name)
+-keep class org.ratspeak.android.RatspeakVoiceAudio { *; }
+
 # BLE permission bridge (JavaScript interface)
 -keepclassmembers class org.ratspeak.android.MainActivity$BlePermissionBridge {
     @android.webkit.JavascriptInterface <methods>;
