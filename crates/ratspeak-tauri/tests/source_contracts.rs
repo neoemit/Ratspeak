@@ -473,7 +473,18 @@ fn interface_add_flows_cannot_be_misclassified_as_edits() {
     let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
     assert!(modals_js.contains("function _normaliseConnectEditContext(editContext)"));
     assert!(modals_js.contains("function _normaliseHostEditContext(editContext, ifaceType)"));
+    assert!(modals_js.contains("var INTERFACE_SHEET_ICONS = {"));
+    assert!(modals_js.contains("function setBottomSheetTitleWithIcon(titleEl, title, iconType)"));
+    assert!(modals_js.contains("function interfaceSheetIconTypeForInterface(ifaceType)"));
     assert!(modals_js.contains("_connectEditContext = _normaliseConnectEditContext(editContext);"));
+    assert!(modals_js.contains("setBottomSheetTitleWithIcon(titleEl, editIface ? 'Edit LoRa Device' : 'Add LoRa Device', 'lora');"));
+    assert!(modals_js.contains("setBottomSheetTitleWithIcon(\n        titleEl,\n        isEdit ? 'Edit Connection' : 'Connect to Network',"));
+    assert!(modals_js.contains(
+        "setBottomSheetTitleWithIcon(titleEl, isEdit ? 'Edit Host' : 'Host Network', 'host');"
+    ));
+    assert!(modals_js.contains("setBottomSheetTitleWithIcon(\n        titleEl,\n        isEdit ? 'Edit Backbone Server' : 'Host Backbone Server',"));
+    assert!(modals_js.contains("titleIcon: interfaceSheetIcon('local')"));
+    assert!(modals_js.contains("titleIcon: interfaceSheetIcon('ble')"));
     assert!(
         modals_js.contains("var editContext = _normaliseConnectEditContext(_connectEditContext);")
     );
@@ -1851,7 +1862,9 @@ fn identity_management_is_first_class_tab() {
     let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs js");
     assert!(dialogs_js.contains("built.sheet.addEventListener('keydown'"));
     assert!(!dialogs_js.contains("built.overlay.addEventListener('keydown'"));
-    assert!(dialogs_js.contains("btn.appendChild(hint);"));
+    assert!(dialogs_js.contains("title.classList.add('bottom-sheet-title-with-icon');"));
+    assert!(dialogs_js.contains("icon.className = 'rs-dialog-choice-icon';"));
+    assert!(dialogs_js.contains("text.appendChild(hint);"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
     assert!(index.contains("Identity Management"));
@@ -1873,8 +1886,12 @@ fn identity_management_is_first_class_tab() {
 
     let modals_css =
         read_source(root.join("dashboard/static/css/08-modals.css")).expect("modals css");
+    assert!(modals_css.contains(".bottom-sheet-title-with-icon"));
+    assert!(modals_css.contains(".bottom-sheet-title-icon"));
     assert!(modals_css.contains(".rs-dialog-choice"));
+    assert!(modals_css.contains(".rs-dialog-choice-icon"));
     assert!(modals_css.contains("flex-direction: column;"));
+    assert!(modals_css.contains("gap: var(--space-3);"));
     assert!(modals_css.contains(".rs-dialog-choice-hint"));
 
     let android_activity = read_source(

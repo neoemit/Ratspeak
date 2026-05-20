@@ -948,7 +948,11 @@ function showInterfaceActionSheet(ifaceType, ifaceName) {
     var displayName = (typeof friendlyInterfaceName === 'function')
         ? friendlyInterfaceName(ifaceName, '')
         : ifaceName;
-    titleEl.textContent = displayName;
+    if (typeof setBottomSheetTitleWithIcon === 'function' && typeof interfaceSheetIconTypeForInterface === 'function') {
+        setBottomSheetTitleWithIcon(titleEl, displayName, interfaceSheetIconTypeForInterface(ifaceType));
+    } else {
+        titleEl.textContent = displayName;
+    }
 
     var items = buildIfaceActionItems(ifaceType, ifaceName);
     itemsEl.innerHTML = '';

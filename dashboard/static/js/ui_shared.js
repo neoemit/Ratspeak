@@ -185,6 +185,7 @@
                 return {
                     label: item.label,
                     value: idx,
+                    icon: item.icon || '',
                     hint: item.hint || '',
                     danger: !!item.danger
                 };

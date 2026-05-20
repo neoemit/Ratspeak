@@ -83,7 +83,22 @@ function _rsBuildSheet(opts, onClose) {
         header.className = 'bottom-sheet-header';
         var title = document.createElement('div');
         title.className = 'bottom-sheet-title';
-        title.textContent = opts.title;
+        if (opts.titleIcon) {
+            title.classList.add('bottom-sheet-title-with-icon');
+            if (opts.titleIconType) title.dataset.sheetIcon = opts.titleIconType;
+
+            var titleIcon = document.createElement('span');
+            titleIcon.className = 'bottom-sheet-title-icon';
+            titleIcon.innerHTML = opts.titleIcon;
+            title.appendChild(titleIcon);
+
+            var titleLabel = document.createElement('span');
+            titleLabel.className = 'bottom-sheet-title-label';
+            titleLabel.textContent = opts.title;
+            title.appendChild(titleLabel);
+        } else {
+            title.textContent = opts.title;
+        }
         header.appendChild(title);
         sheet.appendChild(header);
     }
@@ -272,17 +287,28 @@ function rsChoice(opts) {
             var btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'rs-dialog-choice' + (choice.danger ? ' rs-dialog-danger' : '');
+
+            if (choice.icon) {
+                var icon = document.createElement('span');
+                icon.className = 'rs-dialog-choice-icon';
+                icon.innerHTML = choice.icon;
+                btn.appendChild(icon);
+            }
+
+            var text = document.createElement('span');
+            text.className = 'rs-dialog-choice-text';
             var label = document.createElement('span');
             label.className = 'rs-dialog-choice-label';
             label.textContent = choice.label;
-            btn.appendChild(label);
-            btn.addEventListener('click', function() { built.dismiss(choice.value); });
+            text.appendChild(label);
             if (choice.hint) {
                 var hint = document.createElement('span');
                 hint.className = 'rs-dialog-choice-hint';
                 hint.textContent = choice.hint;
-                btn.appendChild(hint);
+                text.appendChild(hint);
             }
+            btn.appendChild(text);
+            btn.addEventListener('click', function() { built.dismiss(choice.value); });
             choicesWrap.appendChild(btn);
         });
         built.body.appendChild(choicesWrap);

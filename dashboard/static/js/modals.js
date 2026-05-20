@@ -1,5 +1,53 @@
 var _modalPreviousFocus = null;
 
+var INTERFACE_SHEET_ICONS = {
+    tcp: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10"/><path d="M12 2a15 15 0 0 0-4 10 15 15 0 0 0 4 10"/></svg>',
+    host: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><circle cx="6" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="6" cy="18" r="1" fill="currentColor" stroke="none"/></svg>',
+    backbone: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><circle cx="6" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="6" cy="18" r="1" fill="currentColor" stroke="none"/></svg>',
+    lora: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20v-14"/><path d="M12 6l-3 3"/><path d="M12 6l3 3"/><path d="M6 14a6 6 0 0 0 0-6"/><path d="M18 14a6 6 0 0 1 0-6"/><path d="M3 16a10 10 0 0 0 0-10"/><path d="M21 16a10 10 0 0 1 0-10"/></svg>',
+    local: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg>',
+    ble: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/></svg>',
+};
+
+function interfaceSheetIcon(type) {
+    return INTERFACE_SHEET_ICONS[type] || '';
+}
+
+function interfaceSheetIconTypeForInterface(ifaceType) {
+    if (ifaceType === 'rnode') return 'lora';
+    if (ifaceType === 'auto' || ifaceType === 'local') return 'local';
+    if (ifaceType === 'ble_peer' || ifaceType === 'ble') return 'ble';
+    if (ifaceType === 'tcp_server') return 'host';
+    if (ifaceType === 'backbone_client' || ifaceType === 'backbone_server') return 'backbone';
+    if (ifaceType === 'tcp_client' || ifaceType === 'tcp') return 'tcp';
+    return '';
+}
+
+function setBottomSheetTitleWithIcon(titleEl, title, iconType) {
+    if (!titleEl) return;
+    var iconSvg = interfaceSheetIcon(iconType);
+    if (!iconSvg) {
+        titleEl.classList.remove('bottom-sheet-title-with-icon');
+        delete titleEl.dataset.sheetIcon;
+        titleEl.textContent = title;
+        return;
+    }
+
+    titleEl.classList.add('bottom-sheet-title-with-icon');
+    titleEl.dataset.sheetIcon = iconType || '';
+    titleEl.innerHTML = '';
+
+    var icon = document.createElement('span');
+    icon.className = 'bottom-sheet-title-icon';
+    icon.innerHTML = iconSvg;
+    titleEl.appendChild(icon);
+
+    var label = document.createElement('span');
+    label.className = 'bottom-sheet-title-label';
+    label.textContent = title;
+    titleEl.appendChild(label);
+}
+
 function _trapFocus(modalEl) {
     _modalPreviousFocus = document.activeElement;
     var focusable = modalEl.querySelectorAll(
@@ -573,7 +621,7 @@ function openRnodeModal(mode, editIface) {
     if (step2) step2.style.display = 'none';
 
     var titleEl = document.querySelector('#rnode-modal .bottom-sheet-title');
-    if (titleEl) titleEl.textContent = editIface ? 'Edit LoRa Device' : 'Add LoRa Device';
+    setBottomSheetTitleWithIcon(titleEl, editIface ? 'Edit LoRa Device' : 'Add LoRa Device', 'lora');
     document.getElementById('rnode-iface-name').value = '';
     var catalogReady = loadRnodePresetCatalog();
     _rnodeApplyDefaultRadioControls();
@@ -672,7 +720,7 @@ function closeRnodeModal() {
     _androidUsbSelectedDevice = null;
     _rnodeEditContext = null;
     var titleEl = document.querySelector('#rnode-modal .bottom-sheet-title');
-    if (titleEl) titleEl.textContent = 'Add LoRa Device';
+    setBottomSheetTitleWithIcon(titleEl, 'Add LoRa Device', 'lora');
 }
 
 function setRnodeConnectionType(type) {
@@ -1248,7 +1296,11 @@ function openConnectModal(editContext) {
     var isEdit = !!_connectEditContext;
     var isBackboneEdit = isEdit && _connectEditContext.ifaceType === 'backbone_client';
     var titleEl = document.querySelector('#connect-modal .bottom-sheet-title');
-    if (titleEl) titleEl.textContent = isEdit ? 'Edit Connection' : 'Connect to Network';
+    setBottomSheetTitleWithIcon(
+        titleEl,
+        isEdit ? 'Edit Connection' : 'Connect to Network',
+        isBackboneEdit ? 'backbone' : 'tcp'
+    );
     document.getElementById('connect-host').value = iface ? _ifaceString(iface, 'target_host', '') : '';
     // Empty so the placeholder shows; submit falls back to 4242.
     document.getElementById('connect-port').value = iface ? _ifaceString(iface, 'target_port', '') : '';
@@ -1335,7 +1387,7 @@ function closeConnectModal() {
         submitBtn.disabled = false;
     }
     var titleEl = document.querySelector('#connect-modal .bottom-sheet-title');
-    if (titleEl) titleEl.textContent = 'Connect to Network';
+    setBottomSheetTitleWithIcon(titleEl, 'Connect to Network', 'tcp');
     var bbCheckbox = document.getElementById('connect-use-backbone');
     if (bbCheckbox) bbCheckbox.disabled = false;
     _connectEditContext = null;
@@ -1344,7 +1396,7 @@ function closeConnectModal() {
 function quickConnect(host, port, name) {
     _connectEditContext = null;
     var titleEl = document.querySelector('#connect-modal .bottom-sheet-title');
-    if (titleEl) titleEl.textContent = 'Connect to Network';
+    setBottomSheetTitleWithIcon(titleEl, 'Connect to Network', 'tcp');
     var submitBtn = document.getElementById('connect-submit-btn');
     if (submitBtn) {
         submitBtn.textContent = 'Connect';
@@ -1479,7 +1531,7 @@ function openHostModal(editContext) {
     var iface = _hostEditContext && _hostEditContext.iface ? _hostEditContext.iface : null;
     var isEdit = !!_hostEditContext;
     var titleEl = document.querySelector('#host-modal .bottom-sheet-title');
-    if (titleEl) titleEl.textContent = isEdit ? 'Edit Host' : 'Host Network';
+    setBottomSheetTitleWithIcon(titleEl, isEdit ? 'Edit Host' : 'Host Network', 'host');
     document.getElementById('host-port').value = iface ? _ifaceString(iface, 'listen_port', '') : '';
     document.getElementById('host-listen-ip').value = iface ? _ifaceString(iface, 'listen_ip', '0.0.0.0') : '';
     document.getElementById('host-name').value = iface ? _ifaceString(iface, 'name', '') : '';
@@ -1501,7 +1553,7 @@ function closeHostModal() {
         submitBtn.disabled = false;
     }
     var titleEl = document.querySelector('#host-modal .bottom-sheet-title');
-    if (titleEl) titleEl.textContent = 'Host Network';
+    setBottomSheetTitleWithIcon(titleEl, 'Host Network', 'host');
     _hostEditContext = null;
 }
 
@@ -1543,7 +1595,11 @@ function openBackboneHostModal(editContext) {
     var iface = _backboneHostEditContext && _backboneHostEditContext.iface ? _backboneHostEditContext.iface : null;
     var isEdit = !!_backboneHostEditContext;
     var titleEl = document.querySelector('#backbone-host-modal .bottom-sheet-title');
-    if (titleEl) titleEl.textContent = isEdit ? 'Edit Backbone Server' : 'Host Backbone Server';
+    setBottomSheetTitleWithIcon(
+        titleEl,
+        isEdit ? 'Edit Backbone Server' : 'Host Backbone Server',
+        'backbone'
+    );
     document.getElementById('backbone-host-port').value = iface ? _ifaceString(iface, 'listen_port', '') : '';
     document.getElementById('backbone-host-listen-ip').value = iface ? (_ifaceString(iface, 'listen_on', '') || _ifaceString(iface, 'listen_ip', '0.0.0.0')) : '';
     document.getElementById('backbone-host-name').value = iface ? _ifaceString(iface, 'name', '') : '';
@@ -1565,7 +1621,7 @@ function closeBackboneHostModal() {
         submitBtn.disabled = false;
     }
     var titleEl = document.querySelector('#backbone-host-modal .bottom-sheet-title');
-    if (titleEl) titleEl.textContent = 'Host Backbone Server';
+    setBottomSheetTitleWithIcon(titleEl, 'Host Backbone Server', 'backbone');
     _backboneHostEditContext = null;
 }
 
@@ -1639,7 +1695,11 @@ function showAutoInterfaceConfigSheet() {
     if (typeof _rsBuildSheet !== 'function') return;
     var mobile = (typeof isMobile === 'function') ? isMobile() : false;
 
-    var built = _rsBuildSheet({ title: 'Local Network' }, function() {});
+    var built = _rsBuildSheet({
+        title: 'Local Network',
+        titleIcon: interfaceSheetIcon('local'),
+        titleIconType: 'local'
+    }, function() {});
     built.overlay.addEventListener('click', function(e) {
         if (e.target === built.overlay) built.dismiss(null);
     });
@@ -1955,6 +2015,8 @@ function toggleBlePeer() {
                 }
                 rsChoice({
                     title: 'Enable Bluetooth Peer',
+                    titleIcon: interfaceSheetIcon('ble'),
+                    titleIconType: 'ble',
                     message: 'Discover nearby Ratspeak users via Bluetooth.\n\nConnect for:',
                     choices: [
                         { label: '10 minutes', value: '600' },
