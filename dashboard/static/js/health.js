@@ -926,11 +926,15 @@ function _renderConnectionsFromCache() {
 
                 html += '<div class="conn-iface-row' + (paused ? ' is-paused' : '') + '" data-iface-name="' + escapeHtml(name) + '" data-iface-type="' + escapeHtml(ifaceType) + '" role="button" tabindex="0">' +
                     '<span class="conn-iface-dot ' + dotClass + '"></span>' +
-                    '<span class="conn-iface-name" title="' + escapeHtml(name) + '">' + escapeHtml(displayName) + groupSuffix + '</span>' +
-                    pillHtml +
-                    '<span class="conn-iface-stats">' +
-                        '<span title="TX">\u2191 ' + prettySize(txb) + '</span>' +
-                        '<span title="RX">\u2193 ' + prettySize(rxb) + '</span>' +
+                    '<span class="conn-iface-main">' +
+                        '<span class="conn-iface-titleline">' +
+                            '<span class="conn-iface-name" title="' + escapeHtml(name) + '">' + escapeHtml(displayName) + groupSuffix + '</span>' +
+                            pillHtml +
+                        '</span>' +
+                        '<span class="conn-iface-stats">' +
+                            '<span title="TX">\u2191 ' + prettySize(txb) + '</span>' +
+                            '<span title="RX">\u2193 ' + prettySize(rxb) + '</span>' +
+                        '</span>' +
                     '</span>' +
                 '</div>';
             });
