@@ -97,16 +97,29 @@
         return typeof getInterfaceLiveStatus === 'function' ? getInterfaceLiveStatus(ifaceName) : null;
     }
 
+    function interfaceConfigEnabled(iface) {
+        if (!iface || typeof iface !== 'object') return true;
+        var enabled = iface.enabled;
+        if (enabled === undefined || enabled === null) enabled = iface.interface_enabled;
+        if (enabled === undefined || enabled === null) return true;
+        return !/^(false|no|0|off)$/i.test(String(enabled).trim());
+    }
+
     RS.ui.createInterfaceRow = function(iface, ifaceType, opts) {
         opts = opts || {};
         var row = document.createElement('div');
         row.className = 'hub-iface-row';
+        var paused = !interfaceConfigEnabled(iface);
+        if (paused) row.classList.add('is-paused');
 
         var statusDot = document.createElement('span');
         statusDot.className = 'hub-iface-status';
         statusDot.dataset.ifaceName = iface.name;
         var liveData = interfaceLiveStatus(iface.name);
-        if (liveData) {
+        if (paused) {
+            statusDot.classList.add('paused');
+            statusDot.title = 'Paused';
+        } else if (liveData) {
             statusDot.classList.add(liveData.online ? 'up' : 'down');
             statusDot.title = liveData.online ? 'Connected' : 'Disconnected';
         } else {

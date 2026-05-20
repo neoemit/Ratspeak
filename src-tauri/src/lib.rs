@@ -495,6 +495,8 @@ pub fn run() {
             ratspeak_tauri::commands::interfaces::add_lora_interface,
             ratspeak_tauri::commands::interfaces::update_lora_interface,
             ratspeak_tauri::commands::interfaces::remove_lora_interface,
+            ratspeak_tauri::commands::interfaces::pause_interface,
+            ratspeak_tauri::commands::interfaces::resume_interface,
             ratspeak_tauri::commands::interfaces::enable_auto_interface,
             ratspeak_tauri::commands::interfaces::disable_auto_interface,
             ratspeak_tauri::commands::interfaces::api_list_network_interfaces,

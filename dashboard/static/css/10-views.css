@@ -803,9 +803,13 @@
 }
 .conn-iface-dot.up { background: var(--status-online); }
 .conn-iface-dot.down { background: var(--status-error); }
+.conn-iface-dot.paused { background: var(--text-muted); }
 .conn-iface-dot.active {
     animation: connectedPulse 2s ease-in-out infinite;
     box-shadow: 0 0 6px currentColor;
+}
+.conn-iface-row.is-paused {
+    opacity: 0.82;
 }
 
 .conn-iface-name {
@@ -843,6 +847,11 @@
     padding: 1px var(--space-3);
     border-radius: var(--radius-full);
     margin-left: var(--space-2);
+}
+.conn-iface-pill-paused {
+    color: var(--text-secondary);
+    background: var(--surface-panel-muted);
+    border-color: var(--border);
 }
 .conn-iface-group {
     color: var(--text-muted);
@@ -2948,6 +2957,12 @@ body.setup-active .bottom-bar {
 .action-popover.open {
     opacity: 1;
     transform: scale(1) translateY(0);
+}
+
+.action-popover-separator {
+    height: 1px;
+    margin: var(--space-1) var(--space-2);
+    background: var(--border-row);
 }
 
 .action-popover-item {

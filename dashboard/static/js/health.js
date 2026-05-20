@@ -229,6 +229,27 @@ function isLoraInterfaceType(ifaceType) {
 function isEditableInterfaceType(ifaceType) {
     return isLoraInterfaceType(ifaceType) || isTcpInterfaceType(ifaceType);
 }
+function isInterfaceConfigEnabled(iface) {
+    if (!iface || typeof iface !== 'object') return true;
+    var enabled = iface.enabled;
+    if (enabled === undefined || enabled === null) enabled = iface.interface_enabled;
+    if (enabled === undefined || enabled === null) return true;
+    return !/^(false|no|0|off)$/i.test(String(enabled).trim());
+}
+function interfaceSectionForConfigType(ifaceType) {
+    if (ifaceType === 'rnode') return 'lora';
+    if (ifaceType === 'tcp_client' || ifaceType === 'backbone_client') return 'tcp';
+    if (ifaceType === 'tcp_server' || ifaceType === 'backbone_server') return 'host';
+    if (ifaceType === 'auto') return 'local';
+    return '';
+}
+function getConfiguredInterfaceRecord(ifaceName) {
+    return (_cachedConfigByName && _cachedConfigByName[ifaceName]) || null;
+}
+function isConfiguredInterfacePaused(ifaceName) {
+    var record = getConfiguredInterfaceRecord(ifaceName);
+    return !!(record && record.iface && !isInterfaceConfigEnabled(record.iface));
+}
 
 function openRenameInterfaceDialog(ifaceName) {
     var current = getInterfaceAlias(ifaceName) || '';
@@ -249,17 +270,45 @@ function openRenameInterfaceDialog(ifaceName) {
 var ICON_PENCIL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>';
 var ICON_RADIO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></svg>';
 var ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+var ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
+var ICON_PLAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
 
 function buildIfaceActionItems(ifaceType, ifaceName) {
     var items = [];
+    var record = getConfiguredInterfaceRecord(ifaceName);
+    var supportsPause = !!(record && record.iface && ifaceType !== 'ble_peer');
+    var paused = supportsPause && !isInterfaceConfigEnabled(record.iface);
+    if (supportsPause) {
+        items.push({
+            label: paused ? 'Resume Interface' : 'Pause Interface',
+            icon: paused ? ICON_PLAY : ICON_PAUSE,
+            onSelect: function() { setInterfacePaused(ifaceType, ifaceName, !paused); }
+        });
+        items.push({ separator: true });
+    }
     if (isLoraInterfaceType(ifaceType)) {
-        items.push({ label: 'Edit Radio', icon: ICON_RADIO, onSelect: function() { openInterfaceEdit(ifaceType, ifaceName); } });
+        items.push({ label: 'Edit', icon: ICON_RADIO, onSelect: function() { openInterfaceEdit(ifaceType, ifaceName); } });
     } else if (isTcpInterfaceType(ifaceType)) {
         items.push({ label: 'Edit', icon: ICON_PENCIL, onSelect: function() { openInterfaceEdit(ifaceType, ifaceName); } });
-        items.push({ label: 'Display Name', icon: ICON_PENCIL, onSelect: function() { openRenameInterfaceDialog(ifaceName); } });
     }
+    items.push({ label: 'Rename', icon: ICON_PENCIL, onSelect: function() { openRenameInterfaceDialog(ifaceName); } });
     items.push({ label: 'Remove', icon: ICON_TRASH, danger: true, onSelect: function() { confirmRemoveInterface(ifaceType, ifaceName); } });
     return items;
+}
+
+function setInterfacePaused(ifaceType, ifaceName, paused) {
+    var command = paused ? 'pause_interface' : 'resume_interface';
+    RS.invoke(command, {
+        args: {
+            name: ifaceName,
+            iface_type: ifaceType
+        }
+    }).then(function() {
+        showToast(paused ? 'Pausing interface...' : 'Resuming interface...', 'toast-blue', 2500);
+        refreshConfigInterfaces();
+    }).catch(function(err) {
+        showToast((err && err.message) || 'Failed to update interface', 'toast-red', 8000);
+    });
 }
 
 function openInterfaceEdit(ifaceType, ifaceName) {
@@ -701,6 +750,7 @@ var _cachedConfigIfaces = null;
 
 function refreshConfigInterfaces() {
     RS.invoke('api_hub_interfaces').then(function(ifaces) {
+        window._hubInterfacesData = ifaces || null;
         _cachedConfigIfaces = ifaces;
         var byName = {};
         (ifaces.rnode || []).forEach(function(i) { byName[i.name] = { iface: i, ifaceType: 'rnode' }; });
@@ -725,6 +775,7 @@ function _renderConnectionsFromCache() {
 
         // Live transport stats are primary; config data only enriches.
         var allIfaces = [];
+        var matchedConfigNames = {};
         if (lastStats && lastStats.interface_stats && lastStats.interface_stats.interfaces) {
             interfaceStatsWithoutAutoPeerDoubleCount(lastStats.interface_stats.interfaces).forEach(function(li) {
                 if (!isUserFacingInterface(li)) return;
@@ -732,22 +783,36 @@ function _renderConnectionsFromCache() {
                 Object.keys(configByName).forEach(function(cn) {
                     if (_statsNameMatchesConfig(li.name, cn)) configMatch = configByName[cn];
                 });
+                if (configMatch && configMatch.iface && configMatch.iface.name) {
+                    matchedConfigNames[configMatch.iface.name] = true;
+                }
                 var section = classifyInterface(li);
                 // Live stats lack 'type'; fall back to config match for dyn ifaces.
                 if (!section && configMatch) {
-                    section = configMatch.ifaceType === 'rnode' ? 'lora'
-                        : configMatch.ifaceType === 'tcp_client' ? 'tcp'
-                        : configMatch.ifaceType === 'tcp_server' ? 'host'
-                        : configMatch.ifaceType === 'backbone_client' ? 'tcp'
-                        : configMatch.ifaceType === 'backbone_server' ? 'host'
-                        : configMatch.ifaceType === 'auto' ? 'local'
-                        : configMatch.ifaceType;
+                    section = interfaceSectionForConfigType(configMatch.ifaceType) || configMatch.ifaceType;
                 }
                 if (!section) return;
                 var ifaceType = configMatch ? configMatch.ifaceType : section;
-                allIfaces.push({ iface: li, section: section, ifaceType: ifaceType });
+                var paused = !!(configMatch && configMatch.iface && !isInterfaceConfigEnabled(configMatch.iface));
+                var renderIface = configMatch && configMatch.iface
+                    ? Object.assign({}, configMatch.iface, { role: li.role || configMatch.iface.role, type: li.type || configMatch.iface.type })
+                    : li;
+                allIfaces.push({ iface: renderIface, section: section, ifaceType: ifaceType, paused: paused });
             });
         }
+        Object.keys(configByName).forEach(function(cn) {
+            if (matchedConfigNames[cn]) return;
+            var record = configByName[cn];
+            if (!record || !record.iface || isInterfaceConfigEnabled(record.iface)) return;
+            var section = interfaceSectionForConfigType(record.ifaceType);
+            if (!section) return;
+            allIfaces.push({
+                iface: record.iface,
+                section: section,
+                ifaceType: record.ifaceType,
+                paused: true
+            });
+        });
 
         var grouped = { lora: [], tcp: [], host: [], local: [], ble: [] };
         allIfaces.forEach(function(a) {
@@ -796,12 +861,13 @@ function _renderConnectionsFromCache() {
             items.forEach(function(item) {
                 var iface = item.iface;
                 var ifaceType = item.ifaceType;
+                var paused = !!item.paused;
                 var name = iface.name || 'unknown';
                 var typeName = iface.type || '';
 
                 var liveData = (typeof getInterfaceLiveStatus === 'function') ? getInterfaceLiveStatus(name) : null;
                 var online = liveData ? (liveData.online !== false) : false;
-                var statusClass = online ? 'up' : 'down';
+                var statusClass = paused ? 'paused' : (online ? 'up' : 'down');
 
                 var txb = 0, rxb = 0, txRate = 0, rxRate = 0;
                 if (liveData) {
@@ -822,7 +888,7 @@ function _renderConnectionsFromCache() {
                 }
 
                 var isActive = txRate > 0 || rxRate > 0;
-                var dotClass = statusClass + (isActive ? ' active' : '');
+                var dotClass = statusClass + (!paused && isActive ? ' active' : '');
 
                 var detail = (typeof getIfaceDetailText === 'function') ? getIfaceDetailText(iface, ifaceType) : '';
 
@@ -848,6 +914,9 @@ function _renderConnectionsFromCache() {
                             '</span>';
                     }
                 }
+                if (paused) {
+                    pillHtml += '<span class="conn-iface-pill conn-iface-pill-paused">Paused</span>';
+                }
 
                 // Augment label with non-default group ID (matches Python rnsd).
                 var groupSuffix = '';
@@ -855,7 +924,7 @@ function _renderConnectionsFromCache() {
                     groupSuffix = ' <span class="conn-iface-group">(' + escapeHtml(iface.group_id) + ')</span>';
                 }
 
-                html += '<div class="conn-iface-row" data-iface-name="' + escapeHtml(name) + '" data-iface-type="' + escapeHtml(ifaceType) + '" role="button" tabindex="0">' +
+                html += '<div class="conn-iface-row' + (paused ? ' is-paused' : '') + '" data-iface-name="' + escapeHtml(name) + '" data-iface-type="' + escapeHtml(ifaceType) + '" role="button" tabindex="0">' +
                     '<span class="conn-iface-dot ' + dotClass + '"></span>' +
                     '<span class="conn-iface-name" title="' + escapeHtml(name) + '">' + escapeHtml(displayName) + groupSuffix + '</span>' +
                     pillHtml +
@@ -957,10 +1026,16 @@ function showInterfaceActionSheet(ifaceType, ifaceName) {
     var items = buildIfaceActionItems(ifaceType, ifaceName);
     itemsEl.innerHTML = '';
     items.forEach(function(item, idx) {
-        if (idx > 0 && item.danger) {
+        if (item.separator) {
             var divider = document.createElement('div');
             divider.className = 'bottom-sheet-divider';
             itemsEl.appendChild(divider);
+            return;
+        }
+        if (idx > 0 && item.danger && !(items[idx - 1] && items[idx - 1].separator)) {
+            var dangerDivider = document.createElement('div');
+            dangerDivider.className = 'bottom-sheet-divider';
+            itemsEl.appendChild(dangerDivider);
         }
         var btn = document.createElement('button');
         btn.className = 'bottom-sheet-item' + (item.danger ? ' bottom-sheet-danger' : '');

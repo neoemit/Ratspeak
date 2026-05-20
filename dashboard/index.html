@@ -1124,37 +1124,49 @@
 </div>
 
 <div class="bottom-sheet-overlay" id="connect-modal-overlay"></div>
-<div class="bottom-sheet" id="connect-modal">
+<div class="bottom-sheet connect-sheet" id="connect-modal">
     <div class="bottom-sheet-handle"></div>
     <div class="bottom-sheet-header">
         <div class="bottom-sheet-title">Connect to Network</div>
         <button class="bottom-sheet-close" id="connect-modal-close" aria-label="Close">&times;</button>
     </div>
     <div class="bottom-sheet-body">
-        <div class="modal-field">
-            <label>Quick Connect</label>
-            <div class="quick-connect-options" id="quick-connect-list">
-                <div id="qc-empty" class="inline-hint" style="padding:8px 0;">No saved connections. Connect to a node below to save it here.</div>
+        <div class="sheet-segmented-tabs connect-tab-toggle" id="connect-tab-toggle" role="tablist" aria-label="Connection type">
+            <button type="button" id="connect-tab-public" class="active" data-connect-tab="public" role="tab" aria-selected="true" aria-controls="connect-public-panel">Public</button>
+            <button type="button" id="connect-tab-custom" data-connect-tab="custom" role="tab" aria-selected="false" aria-controls="connect-custom-panel">Custom</button>
+        </div>
+
+        <div class="connect-tab-panel active" id="connect-public-panel" role="tabpanel" aria-labelledby="connect-tab-public">
+            <div class="public-server-list" id="public-server-list">
+                <div class="inline-hint" style="padding:8px 0;">Loading public servers...</div>
             </div>
-            <span class="inline-hint-sm mt-3" style="display:block;">Enter an address below to connect</span>
         </div>
-        <div class="modal-field">
-            <label>Host</label>
-            <input type="text" id="connect-host" class="modal-input" placeholder="e.g. rns.ratspeak.org" autocorrect="off" autocapitalize="none" spellcheck="false">
+
+        <div class="connect-tab-panel" id="connect-custom-panel" role="tabpanel" aria-labelledby="connect-tab-custom">
+            <div class="modal-field" id="connect-quick-field">
+                <label>Quick Connect</label>
+                <div class="quick-connect-options" id="quick-connect-list">
+                    <div id="qc-empty" class="inline-hint" style="padding:8px 0;">No saved custom connections. Connect to a node below to save it here.</div>
+                </div>
+            </div>
+            <div class="modal-field">
+                <label>Host</label>
+                <input type="text" id="connect-host" class="modal-input" placeholder="e.g. rns.ratspeak.org" autocorrect="off" autocapitalize="none" spellcheck="false">
+            </div>
+            <div class="modal-field">
+                <label>Port</label>
+                <input type="number" id="connect-port" class="modal-input" placeholder="4242" min="1" max="65535" autocorrect="off" autocapitalize="none" spellcheck="false">
+            </div>
+            <div class="modal-field" id="connect-name-field" style="display:none;">
+                <label>Name</label>
+                <input type="text" id="connect-name" class="modal-input" placeholder="Ratspeak Hub" maxlength="32" autocorrect="off" autocapitalize="none" spellcheck="false">
+            </div>
+            <label class="rs-dialog-checkbox-wrap mt-4" id="connect-backbone-row" style="display:none;">
+                <input type="checkbox" id="connect-use-backbone" class="rs-dialog-checkbox">
+                <span class="rs-dialog-checkbox-label">Experimental: Use Backbone</span>
+            </label>
+            <button class="nr-btn w-full mt-4" id="connect-submit-btn">Connect</button>
         </div>
-        <div class="modal-field">
-            <label>Port</label>
-            <input type="number" id="connect-port" class="modal-input" placeholder="4242" min="1" max="65535" autocorrect="off" autocapitalize="none" spellcheck="false">
-        </div>
-        <div class="modal-field">
-            <label>Name (optional)</label>
-            <input type="text" id="connect-name" class="modal-input" placeholder="Ratspeak Hub" maxlength="32" autocorrect="off" autocapitalize="none" spellcheck="false">
-        </div>
-        <label class="rs-dialog-checkbox-wrap mt-4" id="connect-backbone-row" style="display:none;">
-            <input type="checkbox" id="connect-use-backbone" class="rs-dialog-checkbox">
-            <span class="rs-dialog-checkbox-label">Experimental: Use Backbone</span>
-        </label>
-        <button class="nr-btn w-full mt-4" id="connect-submit-btn">Connect</button>
     </div>
 </div>
 
@@ -1220,7 +1232,7 @@
     <div class="bottom-sheet-body">
 
             <div id="rnode-step-1">
-                <div class="rnode-conn-toggle">
+                <div class="sheet-segmented-tabs rnode-conn-toggle">
                     <button type="button" id="rnode-toggle-ble" class="active" title="Connect via Bluetooth Low Energy">Bluetooth<span class="toggle-hint" id="rnode-ble-hint"></span></button>
                     <button type="button" id="rnode-toggle-serial" title="Connect via USB cable">USB / Serial</button>
                     <button type="button" id="rnode-toggle-android-usb" style="display:none" title="Connect via USB-OTG">USB</button>

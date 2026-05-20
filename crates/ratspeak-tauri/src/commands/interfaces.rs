@@ -1183,7 +1183,6 @@ fn cfg_bool_default_true(entry: &Value, key: &str) -> bool {
         .unwrap_or(true)
 }
 
-#[cfg(any(target_os = "android", test))]
 fn cfg_csv(entry: &Value, key: &str) -> Option<Vec<String>> {
     let values = cfg_str(entry, key)?
         .split(',')
@@ -1198,7 +1197,6 @@ fn cfg_csv(entry: &Value, key: &str) -> Option<Vec<String>> {
     }
 }
 
-#[cfg(any(target_os = "android", test))]
 fn auto_runtime_config_from_entry(
     entry: &Value,
 ) -> Option<rns_interface::auto::AutoInterfaceConfig> {
@@ -1238,6 +1236,63 @@ fn find_config_interface(config_dir: &std::path::Path, group: &str, name: &str) 
                 .find(|entry| entry.get("name").and_then(|v| v.as_str()) == Some(name))
                 .cloned()
         })
+}
+
+fn interface_group_candidates(iface_type: &str) -> &'static [&'static str] {
+    match iface_type {
+        "rnode" | "lora" => &["rnode"],
+        "auto" | "local" => &["auto"],
+        "tcp_client" => &["tcp_client"],
+        "tcp_server" => &["tcp_server"],
+        "backbone_client" => &["backbone_client"],
+        "backbone_server" => &["backbone_server"],
+        "tcp" => &["tcp_client", "backbone_client"],
+        "host" => &["tcp_server", "backbone_server"],
+        _ => &[
+            "rnode",
+            "auto",
+            "tcp_client",
+            "tcp_server",
+            "backbone_client",
+            "backbone_server",
+        ],
+    }
+}
+
+fn find_config_interface_with_group(
+    config_dir: &std::path::Path,
+    iface_type: Option<&str>,
+    name: &str,
+) -> Option<(String, Value)> {
+    let ifaces = crate::rns_config::get_all_interfaces(config_dir);
+    let mut groups = Vec::new();
+    if let Some(iface_type) = iface_type {
+        groups.extend(interface_group_candidates(iface_type).iter().copied());
+    }
+    for group in [
+        "rnode",
+        "auto",
+        "tcp_client",
+        "tcp_server",
+        "backbone_client",
+        "backbone_server",
+    ] {
+        if !groups.contains(&group) {
+            groups.push(group);
+        }
+    }
+
+    for group in groups {
+        if let Some(entry) = ifaces.get(group).and_then(Value::as_array).and_then(|arr| {
+            arr.iter()
+                .find(|entry| entry.get("name").and_then(Value::as_str) == Some(name))
+                .cloned()
+        }) {
+            return Some((group.to_string(), entry));
+        }
+    }
+
+    None
 }
 
 fn rnode_config_from_entry(entry: &Value) -> Option<EditableInterfaceConfig> {
@@ -1290,6 +1345,43 @@ fn backbone_server_config_from_entry(entry: &Value) -> Option<EditableInterfaceC
         prefer_ipv6: cfg_bool(entry, "prefer_ipv6"),
         device: cfg_str(entry, "device"),
     })
+}
+
+enum ResumableInterfaceConfig {
+    Editable(EditableInterfaceConfig),
+    Auto(rns_interface::auto::AutoInterfaceConfig),
+}
+
+impl ResumableInterfaceConfig {
+    fn name(&self) -> &str {
+        match self {
+            Self::Editable(config) => config.name(),
+            Self::Auto(config) => &config.name,
+        }
+    }
+
+    fn rnode_port(&self) -> Option<&str> {
+        match self {
+            Self::Editable(config) => config.rnode_port(),
+            Self::Auto(_) => None,
+        }
+    }
+}
+
+fn resumable_config_from_entry(group: &str, entry: &Value) -> Option<ResumableInterfaceConfig> {
+    match group {
+        "rnode" => rnode_config_from_entry(entry).map(ResumableInterfaceConfig::Editable),
+        "auto" => auto_runtime_config_from_entry(entry).map(ResumableInterfaceConfig::Auto),
+        "tcp_client" => tcp_client_config_from_entry(entry).map(ResumableInterfaceConfig::Editable),
+        "tcp_server" => tcp_server_config_from_entry(entry).map(ResumableInterfaceConfig::Editable),
+        "backbone_client" => {
+            backbone_client_config_from_entry(entry).map(ResumableInterfaceConfig::Editable)
+        }
+        "backbone_server" => {
+            backbone_server_config_from_entry(entry).map(ResumableInterfaceConfig::Editable)
+        }
+        _ => None,
+    }
 }
 
 fn runtime_handle(state: &AppState) -> Option<rns_runtime::reticulum::ReticulumHandle> {
@@ -1546,6 +1638,26 @@ async fn spawn_editable_interface(
     }
 }
 
+async fn spawn_resumable_interface(
+    state: &Arc<AppState>,
+    config: ResumableInterfaceConfig,
+) -> Result<String, String> {
+    match config {
+        ResumableInterfaceConfig::Editable(config) => {
+            spawn_editable_interface(state, &config).await
+        }
+        ResumableInterfaceConfig::Auto(config) => {
+            let Some(handle) = runtime_handle(state) else {
+                return Ok("Config saved (RNS not running)".to_string());
+            };
+            let id =
+                rns_runtime::reticulum::spawn_auto_interface_runtime_with_config(&handle, config)
+                    .await?;
+            Ok(format!("Local Network interface active (#{id})"))
+        }
+    }
+}
+
 async fn finish_interface_replace(
     state: Arc<AppState>,
     config_dir: PathBuf,
@@ -1616,6 +1728,181 @@ async fn finish_interface_replace(
 
     let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
     emit_hub_interfaces(&state, ifaces);
+}
+
+#[derive(Deserialize)]
+pub struct InterfaceLifecycleArgs {
+    pub name: String,
+    #[serde(default)]
+    pub iface_type: Option<String>,
+}
+
+#[tauri::command]
+pub async fn pause_interface(
+    state: State<'_, Arc<AppState>>,
+    args: InterfaceLifecycleArgs,
+) -> AppResult<Value> {
+    let state_arc: Arc<AppState> = Arc::clone(&state);
+    let name = sanitize_text(&args.name, 64);
+    let iface_type = args
+        .iface_type
+        .as_deref()
+        .map(|s| sanitize_text(s, 64))
+        .filter(|s| !s.is_empty());
+    if name.is_empty() {
+        return Err(AppError::bad_request("Interface name required"));
+    }
+
+    let config_dir = active_rns_config_dir(&state_arc);
+    let rnode_port = with_rns_config_lock(&state_arc, || {
+        let (group, entry) =
+            find_config_interface_with_group(&config_dir, iface_type.as_deref(), &name)
+                .ok_or_else(|| AppError::bad_request("Interface not found"))?;
+        let rnode_port = (group == "rnode")
+            .then(|| cfg_str(&entry, "port"))
+            .flatten();
+        let config_written = crate::rns_config::set_interface_enabled(&config_dir, &name, false);
+        if !config_written {
+            return Err(AppError::internal("Config write error"));
+        }
+        Ok::<_, AppError>(rnode_port)
+    })?;
+
+    emit_hub_interfaces(
+        &state_arc,
+        crate::rns_config::get_all_interfaces(&config_dir),
+    );
+
+    let st = Arc::clone(&state_arc);
+    let config_dir = config_dir.clone();
+    tokio::spawn(async move {
+        let iface_name = name;
+        emit_op_status_broadcast(
+            &st,
+            "pause_interface",
+            "hub",
+            "Pausing interface...",
+            false,
+            None,
+        );
+        teardown_live_interface_by_name(&st, &iface_name, rnode_port.as_deref()).await;
+        emit_op_status_broadcast(
+            &st,
+            "pause_interface",
+            "hub",
+            "Interface paused",
+            true,
+            None,
+        );
+        if st
+            .network_log_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            st.emit_network_event(
+                "interface",
+                &format!("Interface paused: {iface_name}"),
+                &iface_name,
+                "standard",
+            );
+        }
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+        emit_hub_interfaces(&st, ifaces);
+    });
+
+    Ok(json!({ "queued": true }))
+}
+
+#[tauri::command]
+pub async fn resume_interface(
+    state: State<'_, Arc<AppState>>,
+    args: InterfaceLifecycleArgs,
+) -> AppResult<Value> {
+    let state_arc: Arc<AppState> = Arc::clone(&state);
+    let name = sanitize_text(&args.name, 64);
+    let iface_type = args
+        .iface_type
+        .as_deref()
+        .map(|s| sanitize_text(s, 64))
+        .filter(|s| !s.is_empty());
+    if name.is_empty() {
+        return Err(AppError::bad_request("Interface name required"));
+    }
+
+    let config_dir = active_rns_config_dir(&state_arc);
+    let runtime = with_rns_config_lock(&state_arc, || {
+        let (group, entry) =
+            find_config_interface_with_group(&config_dir, iface_type.as_deref(), &name)
+                .ok_or_else(|| AppError::bad_request("Interface not found"))?;
+        let runtime = resumable_config_from_entry(&group, &entry)
+            .ok_or_else(|| AppError::bad_request("Unsupported interface"))?;
+        let config_written = crate::rns_config::set_interface_enabled(&config_dir, &name, true);
+        if !config_written {
+            return Err(AppError::internal("Config write error"));
+        }
+        Ok::<_, AppError>(runtime)
+    })?;
+
+    emit_hub_interfaces(
+        &state_arc,
+        crate::rns_config::get_all_interfaces(&config_dir),
+    );
+
+    let st = Arc::clone(&state_arc);
+    let config_dir = config_dir.clone();
+    tokio::spawn(async move {
+        let iface_name = runtime.name().to_string();
+        let rnode_port = runtime.rnode_port().map(str::to_string);
+        emit_op_status_broadcast(
+            &st,
+            "resume_interface",
+            "hub",
+            "Resuming interface...",
+            false,
+            None,
+        );
+        teardown_live_interface_by_name(&st, &iface_name, rnode_port.as_deref()).await;
+        match spawn_resumable_interface(&st, runtime).await {
+            Ok(step) => {
+                emit_op_status_broadcast(&st, "resume_interface", "hub", &step, true, None);
+                if st
+                    .network_log_enabled
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    st.emit_network_event(
+                        "interface",
+                        &format!("Interface resumed: {iface_name}"),
+                        &iface_name,
+                        "standard",
+                    );
+                }
+            }
+            Err(e) => {
+                emit_op_status_broadcast(
+                    &st,
+                    "resume_interface",
+                    "hub",
+                    "Resume failed",
+                    true,
+                    Some(&e),
+                );
+                if st
+                    .network_log_enabled
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    st.emit_network_event(
+                        "error",
+                        &format!("Interface resume failed: {iface_name}"),
+                        &e,
+                        "essential",
+                    );
+                }
+            }
+        }
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+        emit_hub_interfaces(&st, ifaces);
+    });
+
+    Ok(json!({ "queued": true }))
 }
 
 #[tauri::command]
@@ -2747,7 +3034,7 @@ pub async fn add_tcp_connection(
     }
 
     let iface_name = if name.is_empty() || name == default_tcp_name() {
-        format!("TCP to {}:{}", host, port)
+        format!("{}:{}", host, port)
     } else {
         name.clone()
     };
@@ -2880,7 +3167,7 @@ pub async fn update_tcp_connection(
         return Err(AppError::bad_request("Host and port required"));
     }
     let name = if raw_name.is_empty() || raw_name == default_tcp_name() {
-        format!("TCP to {}:{}", host, port)
+        format!("{}:{}", host, port)
     } else {
         raw_name
     };

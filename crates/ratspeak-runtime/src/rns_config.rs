@@ -647,6 +647,68 @@ pub fn remove_interfaces(config_dir: &Path, names: &[String]) -> bool {
     write_config(config_dir, &result)
 }
 
+pub fn set_interface_enabled(config_dir: &Path, name: &str, enabled: bool) -> bool {
+    if !safe_interface_name(name) {
+        return false;
+    }
+    let content = match read_config(config_dir) {
+        Some(c) => c,
+        None => return false,
+    };
+
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result = Vec::with_capacity(lines.len() + 1);
+    let mut found = false;
+    let enabled_value = if enabled { "true" } else { "false" };
+    let mut i = 0;
+
+    while i < lines.len() {
+        if interface_block_name(lines[i]) == Some(name) {
+            found = true;
+            let end = next_section_header(&lines, i + 1);
+            let mut block = lines[i..end]
+                .iter()
+                .map(|line| (*line).to_string())
+                .collect::<Vec<_>>();
+            let mut saw_enabled_key = false;
+            let mut insert_idx = 1;
+
+            for idx in 1..block.len() {
+                if let Some((key, _)) = parse_ini_key_value(&block[idx]) {
+                    if key == "type" || key == "interface_type" {
+                        insert_idx = idx + 1;
+                    }
+                    if key == "enabled" || key == "interface_enabled" {
+                        let indent = block[idx]
+                            .chars()
+                            .take_while(|ch| ch.is_whitespace())
+                            .collect::<String>();
+                        block[idx] = format!("{indent}{key} = {enabled_value}");
+                        saw_enabled_key = true;
+                    }
+                }
+            }
+
+            if !saw_enabled_key {
+                block.insert(insert_idx, format!("    enabled = {enabled_value}"));
+            }
+
+            result.extend(block);
+            i = end;
+            continue;
+        }
+
+        result.push(lines[i].to_string());
+        i += 1;
+    }
+
+    if !found {
+        return false;
+    }
+
+    write_config(config_dir, &join_config_lines(result))
+}
+
 fn remove_interface_blocks_from_content(content: &str, names: &[&str]) -> (String, bool) {
     let headers: std::collections::HashSet<String> = names
         .iter()
@@ -1328,6 +1390,50 @@ mod tests {
         assert_eq!(count_header(&content, "Default Interface"), 0);
         assert_eq!(count_header(&content, "Local Network"), 0);
         assert_eq!(count_header(&content, "Keep"), 1);
+    }
+
+    #[test]
+    fn set_interface_enabled_toggles_existing_enabled_key() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+
+        assert!(set_interface_enabled(&dir, "Keep", false));
+        let content = read_config(&dir).unwrap();
+        assert!(content.contains("[[Keep]]"));
+        assert!(content.contains("enabled = false"));
+        assert!(content.contains("target_host = keep.example"));
+
+        assert!(set_interface_enabled(&dir, "Keep", true));
+        let content = read_config(&dir).unwrap();
+        assert!(content.contains("enabled = true"));
+    }
+
+    #[test]
+    fn set_interface_enabled_handles_legacy_interface_enabled_key() {
+        let dir = temp_config_dir();
+        write_config(
+            &dir,
+            "[interfaces]\n  [[Legacy]]\n    type = TCPClientInterface\n    interface_enabled = yes\n    enabled = yes\n    target_host = legacy.example\n    target_port = 4242\n",
+        );
+
+        assert!(set_interface_enabled(&dir, "Legacy", false));
+        let content = read_config(&dir).unwrap();
+        assert!(content.contains("interface_enabled = false"));
+        assert!(content.contains("enabled = false"));
+    }
+
+    #[test]
+    fn set_interface_enabled_inserts_key_when_missing() {
+        let dir = temp_config_dir();
+        write_config(
+            &dir,
+            "[interfaces]\n  [[No Flag]]\n    type = TCPClientInterface\n    target_host = noflag.example\n    target_port = 4242\n",
+        );
+
+        assert!(set_interface_enabled(&dir, "No Flag", false));
+        let content = read_config(&dir).unwrap();
+        assert!(content.contains("type = TCPClientInterface\n    enabled = false\n"));
+        assert!(content.contains("target_host = noflag.example"));
     }
 
     #[test]

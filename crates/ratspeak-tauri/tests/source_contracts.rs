@@ -513,6 +513,111 @@ fn interface_add_flows_cannot_be_misclassified_as_edits() {
 }
 
 #[test]
+fn tcp_public_connect_sheet_uses_curated_public_servers() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("index html");
+    assert!(index.contains("id=\"connect-tab-public\""));
+    assert!(index.contains("id=\"connect-tab-custom\""));
+    assert!(index.contains("id=\"public-server-list\""));
+    assert!(index.contains("id=\"connect-name-field\" style=\"display:none;\""));
+
+    let public_panel = index
+        .split("id=\"connect-public-panel\"")
+        .nth(1)
+        .and_then(|tail| tail.split("id=\"connect-custom-panel\"").next())
+        .expect("public connect panel");
+    for hidden_endpoint in [
+        "1.ratspeak.org",
+        "2.ratspeak.org",
+        "3.ratspeak.org",
+        "rns.beleth.net",
+        "rmap.world",
+    ] {
+        assert!(
+            !public_panel.contains(hidden_endpoint),
+            "public sheet shell should not render endpoint {hidden_endpoint}; JS cards expose friendly names"
+        );
+    }
+
+    let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
+    for expected in [
+        "Ratspeak Ruby",
+        "1.ratspeak.org",
+        "4141",
+        "Ratspeak Emerald",
+        "2.ratspeak.org",
+        "4242",
+        "Ratspeak Diamond",
+        "3.ratspeak.org",
+        "4343",
+        "Beleth",
+        "rns.beleth.net",
+        "RMAP",
+        "rmap.world",
+    ] {
+        assert!(
+            modals_js.contains(expected),
+            "missing public TCP server token {expected}"
+        );
+    }
+    assert!(modals_js.contains("function _isPublicTcpServer(host, port)"));
+    assert!(modals_js.contains("return !_isPublicTcpServer(entry.host, entry.port);"));
+    assert!(modals_js.contains("quickConnect(server.host, server.port, server.name"));
+    assert!(modals_js.contains("if (bbCheckbox && opts.publicServer) bbCheckbox.checked = false;"));
+
+    let modals_css =
+        read_source(root.join("dashboard/static/css/08-modals.css")).expect("modals css");
+    assert!(modals_css.contains(".sheet-segmented-tabs"));
+    assert!(modals_css.contains(".public-server-card--ruby"));
+    assert!(modals_css.contains(".public-server-card--emerald"));
+    assert!(modals_css.contains(".public-server-card--diamond"));
+    assert!(modals_css.contains(".public-server-card--beleth"));
+    assert!(modals_css.contains(".public-server-card--rmap"));
+}
+
+#[test]
+fn interface_pause_resume_is_config_backed_and_visible() {
+    let root = repo_root();
+
+    let health_js = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
+    assert!(health_js.contains("Pause Interface"));
+    assert!(health_js.contains("Resume Interface"));
+    assert!(health_js.contains("label: 'Rename'"));
+    assert!(health_js.contains("pause_interface"));
+    assert!(health_js.contains("resume_interface"));
+    assert!(health_js.contains("conn-iface-pill-paused"));
+    assert!(!health_js.contains("Display Name"));
+
+    let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
+    assert!(modals_js.contains("name: name || (host + ':' + port)"));
+    assert!(!modals_js.contains("'TCP to ' + host + ':' + port"));
+
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    assert!(interfaces_rs.contains("pub async fn pause_interface"));
+    assert!(interfaces_rs.contains("pub async fn resume_interface"));
+    assert!(
+        interfaces_rs
+            .contains("crate::rns_config::set_interface_enabled(&config_dir, &name, false)")
+    );
+    assert!(
+        interfaces_rs
+            .contains("crate::rns_config::set_interface_enabled(&config_dir, &name, true)")
+    );
+    assert!(interfaces_rs.contains("teardown_live_interface_by_name(&st, &iface_name"));
+    assert!(!interfaces_rs.contains("format!(\"TCP to {}:{}\""));
+
+    let rns_config_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/rns_config.rs")).expect("rns config");
+    assert!(rns_config_rs.contains("pub fn set_interface_enabled"));
+    assert!(rns_config_rs.contains("key == \"enabled\" || key == \"interface_enabled\""));
+
+    let app_shell = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+    assert!(app_shell.contains("ratspeak_tauri::commands::interfaces::pause_interface"));
+    assert!(app_shell.contains("ratspeak_tauri::commands::interfaces::resume_interface"));
+}
+
+#[test]
 fn rnode_radio_catalog_has_single_runtime_source() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("index html");

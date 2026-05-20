@@ -83,6 +83,13 @@
         popover.setAttribute('role', 'menu');
 
         items.forEach(function(item) {
+            if (item.separator) {
+                var separator = document.createElement('div');
+                separator.className = 'action-popover-separator';
+                separator.setAttribute('role', 'separator');
+                popover.appendChild(separator);
+                return;
+            }
             var btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'action-popover-item' + (item.danger ? ' action-popover-item--danger' : '');

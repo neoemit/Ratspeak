@@ -386,21 +386,30 @@ RS.listen('node_operation_status', function(data) {
             var connectUpdating = data.operation === 'update_tcp' || data.operation === 'update_backbone';
             if (data.done) {
                 if (data.error) {
+                    if (typeof clearConnectPublicPending === 'function') clearConnectPublicPending();
                     submitBtn.textContent = 'Failed';
-                    submitBtn.className = 'nr-btn nr-btn-error';
+                    submitBtn.className = 'nr-btn nr-btn-error w-full mt-4';
                     setTimeout(function() {
-                        submitBtn.textContent = connectUpdating ? 'Save Changes' : 'Connect';
-                        submitBtn.className = 'nr-btn';
-                        submitBtn.disabled = false;
+                        if (typeof _setConnectSubmitBase === 'function') {
+                            _setConnectSubmitBase(submitBtn, connectUpdating ? 'Save Changes' : 'Connect');
+                        } else {
+                            submitBtn.textContent = connectUpdating ? 'Save Changes' : 'Connect';
+                            submitBtn.className = 'nr-btn w-full mt-4';
+                            submitBtn.disabled = false;
+                        }
                     }, 3000);
                 } else {
                     submitBtn.textContent = connectUpdating ? 'Saved!' : 'Connected!';
-                    submitBtn.className = 'nr-btn nr-btn-success';
+                    submitBtn.className = 'nr-btn nr-btn-success w-full mt-4';
                     setTimeout(function() {
                         closeConnectModal();
-                        submitBtn.textContent = 'Connect';
-                        submitBtn.className = 'nr-btn';
-                        submitBtn.disabled = false;
+                        if (typeof _setConnectSubmitBase === 'function') {
+                            _setConnectSubmitBase(submitBtn, 'Connect');
+                        } else {
+                            submitBtn.textContent = 'Connect';
+                            submitBtn.className = 'nr-btn w-full mt-4';
+                            submitBtn.disabled = false;
+                        }
                     }, 1500);
 
                     if (!connectUpdating) {
@@ -429,11 +438,17 @@ RS.listen('hub_interfaces_update', function(data) {
     window._hubInterfacesCached = true;
     // Pre-submit UX (handoff hints, duplicate detection) uses the full payload.
     window._hubInterfacesData = data || null;
-    window._autoEnabled = !!(data && data.auto && data.auto.length > 0);
+    window._autoEnabled = !!(data && data.auto && data.auto.some(function(entry) {
+        var enabled = entry && entry.enabled;
+        if (enabled === undefined || enabled === null) enabled = entry && entry.interface_enabled;
+        if (enabled === undefined || enabled === null) return true;
+        return !/^(false|no|0|off)$/i.test(String(enabled).trim());
+    }));
     if (typeof updateFirstRunInterfaceHintGate === 'function') {
         updateFirstRunInterfaceHintGate(data);
     }
     if (typeof updateAutoToggle === 'function') updateAutoToggle();
+    if (typeof refreshConnectPublicServers === 'function') refreshConnectPublicServers(data);
     if (isViewActive('network')) {
         if (typeof renderMergedConnections === 'function') renderMergedConnections();
     } else {

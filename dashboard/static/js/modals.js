@@ -48,6 +48,35 @@ function setBottomSheetTitleWithIcon(titleEl, title, iconType) {
     titleEl.appendChild(label);
 }
 
+var PUBLIC_TCP_SERVERS = [
+    { id: 'ratspeak-ruby', name: 'Ratspeak Ruby', host: '1.ratspeak.org', port: 4141, tone: 'ruby', mark: 'R', tags: ['Ratspeak', 'Public'] },
+    { id: 'ratspeak-emerald', name: 'Ratspeak Emerald', host: '2.ratspeak.org', port: 4242, tone: 'emerald', mark: 'E', tags: ['Ratspeak', 'Public'] },
+    { id: 'ratspeak-diamond', name: 'Ratspeak Diamond', host: '3.ratspeak.org', port: 4343, tone: 'diamond', mark: 'D', tags: ['Ratspeak', 'Public'] },
+    { id: 'beleth', name: 'Beleth', host: 'rns.beleth.net', port: 4242, tone: 'beleth', mark: 'B', tags: ['Community', 'Public'] },
+    { id: 'rmap', name: 'RMAP', host: 'rmap.world', port: 4242, tone: 'rmap', mark: 'R', tags: ['Community', 'Public'] },
+];
+
+function _tcpServerKey(host, port) {
+    return String(host || '').trim().toLowerCase() + ':' + (parseInt(port, 10) || 4242);
+}
+
+var PUBLIC_TCP_SERVER_KEYS = PUBLIC_TCP_SERVERS.reduce(function(acc, server) {
+    acc[_tcpServerKey(server.host, server.port)] = true;
+    return acc;
+}, {});
+var _connectPendingPublicServerKey = null;
+
+function _isPublicTcpServer(host, port) {
+    return !!PUBLIC_TCP_SERVER_KEYS[_tcpServerKey(host, port)];
+}
+
+function _setConnectSubmitBase(btn, text) {
+    if (!btn) return;
+    btn.textContent = text || 'Connect';
+    btn.className = 'nr-btn w-full mt-4';
+    btn.disabled = false;
+}
+
 function _trapFocus(modalEl) {
     _modalPreviousFocus = document.activeElement;
     var focusable = modalEl.querySelectorAll(
@@ -168,6 +197,7 @@ function loadHubInterfaces() {
     });
 
     RS.invoke('api_hub_interfaces').then(function(ifaces) {
+        window._hubInterfacesData = ifaces || null;
         if (ifaces && ifaces.transport) applyModalTransportModePayload(ifaces.transport);
         renderModalInterfaceSection('modal-lora-list', ifaces.rnode || [], 'rnode');
         renderModalInterfaceSection('modal-auto-list', ifaces.auto || [], 'auto');
@@ -200,13 +230,33 @@ function getInterfaceLiveStatus(ifaceName) {
     return null;
 }
 
+function _configuredInterfacePaused(ifaceName) {
+    var data = window._hubInterfacesData || null;
+    var groups = ['rnode', 'auto', 'tcp_client', 'tcp_server', 'backbone_client', 'backbone_server'];
+    for (var g = 0; g < groups.length; g++) {
+        var entries = (data && data[groups[g]]) || [];
+        for (var i = 0; i < entries.length; i++) {
+            var entry = entries[i] || {};
+            if (entry.name !== ifaceName) continue;
+            var enabled = entry.enabled;
+            if (enabled === undefined || enabled === null) enabled = entry.interface_enabled;
+            if (enabled === undefined || enabled === null) return false;
+            return /^(false|no|0|off)$/i.test(String(enabled).trim());
+        }
+    }
+    return false;
+}
+
 function updateHubModalStatusDots() {
     document.querySelectorAll('#node-modal .hub-iface-status').forEach(function(dot) {
         var ifaceName = dot.dataset.ifaceName;
         if (!ifaceName) return;
         var liveData = getInterfaceLiveStatus(ifaceName);
         dot.className = 'hub-iface-status';
-        if (liveData) {
+        if (_configuredInterfacePaused(ifaceName)) {
+            dot.classList.add('paused');
+            dot.title = 'Paused';
+        } else if (liveData) {
             dot.classList.add(liveData.online ? 'up' : 'down');
             dot.title = liveData.online ? 'Connected' : 'Disconnected';
         } else {
@@ -1395,8 +1445,112 @@ function _normaliseHostEditContext(editContext, ifaceType) {
     };
 }
 
+function setConnectTab(tab) {
+    tab = tab === 'custom' ? 'custom' : 'public';
+    var buttons = document.querySelectorAll('#connect-tab-toggle [data-connect-tab]');
+    buttons.forEach(function(btn) {
+        var active = btn.dataset.connectTab === tab;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    var publicPanel = document.getElementById('connect-public-panel');
+    var customPanel = document.getElementById('connect-custom-panel');
+    if (publicPanel) publicPanel.classList.toggle('active', tab === 'public');
+    if (customPanel) customPanel.classList.toggle('active', tab === 'custom');
+    if (tab === 'custom' && !_connectEditContext) {
+        var nameEl = document.getElementById('connect-name');
+        if (nameEl) nameEl.value = '';
+    }
+}
+
+function _connectMatchingPublicInterface(server, ifaces) {
+    ifaces = ifaces || window._hubInterfacesData || window._cachedConfigIfaces || {};
+    var clients = Array.isArray(ifaces.tcp_client) ? ifaces.tcp_client : [];
+    for (var i = 0; i < clients.length; i++) {
+        var iface = clients[i] || {};
+        if (_tcpServerKey(iface.target_host, iface.target_port) !== _tcpServerKey(server.host, server.port)) continue;
+        var live = (typeof getInterfaceLiveStatus === 'function') ? getInterfaceLiveStatus(iface.name || '') : null;
+        return {
+            iface: iface,
+            online: live ? live.online !== false : false,
+        };
+    }
+    return null;
+}
+
+function renderPublicTcpServers(ifaces) {
+    var container = document.getElementById('public-server-list');
+    if (!container) return;
+    container.innerHTML = '';
+
+    PUBLIC_TCP_SERVERS.forEach(function(server) {
+        var match = _connectMatchingPublicInterface(server, ifaces);
+        var pending = _connectPendingPublicServerKey === _tcpServerKey(server.host, server.port) && !match;
+        var connected = !!(match && match.online);
+        var added = !!match && !connected;
+        var action = pending ? 'Connecting...' : (connected ? 'Connected' : (added ? 'Added' : 'Connect'));
+
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'public-server-card public-server-card--' + server.tone +
+            (pending ? ' is-pending' : '') +
+            (connected ? ' is-connected' : '') +
+            (added ? ' is-added' : '');
+        btn.disabled = !!match || pending;
+        btn.setAttribute('aria-label', action + ' ' + server.name);
+
+        var tags = (server.tags || []).map(function(tag) {
+            return '<span class="public-server-tag">' + escapeHtml(tag) + '</span>';
+        }).join('');
+
+        btn.innerHTML =
+            '<span class="public-server-mark" aria-hidden="true">' + escapeHtml(server.mark || server.name.charAt(0)) + '</span>' +
+            '<span class="public-server-main">' +
+                '<span class="public-server-name">' + escapeHtml(server.name) + '</span>' +
+                '<span class="public-server-tags">' + tags + '</span>' +
+            '</span>' +
+            '<span class="public-server-action">' + action + '</span>';
+
+        if (!match) {
+            btn.addEventListener('click', function() {
+                connectPublicServer(server);
+            });
+        }
+
+        container.appendChild(btn);
+    });
+}
+
+function connectPublicServer(server) {
+    _connectPendingPublicServerKey = _tcpServerKey(server.host, server.port);
+    renderPublicTcpServers(window._hubInterfacesData || window._cachedConfigIfaces || {});
+    quickConnect(server.host, server.port, server.name, { publicServer: true });
+}
+
+function clearConnectPublicPending() {
+    _connectPendingPublicServerKey = null;
+    refreshConnectPublicServers();
+}
+
+function refreshConnectPublicServers(ifaces) {
+    if (ifaces) {
+        renderPublicTcpServers(ifaces);
+        return;
+    }
+    if (window._hubInterfacesData || window._cachedConfigIfaces) {
+        renderPublicTcpServers(window._hubInterfacesData || window._cachedConfigIfaces);
+        return;
+    }
+    RS.invoke('api_hub_interfaces').then(function(data) {
+        renderPublicTcpServers(data);
+    }).catch(function() {
+        renderPublicTcpServers({});
+    });
+}
+
 function openConnectModal(editContext) {
     _connectEditContext = _normaliseConnectEditContext(editContext);
+    _connectPendingPublicServerKey = null;
     var iface = _connectEditContext && _connectEditContext.iface ? _connectEditContext.iface : null;
     var isEdit = !!_connectEditContext;
     var isBackboneEdit = isEdit && _connectEditContext.ifaceType === 'backbone_client';
@@ -1410,10 +1564,17 @@ function openConnectModal(editContext) {
     // Empty so the placeholder shows; submit falls back to 4242.
     document.getElementById('connect-port').value = iface ? _ifaceString(iface, 'target_port', '') : '';
     document.getElementById('connect-name').value = iface ? _ifaceString(iface, 'name', '') : '';
+    var tabToggle = document.getElementById('connect-tab-toggle');
+    var nameField = document.getElementById('connect-name-field');
+    var quickField = document.getElementById('connect-quick-field');
+    if (tabToggle) tabToggle.style.display = isEdit ? 'none' : '';
+    if (nameField) nameField.style.display = isEdit ? '' : 'none';
+    if (quickField) quickField.style.display = isEdit ? 'none' : '';
+    setConnectTab(isEdit ? 'custom' : 'public');
     var submitBtn = document.getElementById('connect-submit-btn');
     if (submitBtn) {
         submitBtn.textContent = isEdit ? 'Save Changes' : 'Connect';
-        submitBtn.className = 'nr-btn';
+        submitBtn.className = 'nr-btn w-full mt-4';
         submitBtn.disabled = false;
     }
     // Backbone toggle is desktop-only, off by default.
@@ -1428,6 +1589,7 @@ function openConnectModal(editContext) {
         bbRow.style.display = (isDesktop || isBackboneEdit) ? '' : 'none';
     }
     loadConnectionHistory();
+    refreshConnectPublicServers();
     RS.ui.openExistingSheet('connect-modal', 'connect-modal-overlay');
 }
 
@@ -1440,14 +1602,18 @@ function loadConnectionHistory() {
     var emptyMsg = document.getElementById('qc-empty');
 
     RS.invoke('api_connection_history').then(function(entries) {
-        if (!entries || entries.length === 0) {
+        var customEntries = (entries || []).filter(function(entry) {
+            return !_isPublicTcpServer(entry.host, entry.port);
+        });
+
+        if (customEntries.length === 0) {
             if (emptyMsg) emptyMsg.style.display = '';
             return;
         }
 
         if (emptyMsg) emptyMsg.style.display = 'none';
 
-        entries.forEach(function(entry) {
+        customEntries.forEach(function(entry) {
             var wrapper = document.createElement('div');
             wrapper.className = 'qc-history';
 
@@ -1485,29 +1651,32 @@ function loadConnectionHistory() {
 
 function closeConnectModal() {
     RS.ui.closeExistingSheet('connect-modal', 'connect-modal-overlay');
+    _connectPendingPublicServerKey = null;
     var submitBtn = document.getElementById('connect-submit-btn');
-    if (submitBtn) {
-        submitBtn.textContent = 'Connect';
-        submitBtn.className = 'nr-btn';
-        submitBtn.disabled = false;
-    }
+    _setConnectSubmitBase(submitBtn, 'Connect');
     var titleEl = document.querySelector('#connect-modal .bottom-sheet-title');
     setBottomSheetTitleWithIcon(titleEl, 'Connect to Network', 'tcp');
     var bbCheckbox = document.getElementById('connect-use-backbone');
     if (bbCheckbox) bbCheckbox.disabled = false;
+    var tabToggle = document.getElementById('connect-tab-toggle');
+    var nameField = document.getElementById('connect-name-field');
+    var quickField = document.getElementById('connect-quick-field');
+    if (tabToggle) tabToggle.style.display = '';
+    if (nameField) nameField.style.display = 'none';
+    if (quickField) quickField.style.display = '';
+    setConnectTab('public');
     _connectEditContext = null;
 }
 
-function quickConnect(host, port, name) {
+function quickConnect(host, port, name, opts) {
+    opts = opts || {};
     _connectEditContext = null;
     var titleEl = document.querySelector('#connect-modal .bottom-sheet-title');
     setBottomSheetTitleWithIcon(titleEl, 'Connect to Network', 'tcp');
     var submitBtn = document.getElementById('connect-submit-btn');
-    if (submitBtn) {
-        submitBtn.textContent = 'Connect';
-        submitBtn.className = 'nr-btn';
-        submitBtn.disabled = false;
-    }
+    _setConnectSubmitBase(submitBtn, 'Connect');
+    var bbCheckbox = document.getElementById('connect-use-backbone');
+    if (bbCheckbox && opts.publicServer) bbCheckbox.checked = false;
     document.getElementById('connect-host').value = host;
     document.getElementById('connect-port').value = port;
     document.getElementById('connect-name').value = name;
@@ -1525,14 +1694,13 @@ function _clearConnectTimeout() {
 
 function _handleConnectInvokeError(err, resetText) {
     _clearConnectTimeout();
+    clearConnectPublicPending();
     var btn = document.getElementById('connect-submit-btn');
     if (btn) {
         btn.textContent = 'Failed';
-        btn.className = 'nr-btn nr-btn-error';
+        btn.className = 'nr-btn nr-btn-error w-full mt-4';
         setTimeout(function() {
-            btn.textContent = resetText || 'Connect';
-            btn.className = 'nr-btn';
-            btn.disabled = false;
+            _setConnectSubmitBase(btn, resetText || 'Connect');
         }, 3000);
     }
     var message = err && err.message ? err.message : 'Connection request failed';
@@ -1556,7 +1724,8 @@ function _handleInterfaceButtonError(err, buttonId, resetText, fallbackMessage) 
 function submitConnection() {
     var host = document.getElementById('connect-host').value.trim();
     var port = parseInt(document.getElementById('connect-port').value) || 4242;
-    var name = document.getElementById('connect-name').value.trim();
+    var nameEl = document.getElementById('connect-name');
+    var name = nameEl ? nameEl.value.trim() : '';
 
     if (!host) {
         showPreConditionToast('Please enter a host address');
@@ -1576,11 +1745,9 @@ function submitConnection() {
         var btn = document.getElementById('connect-submit-btn');
         if (btn && btn.disabled) {
             btn.textContent = 'Timed out';
-            btn.className = 'nr-btn nr-btn-error';
+            btn.className = 'nr-btn nr-btn-error w-full mt-4';
             setTimeout(function() {
-                btn.textContent = 'Connect';
-                btn.className = 'nr-btn';
-                btn.disabled = false;
+                _setConnectSubmitBase(btn, 'Connect');
             }, 3000);
         }
     }, 30000);
@@ -1609,7 +1776,7 @@ function submitConnection() {
                 old_name: editContext.oldName,
                 host: host,
                 port: port,
-                name: name || ('TCP to ' + host + ':' + port),
+                name: name || (host + ':' + port),
             }
         }).catch(function(err) { _handleConnectInvokeError(err, 'Save Changes'); });
     } else if (useBackbone) {
@@ -1625,7 +1792,7 @@ function submitConnection() {
             args: {
                 host: host,
                 port: port,
-                name: name || ('TCP to ' + host + ':' + port),
+                name: name || (host + ':' + port),
             }
         }).catch(function(err) { _handleConnectInvokeError(err, 'Connect'); });
     }
@@ -2258,6 +2425,11 @@ document.getElementById('rnode-modal').addEventListener('keydown', function(e) {
 
 document.getElementById('connect-modal-close').addEventListener('click', closeConnectModal);
 document.getElementById('connect-submit-btn').addEventListener('click', submitConnection);
+document.querySelectorAll('#connect-tab-toggle [data-connect-tab]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        setConnectTab(btn.dataset.connectTab);
+    });
+});
 document.getElementById('connect-modal').addEventListener('keydown', function(e) {
     if (e.key === 'Enter' && !e.shiftKey && e.target.tagName === 'INPUT') {
         e.preventDefault();
