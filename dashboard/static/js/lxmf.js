@@ -2942,6 +2942,11 @@ function renderConversation(options) {
 
     container.querySelectorAll('.lxmf-clickable-img').forEach(function(img) {
         img.addEventListener('click', function(e) {
+            if (Date.now() < _suppressImageOpenUntil) {
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
             e.stopPropagation();
             if (typeof openImageViewer === 'function') openImageViewer(this);
         });
@@ -3012,6 +3017,7 @@ function renderConversation(options) {
                     var msgData = lxmfConversation.find(function(m) { return m.id === msgId; });
                     if (!msgData) return;
                     _suppressNextContextMenuUntil = Date.now() + 1200;
+                    _suppressImageOpenUntil = Date.now() + 900;
                     _showMsgContextMenu(msgData, touch.clientX, touch.clientY, bubble);
                 }
             });
@@ -3583,6 +3589,7 @@ function _messageSourceName(msg) {
 
 var _activeContextMenu = null;
 var _suppressNextContextMenuUntil = 0;
+var _suppressImageOpenUntil = 0;
 
 function _messageActionShouldPreserveComposer() {
     return !!((_activeContextMenu && _activeContextMenu.preserveComposerKeyboard) || _shouldPreserveLxmfComposerKeyboard());
@@ -3962,8 +3969,7 @@ function _showMsgContextMenu(msgData, x, y, bubble) {
 function _handleMessageActionPointer(e) {
     if (!_activeContextMenu) return;
     var menu = _activeContextMenu.menu;
-    var row = _activeContextMenu.row;
-    if ((menu && menu.contains(e.target)) || (row && row.contains(e.target))) return;
+    if (menu && menu.contains(e.target)) return;
     _dismissContextMenu();
 }
 

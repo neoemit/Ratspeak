@@ -1942,6 +1942,9 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     assert!(lxmf.contains("(t.closest('.lxmf-msg') && _shouldPreserveLxmfComposerKeyboard())"));
     assert!(lxmf.contains("function _bindMessageFocusPreservingActivation"));
     assert!(lxmf.contains("preserveComposerKeyboard"));
+    assert!(lxmf.contains("var _suppressImageOpenUntil = 0;"));
+    assert!(lxmf.contains("_suppressImageOpenUntil = Date.now() + 900;"));
+    assert!(lxmf.contains("if (Date.now() < _suppressImageOpenUntil)"));
     assert!(lxmf.contains("function _restoreLxmfComposerKeyboard"));
     assert!(lxmf.contains("window.RS.closeMessageActionMenu"));
     assert!(lxmf.contains("function _copyToClipboardFallback(text)"));
@@ -1960,6 +1963,7 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     assert!(emoji_picker.contains("btn.addEventListener('touchstart', function(e) { e.preventDefault(); }, { passive: false });"));
     assert!(messaging_css.contains(".lxmf-messages.msg-action-mode .msg-row"));
     assert!(messaging_css.contains(".msg-row.msg-action-selected .lxmf-msg"));
+    assert!(messaging_css.contains("position: fixed; z-index: calc(var(--z-modal) + 3);"));
     assert!(nav.contains("RS.closeMessageActionMenu()"));
 
     assert!(runtime.contains("RATSPEAK_CHAT_CUSTOM_TYPE"));
