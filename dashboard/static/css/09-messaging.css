@@ -369,6 +369,43 @@
     min-width: 0;
     min-height: 0;
 }
+.lxmf-msg-image.is-sending .lxmf-clickable-img {
+    filter: brightness(0.58) saturate(0.82);
+}
+.lxmf-send-cancel {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 52px;
+    height: 52px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    color: #fff;
+    background: conic-gradient(var(--accent) var(--send-progress, 0%), rgba(255,255,255,0.26) 0);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.34);
+    transform: translate(-50%, -50%);
+    cursor: pointer;
+    z-index: 2;
+}
+.lxmf-send-cancel::before {
+    content: "";
+    position: absolute;
+    inset: 5px;
+    border-radius: 50%;
+    background: rgba(13, 13, 16, 0.78);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+}
+.lxmf-send-cancel span {
+    position: relative;
+    z-index: 1;
+    font-size: 26px;
+    line-height: 1;
+    font-weight: 500;
+}
 .lxmf-clickable-img.is-error {
     min-width: 180px;
     min-height: 120px;
@@ -522,6 +559,30 @@ body.image-viewer-open {
     font-size: var(--text-2xs);
     color: var(--text-muted);
     margin-top: var(--space-2);
+}
+.msg-send-progress {
+    color: var(--accent);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+.msg-send-cancel-inline {
+    width: 20px;
+    height: 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid var(--border-control);
+    border-radius: 50%;
+    background: var(--surface-control);
+    color: var(--text-secondary);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+}
+.msg-send-cancel-inline:hover {
+    color: var(--text-primary);
+    border-color: var(--accent-border);
 }
 .lxmf-chat-header {
     display: flex;
@@ -969,6 +1030,7 @@ body.image-viewer-open {
 /* Propagation node accepted the message; recipient may not have pulled it yet. */
 .msg-state-propagated svg { stroke: var(--text-muted); }
 .msg-state-failed svg { stroke: var(--status-error); }
+.msg-state-cancelled svg { stroke: var(--text-muted); }
 
 .msg-retry-btn {
     background: var(--status-warning-bg);

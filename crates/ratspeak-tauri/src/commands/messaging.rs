@@ -158,6 +158,11 @@ pub struct SendLxmfArgs {
     pub client_msg_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct CancelLxmfMessageArgs {
+    pub msg_id: String,
+}
+
 pub(crate) fn parse_delivery_preference(value: Option<&str>) -> DeliveryPreference {
     DeliveryPreference::parse(value)
 }
@@ -924,6 +929,93 @@ pub async fn send_lxmf_with_attachment(
             Err(AppError::lxmf_not_initialized("LXMF not initialized"))
         }
     }
+}
+
+fn resolve_lxmf_message_id_for_cancel(
+    state: &AppState,
+    msg_id: &str,
+) -> Option<(String, Option<String>)> {
+    if validate_hex(msg_id, 64, 64) {
+        let client_msg_id = state
+            .msg_id_map
+            .lock()
+            .ok()
+            .and_then(|map| map.get(msg_id).cloned());
+        return Some((msg_id.to_string(), client_msg_id));
+    }
+
+    state.msg_id_map.lock().ok().and_then(|map| {
+        map.iter()
+            .find(|(_, client_id)| client_id.as_str() == msg_id)
+            .map(|(server_id, client_id)| (server_id.clone(), Some(client_id.clone())))
+    })
+}
+
+#[tauri::command]
+pub async fn cancel_lxmf_message(
+    state: State<'_, Arc<AppState>>,
+    args: CancelLxmfMessageArgs,
+) -> AppResult<Value> {
+    let requested_msg_id = sanitize_text(&args.msg_id, 128);
+    let Some((msg_id, client_msg_id)) =
+        resolve_lxmf_message_id_for_cancel(&state, &requested_msg_id)
+    else {
+        return Ok(json!({
+            "ok": true,
+            "cancelled": false,
+            "msg_id": requested_msg_id,
+        }));
+    };
+
+    let st: Arc<AppState> = Arc::clone(&state);
+    let msg_id_for_cancel = msg_id.clone();
+    let cancelled = tokio::task::spawn_blocking(move || {
+        st.lxmf
+            .lock()
+            .ok()
+            .and_then(|mut lxmf| {
+                lxmf.as_mut()
+                    .map(|mgr| mgr.cancel_outbound_message(&msg_id_for_cancel))
+            })
+            .unwrap_or(false)
+    })
+    .await
+    .map_err(|_| AppError::internal("cancel_lxmf_message task panicked"))?;
+
+    if cancelled {
+        let msg_id_for_db = msg_id.clone();
+        db::spawn_db(state.db.clone(), move |p| {
+            db::update_message_state(&p, &msg_id_for_db, "cancelled", None);
+        })
+        .await
+        .map_err(|_| AppError::internal("cancel_lxmf_message db task panicked"))?;
+
+        if let Ok(mut times) = state.message_send_times.lock() {
+            times.remove(&msg_id);
+        }
+        if let Ok(mut map) = state.msg_id_map.lock() {
+            map.remove(&msg_id);
+        }
+        let method = db::get_message_delivery_method(&state.db, &msg_id);
+        state.emit_to_all(
+            "lxmf_step",
+            json!({
+                "step": "cancelled",
+                "msg_id": msg_id.clone(),
+                "client_msg_id": client_msg_id.clone(),
+                "method": method,
+            }),
+        );
+        broadcast_conversations(Arc::clone(&state));
+        state.lxmf_notify.notify_one();
+    }
+
+    Ok(json!({
+        "ok": true,
+        "cancelled": cancelled,
+        "msg_id": msg_id,
+        "client_msg_id": client_msg_id,
+    }))
 }
 
 /// Marks inbound read; returns latest 100 + aggregate unread count.

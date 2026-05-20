@@ -246,6 +246,42 @@ fn game_event_init_does_not_depend_on_missing_network_watcher() {
 }
 
 #[test]
+fn notifications_use_canonical_names_and_ignore_watched_game_unread() {
+    let root = repo_root();
+
+    let games_js = read_source(root.join("dashboard/static/js/games_tab.js")).expect("games js");
+    assert!(games_js.contains("function _isViewingSession(sessionId)"));
+    assert!(games_js.contains("function _markSessionReadLocal(sessionId, options)"));
+    assert!(games_js.contains("_markViewedSessionRead({ render: false });"));
+    assert!(
+        games_js
+            .contains("_markSessionReadLocal(data.session_id, { render: false, force: true });")
+    );
+    assert!(games_js.contains(
+        "if (_allSessions[i].unread > 0 && !_isViewingSession(_allSessions[i].game_id)) total++;"
+    ));
+
+    let games_rs =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/games.rs")).expect("games rs");
+    assert!(games_rs.contains("emit_game_sessions(&state_arc, &identity_id, None).await;"));
+
+    let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    assert!(lxmf_js.contains("function _messageSourceName(msg)"));
+    assert!(lxmf_js.contains("msg.source_display_name"));
+    assert!(lxmf_js.contains("var fromLabel = _messageSourceName(msg);"));
+    assert!(lxmf_js.contains("var notifFrom = _messageSourceName(msg);"));
+
+    let runtime_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
+    assert!(runtime_rs.contains("\"source_display_name\": source_display_name"));
+    assert!(runtime_rs.contains("db::get_peers_by_hashes(pool, &hashes, identity_id)"));
+    assert!(
+        !runtime_rs.contains("downloaded from relay"),
+        "background Offline Inbox downloads must rely on per-message notifications"
+    );
+}
+
+#[test]
 fn games_new_sheet_uses_shared_mobile_bottom_sheet_width() {
     let root = repo_root();
     let games_js = read_source(root.join("dashboard/static/js/games_tab.js")).expect("games js");

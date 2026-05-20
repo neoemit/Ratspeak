@@ -537,12 +537,15 @@ pub async fn mark_game_read(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> AppResult<Value> {
+    let state_arc: Arc<AppState> = Arc::clone(&state);
     let session_id = sanitize_text(&session_id, 128);
     let identity_id = active_lxmf_hash(&state);
+    let identity_id_for_db = identity_id.clone();
     let _ = db::spawn_db(state.db.clone(), move |p| {
-        db::mark_game_read(&p, &session_id, &identity_id);
+        db::mark_game_read(&p, &session_id, &identity_id_for_db);
     })
     .await;
+    emit_game_sessions(&state_arc, &identity_id, None).await;
     Ok(json!(null))
 }
 

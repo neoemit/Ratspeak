@@ -133,12 +133,25 @@ async fn next_chat_observed_timestamp(
 }
 
 fn contact_label_from_db(pool: &db::DbPool, source_hash: &str, identity_id: &str) -> String {
-    db::get_contact(pool, source_hash, identity_id)
-        .and_then(|c| {
-            c.get("display_name")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.trim().is_empty())
-                .map(str::to_string)
+    if let Some(label) = db::get_contact(pool, source_hash, identity_id).and_then(|c| {
+        c.get("display_name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
+    }) {
+        return label;
+    }
+
+    let hashes = [source_hash.to_string()];
+    db::get_peers_by_hashes(pool, &hashes, identity_id)
+        .into_iter()
+        .find_map(|peer| {
+            let display_name = peer.display_name.trim();
+            if display_name.is_empty() {
+                None
+            } else {
+                Some(display_name.to_string())
+            }
         })
         .unwrap_or_else(|| compact_hash_label(source_hash))
 }
@@ -1337,25 +1350,8 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         );
                     }
 
-                    let downloaded_count = downloaded_propagation_messages.len();
                     for data in downloaded_propagation_messages {
                         handle_link_delivered_lxmf(&tick_state, data, false, None).await;
-                    }
-                    if downloaded_count > 0 {
-                        tick_state.emit_to_all(
-                            "propagation_sync_result",
-                            json!({
-                                "ok": true,
-                                "success": true,
-                                "started": false,
-                                "downloaded": downloaded_count,
-                                "message": format!(
-                                    "{} message{} downloaded from relay",
-                                    downloaded_count,
-                                    if downloaded_count == 1 { "" } else { "s" },
-                                ),
-                            }),
-                        );
                     }
 
                     // Every ~30s: timeout sweep + evict >1h tracking entries.
@@ -2288,10 +2284,13 @@ async fn handle_inbound_lxmf(
         )
         .await;
 
+        let source_display_name = contact_label_from_db(&state.db, &source_hash, &identity_id);
+
         // Frontend expects nested `image` / `attachments` matching history rows.
         let mut event_data = json!({
             "id": msg_id,
             "source": source_hash,
+            "source_display_name": source_display_name,
             "destination": dest_hash,
             "content": msg.content,
             "title": msg.title,
@@ -2588,11 +2587,14 @@ async fn handle_link_delivered_lxmf(
     )
     .await;
 
+    let source_display_name = contact_label_from_db(&state.db, &source_hash, &identity_id);
+
     // Frontend renderer expects nested `image` / `attachments` objects so
     // the live emit matches what history-loaded rows produce.
     let mut event_data = json!({
         "id": msg_id,
         "source": source_hash,
+        "source_display_name": source_display_name,
         "destination": dest_hash,
         "content": msg.content,
         "title": msg.title,
@@ -3877,6 +3879,26 @@ mod notification_tests {
         )
         .await;
         assert_eq!(notifier.notifications.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn notification_label_uses_announce_display_name_without_contact() {
+        let notifier = Arc::new(RecordingNotifier::default());
+        let state = make_state(notifier);
+        db::touch_identity_activity(
+            &state.db,
+            &[(
+                "abcd1234abcd1234".to_string(),
+                1.0,
+                Some("Mesh Alice".to_string()),
+                Some("if0".to_string()),
+            )],
+        );
+
+        assert_eq!(
+            contact_label_from_db(&state.db, "abcd1234abcd1234", "identity-a"),
+            "Mesh Alice"
+        );
     }
 
     #[test]

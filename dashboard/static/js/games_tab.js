@@ -36,7 +36,19 @@
         var contacts = _getContacts();
         for (var i = 0; i < contacts.length; i++) {
             if (contacts[i].hash === hash) {
-                _contactNameCache[hash] = contacts[i].display_name || 'Anonymous';
+                var contactName = contacts[i].display_name ? contacts[i].display_name.trim() : '';
+                if (contactName) {
+                    _contactNameCache[hash] = contactName;
+                    return _contactNameCache[hash];
+                }
+                break;
+            }
+        }
+        if (typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.get === 'function') {
+            var peer = PeersCache.get(hash);
+            var peerName = peer && peer.display_name ? peer.display_name.trim() : '';
+            if (peerName) {
+                _contactNameCache[hash] = peerName;
                 return _contactNameCache[hash];
             }
         }
@@ -59,6 +71,46 @@
 
     function _appId(session) {
         return (session && (session.app_id || session.game)) || '';
+    }
+
+    function _isViewingSession(sessionId) {
+        if (!sessionId || _selectedSessionId !== sessionId) return false;
+        if (typeof currentView === 'undefined' || currentView !== 'games') return false;
+        if (typeof isMobile === 'function' && isMobile()) {
+            if (typeof RS === 'undefined' || !RS.viewStack || typeof RS.viewStack.top !== 'function') {
+                return false;
+            }
+            var top = RS.viewStack.top();
+            return !!(top && top.viewId === 'game-detail' &&
+                (!top.meta || !top.meta.sessionId || top.meta.sessionId === sessionId));
+        }
+        return true;
+    }
+
+    function _markSessionReadLocal(sessionId, options) {
+        if (!sessionId) return false;
+        options = options || {};
+        var changed = false;
+        for (var i = 0; i < _allSessions.length; i++) {
+            if (_allSessions[i].game_id === sessionId && _allSessions[i].unread > 0) {
+                _allSessions[i].unread = 0;
+                changed = true;
+                break;
+            }
+        }
+        if ((changed || options.force) && typeof RS !== 'undefined' && RS.invoke) {
+            RS.invoke('mark_game_read', { sessionId: sessionId }).catch(function() {});
+        }
+        if (changed && options.render !== false) {
+            renderSessionList();
+            updateGamesBadge();
+        }
+        return changed;
+    }
+
+    function _markViewedSessionRead(options) {
+        if (!_isViewingSession(_selectedSessionId)) return false;
+        return _markSessionReadLocal(_selectedSessionId, options);
     }
 
     function _celebrationOptions(session) {
@@ -238,9 +290,10 @@
         for (var i = 0; i < filtered.length; i++) {
             var s = filtered[i];
             var isActive = s.game_id === _selectedSessionId;
+            var isViewing = _isViewingSession(s.game_id);
             var classes = 'games-session-row';
             if (isActive) classes += ' active';
-            if (s.unread > 0 && !isActive) classes += ' unread';
+            if (s.unread > 0 && !isViewing) classes += ' unread';
 
             var appId = _appId(s);
             html += '<div class="' + classes + ' game-row-' + escapeHtml(appId || 'unknown') + '" data-session-id="' + escapeHtml(s.game_id) + '" role="button" tabindex="0">' +
@@ -369,15 +422,7 @@
 
     function selectSession(sessionId) {
         _selectedSessionId = sessionId;
-
-        RS.invoke('mark_game_read', { sessionId: sessionId }).catch(function() {});
-
-        for (var i = 0; i < _allSessions.length; i++) {
-            if (_allSessions[i].game_id === sessionId) {
-                _allSessions[i].unread = 0;
-                break;
-            }
-        }
+        _markSessionReadLocal(sessionId, { render: false, force: true });
 
         renderSessionList();
         renderDetail();
@@ -1527,6 +1572,7 @@
                 prevById[_allSessions[i].game_id] = _allSessions[i];
             }
             _allSessions = incoming;
+            _markViewedSessionRead({ render: false });
 
             for (var j = 0; j < incoming.length; j++) {
                 var record = incoming[j];
@@ -1610,6 +1656,9 @@
         // the listener registration raced with Tauri global injection.
         RS.listen('game_action_received', function(data) {
             if (!data || !data.session_id) return;
+            if (_isViewingSession(data.session_id)) {
+                _markSessionReadLocal(data.session_id, { render: false, force: true });
+            }
             if (data.session_id === _selectedSessionId) renderDetail();
             updateGamesBadge();
         });
@@ -1652,8 +1701,7 @@
         // this game's board. `currentView !== 'games'` catches every other tab;
         // even on the games view a delta on a non-selected game still alerts.
         var movedSinceLast = prev && record.move_count !== prev.move_count;
-        var notViewingThisGame = (typeof currentView === 'undefined' || currentView !== 'games')
-            || record.game_id !== _selectedSessionId;
+        var notViewingThisGame = !_isViewingSession(record.game_id);
         if (movedSinceLast && notViewingThisGame && record.status === 'active') {
             if (typeof showToast === 'function') showToast('Game update from ' + _contactName(record.contact_hash), 'toast-blue', 3000);
             if (typeof haptic === 'function') haptic('light');
@@ -1679,7 +1727,7 @@
         var bbDot = document.getElementById('bb-more-unread');
         var total = 0;
         for (var i = 0; i < _allSessions.length; i++) {
-            if (_allSessions[i].unread > 0) total++;
+            if (_allSessions[i].unread > 0 && !_isViewingSession(_allSessions[i].game_id)) total++;
         }
         if (dot) dot.style.display = (total > 0) ? '' : 'none';
         if (bsDot) bsDot.style.display = (total > 0) ? '' : 'none';
@@ -1709,7 +1757,9 @@
         RS.invoke('get_all_game_sessions').then(function(sessions) {
             if (Array.isArray(sessions)) {
                 _allSessions = sessions;
+                _markViewedSessionRead({ render: false });
                 renderSessionList();
+                updateGamesBadge();
             }
         }).catch(function() {});
     };

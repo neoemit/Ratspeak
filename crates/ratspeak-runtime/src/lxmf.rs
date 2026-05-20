@@ -2318,7 +2318,8 @@ impl LxmfManager {
             return DirectReusableLinkState::None;
         };
 
-        if snapshot.link_state == rns_link::link::LinkState::Closed
+        if snapshot.idle_expired
+            || snapshot.link_state == rns_link::link::LinkState::Closed
             || snapshot.delivery_state == DeliveryState::Failed
         {
             return DirectReusableLinkState::Closed { activated: false };
@@ -2560,6 +2561,10 @@ impl LxmfManager {
                 continue;
             }
 
+            if self.defer_direct_retry_expiry_for_link_delivery(hash, now) {
+                continue;
+            }
+
             let reason = "direct fallback timeout";
             let forced_results = self
                 .link_delivery
@@ -2590,6 +2595,51 @@ impl LxmfManager {
                     self.elevate_direct_to_propagation_or_fail(message, dest_hash, reason, results);
             }
         }
+    }
+
+    fn defer_direct_retry_expiry_for_link_delivery(&mut self, hash: [u8; 32], now: f64) -> bool {
+        let Some(snapshot) = self
+            .link_delivery
+            .as_ref()
+            .and_then(|ld| ld.message_delivery_snapshot(hash))
+        else {
+            return false;
+        };
+
+        let resource_in_progress = !snapshot.queued
+            && snapshot.representation == DeliveryRepresentation::Resource
+            && matches!(
+                snapshot.delivery_state,
+                DeliveryState::Transferring | DeliveryState::AwaitingProof
+            );
+        if resource_in_progress {
+            tracing::trace!(
+                msg = %hex::encode(hash),
+                link_id = %hex::encode(snapshot.link_id),
+                progress = snapshot.progress,
+                "direct retry window expired, but an active resource transfer owns the message"
+            );
+            return true;
+        }
+
+        let queued_behind_active_delivery = snapshot.queued
+            && snapshot.in_flight_deliveries > 0
+            && matches!(
+                snapshot.delivery_state,
+                DeliveryState::Transferring | DeliveryState::AwaitingProof
+            );
+        if queued_behind_active_delivery {
+            self.direct_retry_started_at.insert(hash, now);
+            tracing::trace!(
+                msg = %hex::encode(hash),
+                link_id = %hex::encode(snapshot.link_id),
+                queued = snapshot.queued_deliveries,
+                "direct retry window extended while queued behind an active Link delivery"
+            );
+            return true;
+        }
+
+        false
     }
 
     fn start_direct_link_delivery_with_results(
@@ -3217,6 +3267,31 @@ impl LxmfManager {
 
     pub fn take_delivery_progress_updates(&mut self) -> Vec<LxmfDeliveryProgressUpdate> {
         std::mem::take(&mut self.delivery_progress_updates)
+    }
+
+    pub fn cancel_outbound_message(&mut self, msg_id: &str) -> bool {
+        let Ok(decoded) = hex::decode(msg_id.trim()) else {
+            return false;
+        };
+        let Ok(hash) = <[u8; 32]>::try_from(decoded.as_slice()) else {
+            return false;
+        };
+
+        let mut cancelled = false;
+        self.clear_direct_retry_policy(&hash);
+        cancelled |= self.ephemeral_outbound.remove(&hash);
+        cancelled |= self.in_flight_propagation.remove(&hash).is_some();
+
+        if let Some(ref mut ld) = self.link_delivery
+            && ld.cancel_delivery_by_message_hash(hash)
+        {
+            cancelled = true;
+        }
+        if self.router.cancel_outbound(&hash) {
+            cancelled = true;
+        }
+
+        cancelled
     }
 
     fn handle_link_delivery_result(
@@ -4351,6 +4426,15 @@ mod tests {
                 .as_nanos()
         ));
         LxmfManager::load_or_create(&tmp, None).unwrap()
+    }
+
+    fn next_outbound(rx: &mut mpsc::Receiver<TransportMessage>) -> Vec<u8> {
+        while let Ok(message) = rx.try_recv() {
+            if let TransportMessage::Outbound(request) = message {
+                return request.raw.to_vec();
+            }
+        }
+        panic!("expected outbound transport message");
     }
 
     #[test]
@@ -5543,6 +5627,246 @@ mod tests {
         assert_eq!(mgr.in_flight_propagation.get(&hash), Some(&node));
         assert!(!mgr.auto_direct_fallback.contains(&hash));
         assert!(!mgr.direct_retry_started_at.contains_key(&hash));
+    }
+
+    #[test]
+    fn direct_retry_window_does_not_abort_active_resource_delivery() {
+        let mut mgr = test_manager();
+        let dest = [0x69; 16];
+        let node = [0x6A; 16];
+        let dest_hex = hex::encode(dest);
+        let node_hex = hex::encode(node);
+        let remote = Identity::new();
+        let relay = Identity::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(512);
+        mgr.router.set_transport(tx);
+        mgr.known_identities
+            .insert(dest_hex.clone(), remote.get_public_key());
+        mgr.known_identities
+            .insert(node_hex, relay.get_public_key());
+        mgr.router.set_stamp_cost(node, 0);
+        mgr.router.set_outbound_propagation_node(Some(node));
+        mgr.configured_propagation_node = Some(node);
+        mgr.client_propagation_enabled = true;
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
+            hash: dest,
+            timestamp: now,
+            via: None,
+            hops: 1,
+            expires: now + 60.0,
+            interface: "test".to_string(),
+            interface_id: 1,
+            interface_mode: rns_transport::constants::InterfaceMode::Full,
+            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        }]);
+
+        let mut msg = mgr
+            .create_message(
+                &dest_hex,
+                &"image-like payload".repeat(rns_protocol::resource::MAX_EFFICIENT_SIZE / 18),
+                "",
+                DeliveryMethod::Direct,
+            )
+            .expect("message created");
+        msg.sign(&mgr.identity.get_signing_key().unwrap()).unwrap();
+        let hash = msg.hash.expect("message hash");
+        assert!(msg.pack().unwrap().len() > rns_protocol::resource::MAX_EFFICIENT_SIZE);
+        mgr.router.send(msg);
+
+        assert_eq!(mgr.tick(), vec![(hex::encode(hash), "link_establishing")]);
+        let request_raw = next_outbound(&mut rx);
+        let (_request_header, request_offset) =
+            rns_wire::header::PacketHeader::unpack(&request_raw).unwrap();
+        let responder_key = rns_crypto::ed25519::Ed25519PrivateKey::generate();
+        let (_responder_link, proof_data) = rns_link::link::Link::new_responder(
+            &request_raw[request_offset..],
+            &responder_key,
+            dest,
+            1,
+        )
+        .unwrap();
+        let responder_pub = responder_key.public_key();
+        let link_id = mgr
+            .link_delivery
+            .as_ref()
+            .unwrap()
+            .direct_link_snapshot(dest)
+            .unwrap()
+            .link_id;
+        assert!(mgr.link_delivery.as_mut().unwrap().handle_link_proof(
+            &link_id,
+            &proof_data,
+            &responder_pub,
+            &responder_pub.to_bytes()
+        ));
+        let _rtt_raw = next_outbound(&mut rx);
+
+        let _ = mgr.tick();
+        let snapshot = mgr
+            .link_delivery
+            .as_ref()
+            .unwrap()
+            .message_delivery_snapshot(hash)
+            .expect("resource delivery snapshot");
+        assert_eq!(snapshot.representation, DeliveryRepresentation::Resource);
+        assert_eq!(snapshot.delivery_state, DeliveryState::Transferring);
+
+        mgr.auto_direct_fallback.insert(hash);
+        mgr.direct_retry_started_at
+            .insert(hash, now - DIRECT_LINK_FALLBACK_AFTER_SECS - 1.0);
+        let results = mgr.tick();
+
+        assert!(
+            !results
+                .iter()
+                .any(|(msg, step)| msg == &hex::encode(hash) && *step == "propagating"),
+            "active resource delivery must not be aborted by the fixed Direct fallback window"
+        );
+        assert!(
+            mgr.link_delivery
+                .as_ref()
+                .unwrap()
+                .message_delivery_snapshot(hash)
+                .is_some()
+        );
+        assert!(
+            mgr.router
+                .pending_outbound
+                .iter()
+                .any(|m| m.hash == Some(hash))
+        );
+        assert_eq!(mgr.in_flight_propagation.get(&hash), None);
+        assert!(mgr.auto_direct_fallback.contains(&hash));
+        assert!(mgr.direct_retry_started_at.contains_key(&hash));
+    }
+
+    #[test]
+    fn cancel_outbound_message_stops_active_resource_without_propagation() {
+        let mut mgr = test_manager();
+        let dest = [0x6B; 16];
+        let node = [0x6C; 16];
+        let dest_hex = hex::encode(dest);
+        let node_hex = hex::encode(node);
+        let remote = Identity::new();
+        let relay = Identity::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(512);
+        mgr.router.set_transport(tx);
+        mgr.known_identities
+            .insert(dest_hex.clone(), remote.get_public_key());
+        mgr.known_identities
+            .insert(node_hex, relay.get_public_key());
+        mgr.router.set_stamp_cost(node, 0);
+        mgr.router.set_outbound_propagation_node(Some(node));
+        mgr.configured_propagation_node = Some(node);
+        mgr.client_propagation_enabled = true;
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
+            hash: dest,
+            timestamp: now,
+            via: None,
+            hops: 1,
+            expires: now + 60.0,
+            interface: "test".to_string(),
+            interface_id: 1,
+            interface_mode: rns_transport::constants::InterfaceMode::Full,
+            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        }]);
+
+        let mut msg = mgr
+            .create_message(
+                &dest_hex,
+                &"image-like payload".repeat(rns_protocol::resource::MAX_EFFICIENT_SIZE / 18),
+                "",
+                DeliveryMethod::Direct,
+            )
+            .expect("message created");
+        msg.sign(&mgr.identity.get_signing_key().unwrap()).unwrap();
+        let hash = msg.hash.expect("message hash");
+        mgr.router.send(msg);
+
+        assert_eq!(mgr.tick(), vec![(hex::encode(hash), "link_establishing")]);
+        let request_raw = next_outbound(&mut rx);
+        let (_request_header, request_offset) =
+            rns_wire::header::PacketHeader::unpack(&request_raw).unwrap();
+        let responder_key = rns_crypto::ed25519::Ed25519PrivateKey::generate();
+        let (_responder_link, proof_data) = rns_link::link::Link::new_responder(
+            &request_raw[request_offset..],
+            &responder_key,
+            dest,
+            1,
+        )
+        .unwrap();
+        let responder_pub = responder_key.public_key();
+        let link_id = mgr
+            .link_delivery
+            .as_ref()
+            .unwrap()
+            .direct_link_snapshot(dest)
+            .unwrap()
+            .link_id;
+        assert!(mgr.link_delivery.as_mut().unwrap().handle_link_proof(
+            &link_id,
+            &proof_data,
+            &responder_pub,
+            &responder_pub.to_bytes()
+        ));
+        let _rtt_raw = next_outbound(&mut rx);
+
+        let _ = mgr.tick();
+        assert!(
+            mgr.link_delivery
+                .as_ref()
+                .unwrap()
+                .message_delivery_snapshot(hash)
+                .is_some()
+        );
+
+        mgr.auto_direct_fallback.insert(hash);
+        mgr.direct_retry_started_at
+            .insert(hash, now - DIRECT_LINK_FALLBACK_AFTER_SECS - 1.0);
+        assert!(mgr.cancel_outbound_message(&hex::encode(hash)));
+
+        assert!(
+            mgr.link_delivery
+                .as_ref()
+                .unwrap()
+                .message_delivery_snapshot(hash)
+                .is_none()
+        );
+        assert_eq!(
+            mgr.link_delivery
+                .as_ref()
+                .unwrap()
+                .direct_link_snapshot(dest)
+                .unwrap()
+                .delivery_state,
+            DeliveryState::Idle
+        );
+        assert!(
+            !mgr.router
+                .pending_outbound
+                .iter()
+                .any(|m| m.hash == Some(hash))
+        );
+        assert_eq!(mgr.in_flight_propagation.get(&hash), None);
+        assert!(!mgr.auto_direct_fallback.contains(&hash));
+        assert!(!mgr.direct_retry_started_at.contains_key(&hash));
+
+        let results = mgr.tick();
+        assert!(
+            !results
+                .iter()
+                .any(|(msg, step)| msg == &hex::encode(hash) && *step == "propagating")
+        );
     }
 
     #[test]

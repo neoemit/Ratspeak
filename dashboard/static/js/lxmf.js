@@ -23,6 +23,7 @@ var _lxmfProgrammaticScrollUntil = 0;
 var _lxmfScrollSettleToken = 0;
 var _messageLongPressDetachFns = [];
 var _pendingAttachmentToken = 0;
+var _pendingLxmfCancelByClientId = {};
 var lxmfLimits = {
     max_attachment_bytes: 134217727,
     max_message_bytes: 134217727,
@@ -1359,6 +1360,113 @@ function _messageStateIconHtml(msg) {
     return wrap('msg-state-sending', label, ICON.clock);
 }
 
+function _isCanonicalLxmfMsgId(msgId) {
+    return /^[a-f0-9]{64}$/i.test(String(msgId || ''));
+}
+
+function _isTerminalMessageState(state) {
+    return ['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout'].indexOf(state) !== -1;
+}
+
+function _messageCanCancelSend(msg) {
+    if (!msg || msg.direction !== 'outbound' || _isTerminalMessageState(msg.state)) return false;
+    return [
+        'outbound',
+        'generating',
+        'sending',
+        'routing',
+        'resolving',
+        'propagating',
+        'resending',
+        'link_establishing',
+        'sending_via_link',
+        'reusing_direct_link',
+        'reusing_backchannel'
+    ].indexOf(msg.state) !== -1;
+}
+
+function _messageProgressPercent(msg) {
+    var progress = msg && typeof msg.delivery_progress === 'number' ? msg.delivery_progress : null;
+    if (progress === null || !isFinite(progress) || progress <= 0 || progress >= 1) return null;
+    return Math.max(1, Math.min(99, Math.round(progress * 100)));
+}
+
+function _messageProgressMetaHtml(msg) {
+    var percent = _messageProgressPercent(msg);
+    return percent === null ? '' : '<span class="msg-send-progress">' + percent + '%</span>';
+}
+
+function _messageSendCancelOverlayHtml(msg, percent) {
+    var pct = percent === null ? 0 : percent;
+    return '<button type="button" class="lxmf-send-cancel" ' +
+        'data-msg-id="' + escapeHtml(msg.id || '') + '" ' +
+        'style="--send-progress:' + pct + '%" aria-label="Cancel send">' +
+        '<span aria-hidden="true">&times;</span>' +
+    '</button>';
+}
+
+function _messageInlineCancelHtml(msg) {
+    if (!_messageCanCancelSend(msg)) return '';
+    return '<button type="button" class="msg-send-cancel-inline" ' +
+        'data-msg-id="' + escapeHtml(msg.id || '') + '" aria-label="Cancel send">&times;</button>';
+}
+
+function _findLxmfMessageById(msgId) {
+    for (var i = 0; i < lxmfConversation.length; i++) {
+        if (lxmfConversation[i].id === msgId) return lxmfConversation[i];
+    }
+    return null;
+}
+
+function _markLxmfMessageCancelled(msgId) {
+    var msg = _findLxmfMessageById(msgId);
+    if (!msg) return;
+    msg.state = 'cancelled';
+    delete msg.delivery_progress;
+    delete msg.delivery_link_id;
+    delete msg.delivery_representation;
+    renderConversation();
+}
+
+function _invokeLxmfCancel(msgId) {
+    return RS.invoke('cancel_lxmf_message', {
+        args: { msg_id: msgId }
+    });
+}
+
+function _flushPendingLxmfCancel(clientMsgId, serverMsgId) {
+    if (!clientMsgId || !serverMsgId || !_pendingLxmfCancelByClientId[clientMsgId]) return;
+    delete _pendingLxmfCancelByClientId[clientMsgId];
+    _invokeLxmfCancel(serverMsgId).catch(function(err) {
+        showToast('Cancel failed: ' + ((err && err.message) || 'error'), 'toast-red', 3500);
+    });
+}
+
+function _cancelLxmfSend(msgId) {
+    msgId = String(msgId || '');
+    if (!msgId) return;
+    _markLxmfMessageCancelled(msgId);
+    if (!_isCanonicalLxmfMsgId(msgId)) {
+        _pendingLxmfCancelByClientId[msgId] = true;
+        return;
+    }
+    _invokeLxmfCancel(msgId).catch(function(err) {
+        showToast('Cancel failed: ' + ((err && err.message) || 'error'), 'toast-red', 3500);
+    });
+}
+
+function _handleLxmfSendAccepted(resp, clientMsgId) {
+    var serverMsgId = resp && resp.msg_id;
+    if (!serverMsgId || !clientMsgId) return;
+    for (var i = 0; i < lxmfConversation.length; i++) {
+        if (lxmfConversation[i].id === clientMsgId) {
+            lxmfConversation[i].id = serverMsgId;
+            break;
+        }
+    }
+    _flushPendingLxmfCancel(clientMsgId, serverMsgId);
+}
+
 function cacheGet(hash) {
     var msgs = _conversationCache[hash];
     if (msgs) {
@@ -2558,6 +2666,8 @@ function renderConversation(options) {
         var bubbleClassBase = isOut ? 'lxmf-msg outbound' : 'lxmf-msg inbound';
         var time = formatTime(msg.timestamp);
         var stateIcon = isOut ? _messageStateIconHtml(msg) : '';
+        var progressPercent = isOut ? _messageProgressPercent(msg) : null;
+        var canCancelSend = isOut && _messageCanCancelSend(msg);
 
         var replyHtml = '';
         if (msg.reply_to_id || msg.reply_to_preview) {
@@ -2582,12 +2692,15 @@ function renderConversation(options) {
         }
 
         var imageHtml = '';
+        var imageSendOverlay = '';
         if (msg.image) {
             var imageFilename = msg.image.filename || 'image';
             var imageMime = msg.image.mime_type || msg.image.mime || '';
+            var imageSendingClass = canCancelSend ? ' is-sending' : '';
+            imageSendOverlay = canCancelSend ? _messageSendCancelOverlayHtml(msg, progressPercent) : '';
             // stored_name \u2192 async fetch via RS.fileDownload; data_url \u2192 embed direct.
             if (msg.image.stored_name) {
-                imageHtml = '<div class="lxmf-msg-image">' +
+                imageHtml = '<div class="lxmf-msg-image' + imageSendingClass + '">' +
                     '<button type="button" class="lxmf-image-button" aria-label="Open image" ' +
                     'data-stored-name="' + escapeHtml(msg.image.stored_name) + '" ' +
                     'data-filename="' + escapeHtml(imageFilename) + '" ' +
@@ -2597,9 +2710,10 @@ function renderConversation(options) {
                     'data-mime="' + escapeHtml(imageMime) + '" ' +
                     'class="lxmf-clickable-img rs-lazy-image">' +
                     '</button>' +
+                    imageSendOverlay +
                 '</div>';
             } else if (msg.image.data_url) {
-                imageHtml = '<div class="lxmf-msg-image">' +
+                imageHtml = '<div class="lxmf-msg-image' + imageSendingClass + '">' +
                     '<button type="button" class="lxmf-image-button" aria-label="Open image" ' +
                     'data-filename="' + escapeHtml(imageFilename) + '" ' +
                     'data-mime="' + escapeHtml(imageMime) + '">' +
@@ -2607,6 +2721,7 @@ function renderConversation(options) {
                     'data-filename="' + escapeHtml(imageFilename) + '" ' +
                     'data-mime="' + escapeHtml(imageMime) + '">' +
                     '</button>' +
+                    imageSendOverlay +
                 '</div>';
             }
         }
@@ -2639,6 +2754,10 @@ function renderConversation(options) {
         var hasReactions = reactionHtml ? ' has-reactions' : '';
         var hasImage = !!imageHtml;
         var hasAttachment = !!attachHtml;
+        var metaHtml = _messageProgressMetaHtml(msg) +
+            '<span class="msg-time">' + time + '</span>' +
+            (!hasImage ? _messageInlineCancelHtml(msg) : '') +
+            stateIcon;
         var bubbleClass = bubbleClassBase +
             (hasImage ? ' msg-has-image' : '') +
             (hasImage && !displayContent && !hasAttachment ? ' msg-image-only' : '');
@@ -2648,7 +2767,7 @@ function renderConversation(options) {
                 imageHtml +
                 (displayContent ? '<div class="lxmf-msg-content">' + linkifyMessageText(displayContent) + '</div>' : '') +
                 attachHtml +
-                '<div class="lxmf-msg-meta">' + time + stateIcon + '</div>' +
+                '<div class="lxmf-msg-meta">' + metaHtml + '</div>' +
             '</div>' +
             reactionHtml +
         '</div>');
@@ -2703,6 +2822,14 @@ function renderConversation(options) {
                     window.RS.diag('error', '[lxmf] file download failed:', name, err);
                 }
             });
+        });
+    });
+
+    container.querySelectorAll('.lxmf-send-cancel, .msg-send-cancel-inline').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            _cancelLxmfSend(this.getAttribute('data-msg-id'));
         });
     });
 
@@ -2926,6 +3053,8 @@ function sendLxmfMessage(deliveryMethod) {
                 image_data: isImage ? lxmfPendingFile.data : null,
                 image_mime: isImage ? lxmfPendingFile.mime : null,
             }
+        }).then(function(resp) {
+            _handleLxmfSendAccepted(resp, attachMsgId);
         }).catch(function() {});
 
         lxmfConversation.push({
@@ -2968,6 +3097,8 @@ function sendLxmfMessage(deliveryMethod) {
                 reply_to_preview: _replyTarget.content,
                 client_msg_id: msgId,
             }
+        }).then(function(resp) {
+            _handleLxmfSendAccepted(resp, msgId);
         }).catch(function() {});
         lxmfConversation.push({
             id: msgId,
@@ -2994,6 +3125,8 @@ function sendLxmfMessage(deliveryMethod) {
             delivery_method: chosenDelivery,
             client_msg_id: msgId,
         }
+    }).then(function(resp) {
+        _handleLxmfSendAccepted(resp, msgId);
     }).catch(function() {});
 
     lxmfConversation.push({
@@ -3303,6 +3436,17 @@ function _lookupAnnounceName(hash) {
 
 function _getContactName(hash) {
     return _conversationNameInfo(hash, null, false).name;
+}
+
+function _messageSourceName(msg) {
+    if (!msg) return 'Unknown';
+    var info = _conversationNameInfo(msg.source, null, false);
+    var emittedName = (typeof msg.source_display_name === 'string')
+        ? msg.source_display_name.trim()
+        : '';
+    if (info.name && !info.isHash && info.name !== 'Anonymous') return info.name;
+    if (emittedName) return emittedName;
+    return info.name || emittedName || _hashFallbackName(msg.source);
 }
 
 var _activeContextMenu = null;
@@ -3704,7 +3848,7 @@ RS.listen('lxmf_message', function(msg) {
         }
     }
     if (msg.source !== lxmfActiveContact) {
-        var fromLabel = _getContactName(msg.source);
+        var fromLabel = _messageSourceName(msg);
         var hasAttachment = (msg.attachments && msg.attachments.length > 0) || msg.image;
         var toastMsg = hasAttachment
             ? 'New message with attachment from ' + escapeHtml(fromLabel)
@@ -3712,7 +3856,7 @@ RS.listen('lxmf_message', function(msg) {
         var sourceHash = msg.source;
         showToast(toastMsg, 'toast-blue', 4000, function() { openConversationWith(sourceHash); });
         if (!window.__TAURI_INTERNALS__ && document.hidden && typeof rsNotify !== 'undefined') {
-            var notifFrom = _getContactName(msg.source);
+            var notifFrom = _messageSourceName(msg);
             var notifBody = (msg.content || '').substring(0, 120) || 'New message';
             rsNotify.send({
                 title: 'Message from ' + notifFrom,
@@ -3733,8 +3877,9 @@ RS.listen('lxmf_step', function(data) {
                 break;
             }
         }
+        _flushPendingLxmfCancel(data.client_msg_id, data.msg_id);
     }
-    if (data.step === 'delivered' || data.step === 'propagated' || data.step === 'failed' || data.step === 'timeout' || data.step === 'error' || data.step === 'rejected') {
+    if (data.step === 'delivered' || data.step === 'propagated' || data.step === 'failed' || data.step === 'cancelled' || data.step === 'timeout' || data.step === 'error' || data.step === 'rejected') {
         var resolvedState = (data.step === 'error') ? 'failed' : data.step;
         // `propagated` is terminal alongside `delivered`/`failed`/`cancelled`/
         // `rejected` — see db::update_message_state for the matching guard.
@@ -3775,7 +3920,7 @@ RS.listen('lxmf_step', function(data) {
     if (inFlightSteps.indexOf(data.step) !== -1) {
         lxmfConversation.forEach(function(msg) {
             if (data.msg_id && msg.id === data.msg_id) {
-                msg.state = data.step;
+                if (!_isTerminalMessageState(msg.state)) msg.state = data.step;
                 if (data.method) msg.delivery_method = data.method;
             }
         });
@@ -3801,6 +3946,7 @@ RS.listen('lxmf_delivery_progress', function(data) {
                 break;
             }
         }
+        _flushPendingLxmfCancel(data.client_msg_id, data.msg_id);
     }
     var inFlightSteps = [
         'routing',
