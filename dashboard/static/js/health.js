@@ -1036,11 +1036,6 @@ function showInterfaceActionSheet(ifaceType, ifaceName) {
             itemsEl.appendChild(divider);
             return;
         }
-        if (idx > 0 && item.danger && !(items[idx - 1] && items[idx - 1].separator)) {
-            var dangerDivider = document.createElement('div');
-            dangerDivider.className = 'bottom-sheet-divider';
-            itemsEl.appendChild(dangerDivider);
-        }
         var btn = document.createElement('button');
         btn.className = 'bottom-sheet-item' + (item.danger ? ' bottom-sheet-danger' : '');
         if (item.disabled) {

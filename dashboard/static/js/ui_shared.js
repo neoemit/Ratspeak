@@ -41,6 +41,8 @@
             choices: transportChoices
         }).then(function(mode) {
             if (!mode) return null;
+            var previousText = badge ? badge.textContent : '';
+            var previousValue = badge ? badge.getAttribute('data-value') : '';
             if (badge) {
                 badge.textContent = transportLabels[mode] || mode;
                 badge.setAttribute('data-value', mode);
@@ -50,6 +52,11 @@
             }).then(function() {
                 return mode;
             }).catch(function(err) {
+                if (badge) {
+                    badge.textContent = previousText || 'OFF';
+                    if (previousValue) badge.setAttribute('data-value', previousValue);
+                    else badge.removeAttribute('data-value');
+                }
                 if (typeof showToast === 'function') {
                     showToast((err && err.message) || 'Failed to update transport mode', 'toast-red', 8000);
                 }

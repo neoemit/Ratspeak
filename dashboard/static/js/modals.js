@@ -50,7 +50,7 @@ function setBottomSheetTitleWithIcon(titleEl, title, iconType) {
 
 var PUBLIC_TCP_SERVERS = [
     { id: 'ratspeak-ruby', name: 'Ratspeak Ruby', host: '1.ratspeak.org', port: 4141, tone: 'ruby', mark: 'R', tags: ['Ratspeak', 'Public'] },
-    { id: 'ratspeak-emerald', name: 'Ratspeak Emerald', host: '2.ratspeak.org', port: 4242, tone: 'emerald', mark: 'E', tags: ['Ratspeak', 'Public'] },
+    { id: 'ratspeak-emerald', name: 'Ratspeak Emerald', host: '2.ratspeak.org', port: 4242, tone: 'emerald', mark: 'E', tags: ['Ratspeak', 'Public'], aliases: [{ host: 'rns.ratspeak.org', port: 4242 }] },
     { id: 'ratspeak-diamond', name: 'Ratspeak Diamond', host: '3.ratspeak.org', port: 4343, tone: 'diamond', mark: 'D', tags: ['Ratspeak', 'Public'] },
     { id: 'beleth', name: 'Beleth', host: 'rns.beleth.net', port: 4242, tone: 'beleth', mark: 'B', tags: ['Community', 'Public'] },
     { id: 'rmap', name: 'RMAP', host: 'rmap.world', port: 4242, tone: 'rmap', mark: 'R', tags: ['Community', 'Public'] },
@@ -60,8 +60,17 @@ function _tcpServerKey(host, port) {
     return String(host || '').trim().toLowerCase() + ':' + (parseInt(port, 10) || 4242);
 }
 
+function _publicServerEndpointKeys(server) {
+    var endpoints = [{ host: server.host, port: server.port }].concat(server.aliases || []);
+    return endpoints.map(function(endpoint) {
+        return _tcpServerKey(endpoint.host, endpoint.port);
+    });
+}
+
 var PUBLIC_TCP_SERVER_KEYS = PUBLIC_TCP_SERVERS.reduce(function(acc, server) {
-    acc[_tcpServerKey(server.host, server.port)] = true;
+    _publicServerEndpointKeys(server).forEach(function(key) {
+        acc[key] = true;
+    });
     return acc;
 }, {});
 var _connectPendingPublicServerKey = null;
@@ -69,6 +78,14 @@ var _connectPendingPublicServerKey = null;
 function _isPublicTcpServer(host, port) {
     return !!PUBLIC_TCP_SERVER_KEYS[_tcpServerKey(host, port)];
 }
+
+function _publicServerMatchesEndpoint(server, host, port) {
+    var endpointKey = _tcpServerKey(host, port);
+    return _publicServerEndpointKeys(server).indexOf(endpointKey) >= 0;
+}
+
+var PUBLIC_SERVER_ARROW_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>';
+var PUBLIC_SERVER_CHECK_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>';
 
 function _setConnectSubmitBase(btn, text) {
     if (!btn) return;
@@ -1461,6 +1478,8 @@ function setConnectTab(tab) {
         var nameEl = document.getElementById('connect-name');
         if (nameEl) nameEl.value = '';
     }
+    var body = document.querySelector('#connect-modal .bottom-sheet-body');
+    if (body) body.scrollTop = 0;
 }
 
 function _connectMatchingPublicInterface(server, ifaces) {
@@ -1468,7 +1487,7 @@ function _connectMatchingPublicInterface(server, ifaces) {
     var clients = Array.isArray(ifaces.tcp_client) ? ifaces.tcp_client : [];
     for (var i = 0; i < clients.length; i++) {
         var iface = clients[i] || {};
-        if (_tcpServerKey(iface.target_host, iface.target_port) !== _tcpServerKey(server.host, server.port)) continue;
+        if (!_publicServerMatchesEndpoint(server, iface.target_host, iface.target_port)) continue;
         var live = (typeof getInterfaceLiveStatus === 'function') ? getInterfaceLiveStatus(iface.name || '') : null;
         return {
             iface: iface,
@@ -1489,6 +1508,7 @@ function renderPublicTcpServers(ifaces) {
         var connected = !!(match && match.online);
         var added = !!match && !connected;
         var action = pending ? 'Connecting...' : (connected ? 'Connected' : (added ? 'Added' : 'Connect'));
+        var actionIcon = connected || added ? PUBLIC_SERVER_CHECK_ICON : PUBLIC_SERVER_ARROW_ICON;
 
         var btn = document.createElement('button');
         btn.type = 'button';
@@ -1498,6 +1518,7 @@ function renderPublicTcpServers(ifaces) {
             (added ? ' is-added' : '');
         btn.disabled = !!match || pending;
         btn.setAttribute('aria-label', action + ' ' + server.name);
+        btn.title = action + ' ' + server.name;
 
         var tags = (server.tags || []).map(function(tag) {
             return '<span class="public-server-tag">' + escapeHtml(tag) + '</span>';
@@ -1509,7 +1530,7 @@ function renderPublicTcpServers(ifaces) {
                 '<span class="public-server-name">' + escapeHtml(server.name) + '</span>' +
                 '<span class="public-server-tags">' + tags + '</span>' +
             '</span>' +
-            '<span class="public-server-action">' + action + '</span>';
+            '<span class="public-server-action" aria-hidden="true">' + actionIcon + '</span>';
 
         if (!match) {
             btn.addEventListener('click', function() {
@@ -1591,6 +1612,8 @@ function openConnectModal(editContext) {
     loadConnectionHistory();
     refreshConnectPublicServers();
     RS.ui.openExistingSheet('connect-modal', 'connect-modal-overlay');
+    var body = document.querySelector('#connect-modal .bottom-sheet-body');
+    if (body) body.scrollTop = 0;
 }
 
 function loadConnectionHistory() {
@@ -1972,6 +1995,7 @@ function showAutoInterfaceConfigSheet() {
         titleIcon: interfaceSheetIcon('local'),
         titleIconType: 'local'
     }, function() {});
+    built.sheet.classList.add('local-network-sheet');
     built.overlay.addEventListener('click', function(e) {
         if (e.target === built.overlay) built.dismiss(null);
     });

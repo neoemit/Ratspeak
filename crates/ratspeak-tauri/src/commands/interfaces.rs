@@ -394,6 +394,90 @@ fn default_network_type() -> String {
     "unknown".to_string()
 }
 
+const PUBLIC_TCP_TRANSPORT_CONNECT_LIMIT_MESSAGE: &str =
+    "Disable Transport Mode before connecting to more than 1 public server.";
+const PUBLIC_TCP_TRANSPORT_ENABLE_LIMIT_MESSAGE: &str =
+    "Transport Mode can't be enabled while connected to more than 1 public server.";
+
+const PUBLIC_TCP_ENDPOINTS: &[(&str, u16, &str)] = &[
+    ("1.ratspeak.org", 4141, "ratspeak-ruby"),
+    ("2.ratspeak.org", 4242, "ratspeak-emerald"),
+    ("rns.ratspeak.org", 4242, "ratspeak-emerald"),
+    ("3.ratspeak.org", 4343, "ratspeak-diamond"),
+    ("rns.beleth.net", 4242, "beleth"),
+    ("rmap.world", 4242, "rmap"),
+];
+
+fn normalise_public_tcp_host(host: &str) -> String {
+    let mut value = host.trim().to_ascii_lowercase();
+    if let Some((_, tail)) = value.split_once("://") {
+        value = tail.to_string();
+    }
+    if let Some((head, _)) = value.split_once('/') {
+        value = head.to_string();
+    }
+    value.trim_end_matches('.').to_string()
+}
+
+fn public_tcp_server_id(host: &str, port: u16) -> Option<&'static str> {
+    let host = normalise_public_tcp_host(host);
+    PUBLIC_TCP_ENDPOINTS
+        .iter()
+        .find_map(|(public_host, public_port, id)| {
+            (host == *public_host && port == *public_port).then_some(*id)
+        })
+}
+
+fn public_tcp_server_id_from_entry(entry: &Value) -> Option<&'static str> {
+    public_tcp_server_id(
+        &cfg_str(entry, "target_host")?,
+        cfg_u16(entry, "target_port")?,
+    )
+}
+
+fn push_unique_public_server_id(ids: &mut Vec<&'static str>, id: &'static str) {
+    if !ids.contains(&id) {
+        ids.push(id);
+    }
+}
+
+fn projected_enabled_public_tcp_server_ids(
+    ifaces: &Value,
+    replace_name: Option<&str>,
+    candidate: Option<&'static str>,
+) -> Vec<&'static str> {
+    let mut ids = Vec::new();
+    if let Some(entries) = ifaces.get("tcp_client").and_then(Value::as_array) {
+        for entry in entries {
+            if replace_name
+                .is_some_and(|name| entry.get("name").and_then(Value::as_str) == Some(name))
+            {
+                continue;
+            }
+            if !cfg_bool_default_true(entry, "enabled") {
+                continue;
+            }
+            if let Some(id) = public_tcp_server_id_from_entry(entry) {
+                push_unique_public_server_id(&mut ids, id);
+            }
+        }
+    }
+    if let Some(id) = candidate {
+        push_unique_public_server_id(&mut ids, id);
+    }
+    ids
+}
+
+fn enabled_public_tcp_server_count(ifaces: &Value) -> usize {
+    projected_enabled_public_tcp_server_ids(ifaces, None, None).len()
+}
+
+fn auto_transport_base_enabled_for_interfaces(ifaces: &Value, network_type: &str) -> bool {
+    transport_auto_network_allows(network_type)
+        && has_enabled_non_lora_transport_interface(ifaces)
+        && !has_enabled_lora_interface(ifaces)
+}
+
 fn transport_auto_network_allows(network_type: &str) -> bool {
     match network_type.trim().to_ascii_lowercase().as_str() {
         "wifi" | "ethernet" => true,
@@ -433,9 +517,8 @@ fn has_enabled_non_lora_transport_interface(ifaces: &Value) -> bool {
 }
 
 fn auto_transport_enabled_for_interfaces(ifaces: &Value, network_type: &str) -> bool {
-    transport_auto_network_allows(network_type)
-        && has_enabled_non_lora_transport_interface(ifaces)
-        && !has_enabled_lora_interface(ifaces)
+    auto_transport_base_enabled_for_interfaces(ifaces, network_type)
+        && enabled_public_tcp_server_count(ifaces) <= 1
 }
 
 fn auto_transport_enabled(config_dir: &std::path::Path, network_type: &str) -> bool {
@@ -454,6 +537,40 @@ fn local_transport_runtime_allowed(state: &AppState) -> bool {
         .ok()
         .and_then(|r| r.as_ref().map(|mgr| mgr.handle.instance_mode))
         .is_none_or(|mode| mode != rns_runtime::reticulum::InstanceMode::Client)
+}
+
+fn configured_transport_enabled_for_interfaces(state: &AppState, ifaces: &Value) -> bool {
+    match db::get_setting(&state.db, "transport_mode")
+        .unwrap_or_else(default_mode)
+        .as_str()
+    {
+        "on" => true,
+        "auto" => {
+            let network_type = persisted_transport_network_type(state);
+            auto_transport_enabled_for_interfaces(ifaces, &network_type)
+        }
+        _ => false,
+    }
+}
+
+fn enforce_public_tcp_transport_connect_limit(
+    state: &AppState,
+    ifaces: &Value,
+    replace_name: Option<&str>,
+    candidate: Option<&'static str>,
+) -> AppResult<()> {
+    let Some(candidate) = candidate else {
+        return Ok(());
+    };
+    if !configured_transport_enabled_for_interfaces(state, ifaces) {
+        return Ok(());
+    }
+    if projected_enabled_public_tcp_server_ids(ifaces, replace_name, Some(candidate)).len() > 1 {
+        return Err(AppError::conflict(
+            PUBLIC_TCP_TRANSPORT_CONNECT_LIMIT_MESSAGE,
+        ));
+    }
+    Ok(())
 }
 
 fn apply_transport_runtime_update(
@@ -513,11 +630,23 @@ pub async fn set_transport_mode(
     args: TransportModeArgs,
 ) -> AppResult<Value> {
     let config_dir = active_rns_config_dir(&state);
+    let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
 
+    let would_enable_transport = match args.mode.as_str() {
+        "on" => true,
+        "off" => false,
+        "auto" => auto_transport_base_enabled_for_interfaces(&ifaces, &args.network_type),
+        _ => false,
+    };
+    if would_enable_transport && enabled_public_tcp_server_count(&ifaces) > 1 {
+        return Err(AppError::conflict(
+            PUBLIC_TCP_TRANSPORT_ENABLE_LIMIT_MESSAGE,
+        ));
+    }
     let configured_enable = match args.mode.as_str() {
         "on" => true,
         "off" => false,
-        "auto" => auto_transport_enabled(&config_dir, &args.network_type),
+        "auto" => auto_transport_enabled_for_interfaces(&ifaces, &args.network_type),
         _ => false,
     };
     let runtime_allowed = local_transport_runtime_allowed(&state);
@@ -1835,6 +1964,15 @@ pub async fn resume_interface(
                 .ok_or_else(|| AppError::bad_request("Interface not found"))?;
         let runtime = resumable_config_from_entry(&group, &entry)
             .ok_or_else(|| AppError::bad_request("Unsupported interface"))?;
+        if group == "tcp_client" {
+            let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+            enforce_public_tcp_transport_connect_limit(
+                &state_arc,
+                &ifaces,
+                Some(&name),
+                public_tcp_server_id_from_entry(&entry),
+            )?;
+        }
         let config_written = crate::rns_config::set_interface_enabled(&config_dir, &name, true);
         if !config_written {
             return Err(AppError::internal("Config write error"));
@@ -3039,17 +3177,22 @@ pub async fn add_tcp_connection(
         name.clone()
     };
 
-    let host_for_db = host.clone();
-    let name_for_db = name.clone();
-    let _ = db::spawn_db(state_arc.db.clone(), move |p| {
-        db::save_connection_history(&p, &host_for_db, port, &name_for_db);
-    })
-    .await;
-
     let config_dir = active_rns_config_dir(&state_arc);
+    let candidate_public_server = public_tcp_server_id(&host, port as u16);
     if !with_rns_config_lock(&state_arc, || {
-        crate::rns_config::add_tcp_client(&config_dir, &iface_name, &host, port as u16)
-    }) {
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+        enforce_public_tcp_transport_connect_limit(
+            &state_arc,
+            &ifaces,
+            Some(&iface_name),
+            candidate_public_server,
+        )?;
+        if crate::rns_config::add_tcp_client(&config_dir, &iface_name, &host, port as u16) {
+            Ok::<_, AppError>(true)
+        } else {
+            Ok(false)
+        }
+    })? {
         emit_op_status_broadcast(
             &state_arc,
             "add_tcp",
@@ -3060,6 +3203,13 @@ pub async fn add_tcp_connection(
         );
         return Err(AppError::internal("Config write error"));
     }
+
+    let host_for_db = host.clone();
+    let name_for_db = name.clone();
+    let _ = db::spawn_db(state_arc.db.clone(), move |p| {
+        db::save_connection_history(&p, &host_for_db, port, &name_for_db);
+    })
+    .await;
 
     let ifaces_now = crate::rns_config::get_all_interfaces(&config_dir);
     emit_hub_interfaces(&state_arc, ifaces_now);
@@ -3174,19 +3324,20 @@ pub async fn update_tcp_connection(
 
     let config_dir = active_rns_config_dir(&state_arc);
 
-    let host_for_db = host.clone();
-    let name_for_db = name.clone();
-    let _ = db::spawn_db(state_arc.db.clone(), move |p| {
-        db::save_connection_history(&p, &host_for_db, port, &name_for_db);
-    })
-    .await;
-
+    let candidate_public_server = public_tcp_server_id(&host, port as u16);
     let (old_runtime, old_config_content, config_written) =
         with_rns_config_lock(&state_arc, || {
+            let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
             let old_entry = find_config_interface(&config_dir, "tcp_client", &old_name)
                 .ok_or_else(|| AppError::bad_request("Interface not found"))?;
             let old_runtime = tcp_client_config_from_entry(&old_entry)
                 .ok_or_else(|| AppError::bad_request("Invalid TCP config"))?;
+            enforce_public_tcp_transport_connect_limit(
+                &state_arc,
+                &ifaces,
+                Some(&old_name),
+                candidate_public_server,
+            )?;
             let old_config_content =
                 crate::rns_config::read_config(&config_dir).unwrap_or_default();
             let config_written = crate::rns_config::update_tcp_client(
@@ -3210,6 +3361,13 @@ pub async fn update_tcp_connection(
         );
         return Err(AppError::internal("Config write error"));
     }
+
+    let host_for_db = host.clone();
+    let name_for_db = name.clone();
+    let _ = db::spawn_db(state_arc.db.clone(), move |p| {
+        db::save_connection_history(&p, &host_for_db, port, &name_for_db);
+    })
+    .await;
 
     let new_runtime = EditableInterfaceConfig::TcpClient {
         name: name.clone(),
@@ -4392,6 +4550,63 @@ mod backbone_args_tests {
             &ifaces_without_non_lora,
             "wifi"
         ));
+    }
+
+    #[test]
+    fn public_tcp_servers_are_canonicalised_for_transport_limits() {
+        assert_eq!(
+            public_tcp_server_id("RNS.RATSPEAK.ORG.", 4242),
+            Some("ratspeak-emerald")
+        );
+        assert_eq!(
+            public_tcp_server_id("https://2.ratspeak.org/", 4242),
+            Some("ratspeak-emerald")
+        );
+        assert_eq!(public_tcp_server_id("example.net", 4242), None);
+
+        let alias_pair = serde_json::json!({
+            "tcp_client": [
+                { "name": "Emerald 2", "target_host": "2.ratspeak.org", "target_port": "4242", "enabled": "true" },
+                { "name": "Emerald RNS", "target_host": "rns.ratspeak.org", "target_port": "4242", "enabled": "true" }
+            ]
+        });
+        assert_eq!(enabled_public_tcp_server_count(&alias_pair), 1);
+
+        let multiple_public = serde_json::json!({
+            "tcp_client": [
+                { "name": "Ruby", "target_host": "1.ratspeak.org", "target_port": "4141", "enabled": "true" },
+                { "name": "Emerald", "target_host": "2.ratspeak.org", "target_port": "4242", "enabled": "true" },
+                { "name": "Paused Diamond", "target_host": "3.ratspeak.org", "target_port": "4343", "enabled": "false" }
+            ]
+        });
+        assert_eq!(enabled_public_tcp_server_count(&multiple_public), 2);
+        assert_eq!(
+            projected_enabled_public_tcp_server_ids(
+                &multiple_public,
+                Some("Ruby"),
+                Some("ratspeak-diamond")
+            )
+            .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn auto_transport_refuses_multiple_enabled_public_tcp_servers() {
+        let ifaces = serde_json::json!({
+            "rnode": [],
+            "auto": [],
+            "tcp_client": [
+                { "name": "Ruby", "type": "TCPClientInterface", "target_host": "1.ratspeak.org", "target_port": "4141", "enabled": "true" },
+                { "name": "Emerald", "type": "TCPClientInterface", "target_host": "2.ratspeak.org", "target_port": "4242", "enabled": "true" }
+            ],
+            "tcp_server": [],
+            "backbone_client": [],
+            "backbone_server": []
+        });
+
+        assert!(auto_transport_base_enabled_for_interfaces(&ifaces, "wifi"));
+        assert!(!auto_transport_enabled_for_interfaces(&ifaces, "wifi"));
     }
 
     #[test]

@@ -485,6 +485,9 @@ fn interface_add_flows_cannot_be_misclassified_as_edits() {
     assert!(modals_js.contains("setBottomSheetTitleWithIcon(\n        titleEl,\n        isEdit ? 'Edit Backbone Server' : 'Host Backbone Server',"));
     assert!(modals_js.contains("titleIcon: interfaceSheetIcon('local')"));
     assert!(modals_js.contains("titleIcon: interfaceSheetIcon('ble')"));
+    let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs js");
+    assert!(dialogs_js.contains("titleIcon: opts.titleIcon || ''"));
+    assert!(dialogs_js.contains("titleIconType: opts.titleIconType || ''"));
     assert!(
         modals_js.contains("var editContext = _normaliseConnectEditContext(_connectEditContext);")
     );
@@ -546,6 +549,7 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
         "4141",
         "Ratspeak Emerald",
         "2.ratspeak.org",
+        "rns.ratspeak.org",
         "4242",
         "Ratspeak Diamond",
         "3.ratspeak.org",
@@ -561,6 +565,10 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
         );
     }
     assert!(modals_js.contains("function _isPublicTcpServer(host, port)"));
+    assert!(modals_js.contains("function _publicServerMatchesEndpoint(server, host, port)"));
+    assert!(modals_js.contains("aliases: [{ host: 'rns.ratspeak.org', port: 4242 }]"));
+    assert!(modals_js.contains("var PUBLIC_SERVER_ARROW_ICON"));
+    assert!(modals_js.contains("var PUBLIC_SERVER_CHECK_ICON"));
     assert!(modals_js.contains("return !_isPublicTcpServer(entry.host, entry.port);"));
     assert!(modals_js.contains("quickConnect(server.host, server.port, server.name"));
     assert!(modals_js.contains("if (bbCheckbox && opts.publicServer) bbCheckbox.checked = false;"));
@@ -573,6 +581,8 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
     assert!(modals_css.contains(".public-server-card--diamond"));
     assert!(modals_css.contains(".public-server-card--beleth"));
     assert!(modals_css.contains(".public-server-card--rmap"));
+    assert!(modals_css.contains("grid-template-columns: 34px minmax(0, 1fr) 38px"));
+    assert!(modals_css.contains(".public-server-action svg"));
 }
 
 #[test]
@@ -587,6 +597,7 @@ fn interface_pause_resume_is_config_backed_and_visible() {
     assert!(health_js.contains("resume_interface"));
     assert!(health_js.contains("conn-iface-pill-paused"));
     assert!(!health_js.contains("Display Name"));
+    assert!(!health_js.contains("dangerDivider"));
 
     let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
     assert!(modals_js.contains("name: name || (host + ':' + port)"));
@@ -637,6 +648,7 @@ fn rnode_radio_catalog_has_single_runtime_source() {
     assert!(modals_js.contains("function _normaliseRnodeTcpEndpoint(raw)"));
     assert!(modals_js.contains("if (_rnodeIsTcpPort(port)) return 'tcp';"));
     assert!(modals_js.contains("setRnodeConnectionType('tcp')"));
+    assert!(modals_js.contains("built.sheet.classList.add('local-network-sheet')"));
     assert!(
         modals_js.contains("loraArgs.frequency = radioSettings.frequency")
             || modals_js.contains("frequency: radioSettings.frequency")
@@ -655,6 +667,25 @@ fn rnode_radio_catalog_has_single_runtime_source() {
     assert!(!modals_js.contains("var RNODE_REGIONS = {"));
     assert!(!index.contains("<option value=\"americas\""));
     assert!(!index.contains("<option value=\"medium_fast\""));
+
+    let responsive_css =
+        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
+    assert!(responsive_css.contains(".bottom-sheet .modal-field label"));
+    assert!(responsive_css.contains(".bottom-sheet .rs-dialog-field-label"));
+    assert!(responsive_css.contains(".bottom-sheet .sheet-segmented-tabs button"));
+    assert!(responsive_css.contains(".bottom-sheet .rs-dialog-choice-hint"));
+    assert!(responsive_css.contains(".bottom-sheet .rs-dialog-checkbox-label"));
+    assert!(responsive_css.contains(".bottom-sheet .hub-iface-detail"));
+    assert!(responsive_css.contains("#connect-modal .connect-tab-toggle button"));
+    assert!(responsive_css.contains("#connect-modal .quick-connect-btn"));
+    assert!(responsive_css.contains("#connect-modal .quick-connect-detail"));
+    assert!(responsive_css.contains("#connect-modal .public-server-name"));
+    assert!(responsive_css.contains("#connect-modal .public-server-tag"));
+    assert!(responsive_css.contains("#rnode-modal .rnode-pairing-tip"));
+    assert!(responsive_css.contains("#rnode-modal .rnode-frequency-unit"));
+    assert!(responsive_css.contains("#rnode-modal .ble-device-meta"));
+    assert!(responsive_css.contains(".bottom-sheet .rs-dialog-field-help"));
+    assert!(responsive_css.contains("font-size: var(--mobile-list-detail-size);"));
 }
 
 #[test]
@@ -1280,6 +1311,9 @@ fn mobile_primary_lists_share_readable_row_scale() {
     assert!(responsive_css.contains(".relay-card-header,"));
     assert!(responsive_css.contains(".relay-card-details,"));
     assert!(responsive_css.contains(".propagation-section-desc,"));
+    assert!(responsive_css.contains("#bottom-sheet .bottom-sheet-item"));
+    assert!(responsive_css.contains("background: transparent;"));
+    assert!(responsive_css.contains("border: 0;"));
     assert!(responsive_css.contains("--mobile-list-avatar-size: 42px;"));
 }
 
@@ -2076,6 +2110,8 @@ fn transport_mode_defaults_and_auto_policy_are_explicit() {
     assert!(ui_shared_js.contains("RS.ui.applyTransportModePayload"));
     assert!(ui_shared_js.contains("RS.ui.openTransportModeChoice"));
     assert!(ui_shared_js.contains("RS.ui.bindTransportChoice"));
+    assert!(ui_shared_js.contains("var previousText = badge ? badge.textContent : '';"));
+    assert!(ui_shared_js.contains("badge.textContent = previousText || 'OFF';"));
     assert!(settings_js.contains("function applyTransportModePayload"));
     assert!(settings_js.contains("RS.ui.applyTransportModePayload"));
     assert!(settings_js.contains("RS.ui.bindTransportChoice"));
@@ -2095,6 +2131,22 @@ fn transport_mode_defaults_and_auto_policy_are_explicit() {
 
     assert!(interfaces_rs.contains(r#""off".to_string()"#));
     assert!(interfaces_rs.contains("auto_transport_enabled_for_interfaces"));
+    assert!(interfaces_rs.contains("PUBLIC_TCP_TRANSPORT_CONNECT_LIMIT_MESSAGE"));
+    assert!(interfaces_rs.contains("PUBLIC_TCP_TRANSPORT_ENABLE_LIMIT_MESSAGE"));
+    assert!(interfaces_rs.contains("public_tcp_server_id"));
+    assert!(interfaces_rs.contains("enabled_public_tcp_server_count"));
+    assert!(interfaces_rs.contains("enforce_public_tcp_transport_connect_limit"));
+    assert!(interfaces_rs.contains("projected_enabled_public_tcp_server_ids"));
+    assert!(
+        interfaces_rs.contains(
+            "Transport Mode can't be enabled while connected to more than 1 public server."
+        )
+    );
+    assert!(
+        interfaces_rs
+            .contains("Disable Transport Mode before connecting to more than 1 public server.")
+    );
+    assert!(interfaces_rs.contains("rns.ratspeak.org\", 4242, \"ratspeak-emerald"));
     assert!(interfaces_rs.contains("has_enabled_non_lora_transport_interface"));
     assert!(interfaces_rs.contains("reconcile_auto_transport_after_interface_change"));
     assert!(interfaces_rs.contains("transport_network_type"));

@@ -268,7 +268,11 @@ function _rsShowDialog(cfg, callback) {
 function rsChoice(opts) {
     opts = opts || {};
     return new Promise(function(resolve) {
-        var built = _rsBuildSheet({ title: opts.title || 'Choose' }, resolve);
+        var built = _rsBuildSheet({
+            title: opts.title || 'Choose',
+            titleIcon: opts.titleIcon || '',
+            titleIconType: opts.titleIconType || ''
+        }, resolve);
 
         built.overlay.addEventListener('click', function(e) {
             if (e.target === built.overlay) built.dismiss(null);
