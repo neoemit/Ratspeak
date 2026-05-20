@@ -673,17 +673,18 @@ pub fn set_interface_enabled(config_dir: &Path, name: &str, enabled: bool) -> bo
             let mut saw_enabled_key = false;
             let mut insert_idx = 1;
 
-            for idx in 1..block.len() {
-                if let Some((key, _)) = parse_ini_key_value(&block[idx]) {
+            for (idx, line) in block.iter_mut().enumerate().skip(1) {
+                if let Some((key, _)) = parse_ini_key_value(line) {
+                    let key = key.to_string();
                     if key == "type" || key == "interface_type" {
                         insert_idx = idx + 1;
                     }
                     if key == "enabled" || key == "interface_enabled" {
-                        let indent = block[idx]
+                        let indent = line
                             .chars()
                             .take_while(|ch| ch.is_whitespace())
                             .collect::<String>();
-                        block[idx] = format!("{indent}{key} = {enabled_value}");
+                        *line = format!("{indent}{key} = {enabled_value}");
                         saw_enabled_key = true;
                     }
                 }
