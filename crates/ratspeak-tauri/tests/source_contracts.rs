@@ -544,14 +544,14 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
 
     let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
     for expected in [
-        "Ratspeak Ruby",
+        "Ruby",
         "1.ratspeak.org",
         "4141",
-        "Ratspeak Emerald",
+        "Emerald",
         "2.ratspeak.org",
         "rns.ratspeak.org",
         "4242",
-        "Ratspeak Diamond",
+        "Diamond",
         "3.ratspeak.org",
         "4343",
         "Beleth",
@@ -569,6 +569,8 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
     assert!(modals_js.contains("aliases: [{ host: 'rns.ratspeak.org', port: 4242 }]"));
     assert!(modals_js.contains("var PUBLIC_SERVER_ARROW_ICON"));
     assert!(modals_js.contains("var PUBLIC_SERVER_CHECK_ICON"));
+    assert!(modals_js.contains("var PUBLIC_SERVER_GEM_ICON"));
+    assert!(modals_js.contains("function _publicServerMarkHtml(server)"));
     assert!(modals_js.contains("return !_isPublicTcpServer(entry.host, entry.port);"));
     assert!(modals_js.contains("quickConnect(server.host, server.port, server.name"));
     assert!(modals_js.contains("if (bbCheckbox && opts.publicServer) bbCheckbox.checked = false;"));
@@ -582,6 +584,9 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
     assert!(modals_css.contains(".public-server-card--beleth"));
     assert!(modals_css.contains(".public-server-card--rmap"));
     assert!(modals_css.contains("grid-template-columns: 34px minmax(0, 1fr) 38px"));
+    assert!(modals_css.contains("gap: var(--space-6);"));
+    assert!(modals_css.contains(".public-server-mark--gem"));
+    assert!(modals_css.contains("stroke-linejoin: round;"));
     assert!(modals_css.contains(".public-server-action svg"));
 }
 
@@ -782,6 +787,7 @@ fn message_composer_send_preserves_preexisting_focus_state() {
 #[test]
 fn conversation_view_scrolls_to_recent_messages_without_yanking_history() {
     let lxmf = read_source(repo_root().join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    let nav = read_source(repo_root().join("dashboard/static/js/nav.js")).expect("nav js");
 
     assert!(lxmf.contains("function _wireLxmfMessageScroll(container)"));
     assert!(lxmf.contains("function _captureLxmfMessageScrollState(container)"));
@@ -798,6 +804,12 @@ fn conversation_view_scrolls_to_recent_messages_without_yanking_history() {
         !lxmf.contains("setTimeout(function() { msgEl.scrollTop = msgEl.scrollHeight; }, 50)"),
         "conversation scrolling must use the central settled-bottom policy"
     );
+    assert!(nav.contains("function _chatMessagesNearBottomForKeyboard()"));
+    assert!(nav.contains("function _pinChatMessagesToBottomForKeyboard()"));
+    assert!(nav.contains("_waitingForKeyboard = _chatMessagesNearBottomForKeyboard();"));
+    assert!(nav.contains(
+        "document.documentElement.classList.contains('keyboard-open') && _chatMessagesNearBottomForKeyboard()"
+    ));
 }
 
 #[test]
@@ -1887,6 +1899,8 @@ fn message_actions_use_mobile_long_press_and_action_state() {
 
     assert!(lxmf.contains("RS.gestures.attachLongPress(bubble"));
     assert!(lxmf.contains("preventDefaultOnStart: function()"));
+    assert!(lxmf.contains("if (e.defaultPrevented) return;"));
+    assert!(lxmf.contains("(t.closest('.lxmf-msg') && _shouldPreserveLxmfComposerKeyboard())"));
     assert!(lxmf.contains("function _bindMessageFocusPreservingActivation"));
     assert!(lxmf.contains("preserveComposerKeyboard"));
     assert!(lxmf.contains("function _restoreLxmfComposerKeyboard"));

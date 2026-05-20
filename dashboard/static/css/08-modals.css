@@ -366,7 +366,7 @@
     display: grid;
     grid-template-columns: 34px minmax(0, 1fr) 38px;
     align-items: center;
-    gap: var(--space-4);
+    gap: var(--space-6);
     width: 100%;
     min-height: 56px;
     padding: var(--space-3) var(--space-4);
@@ -454,6 +454,21 @@
     font-weight: 700;
     line-height: 1;
     letter-spacing: 0;
+}
+
+.public-server-mark svg {
+    width: 18px;
+    height: 18px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.public-server-mark--gem {
+    color: var(--public-server-accent, var(--accent));
 }
 
 .public-server-main {
@@ -546,7 +561,7 @@
 @media (max-width: 420px) {
     .public-server-card {
         grid-template-columns: 32px minmax(0, 1fr) 36px;
-        gap: var(--space-3);
+        gap: var(--space-5);
         min-height: 52px;
         padding: var(--space-3) var(--space-4);
     }

@@ -1020,6 +1020,18 @@ var _waitingForKeyboard = false;
 var _keyboardStableTimer = null;
 var _maxViewportHeight = 0;
 
+function _chatMessagesNearBottomForKeyboard() {
+    var msgContainer = document.getElementById('lxmf-messages');
+    if (!msgContainer) return true;
+    var bottomGap = Math.max(0, msgContainer.scrollHeight - msgContainer.clientHeight - msgContainer.scrollTop);
+    return bottomGap <= 160;
+}
+
+function _pinChatMessagesToBottomForKeyboard() {
+    var msgContainer = document.getElementById('lxmf-messages');
+    if (msgContainer) msgContainer.scrollTop = msgContainer.scrollHeight;
+}
+
 function initKeyboardDetection() {
     var bar = document.getElementById('bottom-bar');
     if (!window.visualViewport) return;
@@ -1065,8 +1077,7 @@ function initKeyboardDetection() {
                 clearTimeout(_keyboardStableTimer);
                 _keyboardStableTimer = setTimeout(function() {
                     _waitingForKeyboard = false;
-                    var msgContainer = document.getElementById('lxmf-messages');
-                    if (msgContainer) msgContainer.scrollTop = msgContainer.scrollHeight;
+                    _pinChatMessagesToBottomForKeyboard();
                 }, 100);
             }
         } else {
@@ -1111,7 +1122,8 @@ function initKeyboardDetection() {
     });
 
     // Per-input scroll behaviour: search bars float above keyboard already,
-    // chat compose pins messages to bottom, modal/other inputs scrollIntoView.
+    // chat compose only pins messages if the user was already at the latest
+    // messages; modal/other inputs scrollIntoView.
     document.addEventListener('focusin', function(e) {
         var el = e.target;
         if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return;
@@ -1121,7 +1133,7 @@ function initKeyboardDetection() {
         }
 
         if (el.id === 'lxmf-input') {
-            _waitingForKeyboard = true;
+            _waitingForKeyboard = _chatMessagesNearBottomForKeyboard();
             return;
         }
 
@@ -1156,12 +1168,11 @@ function initTextareaAutoGrow() {
         ta.style.height = 'auto';
         ta.style.height = Math.min(ta.scrollHeight, 124) + 'px';
         // rAF so scroll happens after the browser applies the new height.
-        if (document.documentElement.classList.contains('keyboard-open')) {
+        if (document.documentElement.classList.contains('keyboard-open') && _chatMessagesNearBottomForKeyboard()) {
             if (_growRaf) cancelAnimationFrame(_growRaf);
             _growRaf = requestAnimationFrame(function() {
                 _growRaf = null;
-                var msgContainer = document.getElementById('lxmf-messages');
-                if (msgContainer) msgContainer.scrollTop = msgContainer.scrollHeight;
+                _pinChatMessagesToBottomForKeyboard();
             });
         }
     });

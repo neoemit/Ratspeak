@@ -49,9 +49,9 @@ function setBottomSheetTitleWithIcon(titleEl, title, iconType) {
 }
 
 var PUBLIC_TCP_SERVERS = [
-    { id: 'ratspeak-ruby', name: 'Ratspeak Ruby', host: '1.ratspeak.org', port: 4141, tone: 'ruby', mark: 'R', tags: ['Ratspeak', 'Public'] },
-    { id: 'ratspeak-emerald', name: 'Ratspeak Emerald', host: '2.ratspeak.org', port: 4242, tone: 'emerald', mark: 'E', tags: ['Ratspeak', 'Public'], aliases: [{ host: 'rns.ratspeak.org', port: 4242 }] },
-    { id: 'ratspeak-diamond', name: 'Ratspeak Diamond', host: '3.ratspeak.org', port: 4343, tone: 'diamond', mark: 'D', tags: ['Ratspeak', 'Public'] },
+    { id: 'ratspeak-ruby', name: 'Ruby', host: '1.ratspeak.org', port: 4141, tone: 'ruby', mark_icon: 'gem', tags: ['Ratspeak', 'Public'] },
+    { id: 'ratspeak-emerald', name: 'Emerald', host: '2.ratspeak.org', port: 4242, tone: 'emerald', mark_icon: 'gem', tags: ['Ratspeak', 'Public'], aliases: [{ host: 'rns.ratspeak.org', port: 4242 }] },
+    { id: 'ratspeak-diamond', name: 'Diamond', host: '3.ratspeak.org', port: 4343, tone: 'diamond', mark_icon: 'gem', tags: ['Ratspeak', 'Public'] },
     { id: 'beleth', name: 'Beleth', host: 'rns.beleth.net', port: 4242, tone: 'beleth', mark: 'B', tags: ['Community', 'Public'] },
     { id: 'rmap', name: 'RMAP', host: 'rmap.world', port: 4242, tone: 'rmap', mark: 'R', tags: ['Community', 'Public'] },
 ];
@@ -86,6 +86,14 @@ function _publicServerMatchesEndpoint(server, host, port) {
 
 var PUBLIC_SERVER_ARROW_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>';
 var PUBLIC_SERVER_CHECK_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>';
+var PUBLIC_SERVER_GEM_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.2 3h9.6L22 8.8 12 21 2 8.8 7.2 3Z"/><path d="M7.2 3 9.5 8.8 12 21"/><path d="M16.8 3 14.5 8.8 12 21"/><path d="M2 8.8h20"/><path d="M9.5 8.8 12 3l2.5 5.8"/></svg>';
+
+function _publicServerMarkHtml(server) {
+    if (server.mark_icon === 'gem') {
+        return '<span class="public-server-mark public-server-mark--gem" aria-hidden="true">' + PUBLIC_SERVER_GEM_ICON + '</span>';
+    }
+    return '<span class="public-server-mark" aria-hidden="true">' + escapeHtml(server.mark || server.name.charAt(0)) + '</span>';
+}
 
 function _setConnectSubmitBase(btn, text) {
     if (!btn) return;
@@ -1525,7 +1533,7 @@ function renderPublicTcpServers(ifaces) {
         }).join('');
 
         btn.innerHTML =
-            '<span class="public-server-mark" aria-hidden="true">' + escapeHtml(server.mark || server.name.charAt(0)) + '</span>' +
+            _publicServerMarkHtml(server) +
             '<span class="public-server-main">' +
                 '<span class="public-server-name">' + escapeHtml(server.name) + '</span>' +
                 '<span class="public-server-tags">' + tags + '</span>' +

@@ -1161,7 +1161,7 @@ function _peerActivityLabel(peer) {
 
 function _peerHeaderStatus(peer) {
     if (!peer) return '';
-    if (peer.in_path || (peer.route_state && peer.route_state !== 'none')) return 'Reachable';
+    if (peer.in_path || (peer.route_state && peer.route_state !== 'none')) return 'Seen recently';
     if (typeof formatLastHeard === 'function') return formatLastHeard(peer.last_seen);
     return peer.last_seen ? prettyTime((Date.now() / 1000) - peer.last_seen) + ' ago' : '';
 }
@@ -4671,12 +4671,14 @@ document.addEventListener('DOMContentLoaded', function() {
     if (msgContainer) _wireLxmfMessageScroll(msgContainer);
     if (msgContainer && typeof isMobile === 'function' && isMobile()) {
         msgContainer.addEventListener('touchstart', function(e) {
+            if (e.defaultPrevented) return;
             var t = e.target;
             // Don't blur for taps on the compose bar or interactive controls — only
             // for taps on message body / list whitespace.
             if (t && t.closest && (
                 t.closest('.lxmf-compose') ||
-                t.closest('button, a, input, textarea, select, [role="button"], [role="menuitem"]')
+                t.closest('button, a, input, textarea, select, [role="button"], [role="menuitem"]') ||
+                (t.closest('.lxmf-msg') && _shouldPreserveLxmfComposerKeyboard())
             )) return;
             var active = document.activeElement;
             if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
