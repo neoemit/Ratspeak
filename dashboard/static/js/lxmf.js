@@ -2895,13 +2895,12 @@ function renderConversation(options) {
     });
 
     container.querySelectorAll('.reaction-pill').forEach(function(pill) {
-        pill.addEventListener('click', function(e) {
-            e.stopPropagation();
+        _bindMessageFocusPreservingActivation(pill, function(e) {
             var emoji = this.getAttribute('data-emoji');
             var msgId = this.getAttribute('data-msg-id');
             var msgData = lxmfConversation.find(function(m) { return m.id === msgId; }) || { id: msgId };
             _sendReactionForMessage(msgData, emoji, { dismiss: false });
-        });
+        }.bind(pill));
     });
 
     container.querySelectorAll('.msg-reply-quote').forEach(function(quote) {
@@ -2926,6 +2925,9 @@ function renderConversation(options) {
                 duration: 500,
                 moveCancelPx: 12,
                 hapticStages: [{ at: 0.55, level: 'light' }],
+                preventDefaultOnStart: function() {
+                    return _shouldPreserveLxmfComposerKeyboard();
+                },
                 onFire: function(touch) {
                     var msgId = bubble.getAttribute('data-msg-id');
                     if (!msgId) return;
@@ -3039,6 +3041,26 @@ function _focusLxmfComposerInput(input) {
     } catch (_) {
         input.focus();
     }
+}
+
+function _isLxmfComposerFocused() {
+    var input = document.getElementById('lxmf-input');
+    return !!(input && document.activeElement === input);
+}
+
+function _shouldPreserveLxmfComposerKeyboard() {
+    return (typeof isMobile === 'function' ? isMobile() : window.innerWidth <= 768) && _isLxmfComposerFocused();
+}
+
+function _restoreLxmfComposerKeyboard(shouldRestore) {
+    if (!shouldRestore) return;
+    var input = document.getElementById('lxmf-input');
+    if (!input || document.activeElement === input) return;
+    setTimeout(function() {
+        if (document.body.classList.contains('view-chat-detail') || lxmfActiveContact) {
+            _focusLxmfComposerInput(input);
+        }
+    }, 0);
 }
 
 function _finishLxmfComposerSend(input, shouldRestoreFocus) {
@@ -3448,7 +3470,7 @@ function setReplyTarget(msgData) {
         bar.style.display = 'flex';
     }
     var input = document.getElementById('lxmf-input');
-    if (input) input.focus();
+    if (input) _focusLxmfComposerInput(input);
 }
 
 function clearReplyTarget() {
@@ -3481,6 +3503,46 @@ function _messageSourceName(msg) {
 var _activeContextMenu = null;
 var _suppressNextContextMenuUntil = 0;
 
+function _messageActionShouldPreserveComposer() {
+    return !!((_activeContextMenu && _activeContextMenu.preserveComposerKeyboard) || _shouldPreserveLxmfComposerKeyboard());
+}
+
+function _preventMessageActionFocusSteal(e) {
+    if (_messageActionShouldPreserveComposer() && e && e.cancelable) e.preventDefault();
+}
+
+function _bindMessageFocusPreservingActivation(el, handler) {
+    var touchHandled = false;
+    function activate(e) {
+        if (e) {
+            if (e.cancelable) e.preventDefault();
+            e.stopPropagation();
+        }
+        handler(e);
+    }
+    el.addEventListener('mousedown', _preventMessageActionFocusSteal);
+    el.addEventListener('touchstart', _preventMessageActionFocusSteal, { passive: false });
+    el.addEventListener('touchend', function(e) {
+        if (!_messageActionShouldPreserveComposer()) return;
+        var t = (e.changedTouches && e.changedTouches[0]) || null;
+        if (t) {
+            var hit = document.elementFromPoint(t.clientX, t.clientY);
+            if (hit !== el && !el.contains(hit)) return;
+        }
+        touchHandled = true;
+        setTimeout(function() { touchHandled = false; }, 500);
+        activate(e);
+    }, { passive: false });
+    el.addEventListener('click', function(e) {
+        if (touchHandled) {
+            if (e.cancelable) e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
+        activate(e);
+    });
+}
+
 function _dismissContextMenu() {
     if (!_activeContextMenu) return false;
     if (_activeContextMenu.menu && _activeContextMenu.menu.parentNode) {
@@ -3502,6 +3564,9 @@ function _messageActionIcon(name) {
     }
     if (name === 'copy') {
         return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    }
+    if (name === 'save') {
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
     }
     return '';
 }
@@ -3550,9 +3615,11 @@ function _optimisticApplyReaction(msgId, emoji, action) {
 function _sendReactionForMessage(msgData, emoji, opts) {
     opts = opts || {};
     if (!msgData || !msgData.id || !emoji) return;
+    var shouldRestoreComposer = _messageActionShouldPreserveComposer();
     var action = _hasOwnReaction(msgData.id, emoji) ? 'remove' : 'add';
     if (opts.dismiss !== false) _dismissContextMenu();
     _optimisticApplyReaction(msgData.id, emoji, action);
+    _restoreLxmfComposerKeyboard(shouldRestoreComposer);
     if (typeof haptic === 'function') haptic('selection');
     RS.invoke('send_reaction', {
         args: {
@@ -3592,6 +3659,83 @@ function _copyToClipboardFallback(text) {
     return Promise.resolve(ok);
 }
 
+function _resolveMessageImageFile(msgData) {
+    if (!msgData || !msgData.image) return Promise.reject(new Error('No image selected'));
+    var image = msgData.image || {};
+    var filename = image.filename || 'image';
+    var mime = image.mime_type || image.mime || '';
+    if (image.stored_name) {
+        var cached = _getImageDownloadFile(image.stored_name);
+        if (cached) return Promise.resolve(cached);
+        return RS.fileDownload(image.stored_name).then(function(file) {
+            _rememberImageBlobUrl(image.stored_name, file.url, file);
+            return file;
+        });
+    }
+    if (image.data_url) {
+        var file = _fileFromDataUrl(image.data_url, filename, mime);
+        if (file) return Promise.resolve(file);
+    }
+    return Promise.reject(new Error('Image data is not ready yet'));
+}
+
+function _messageFirstAttachment(msgData) {
+    if (!msgData || !Array.isArray(msgData.attachments) || msgData.attachments.length === 0) return null;
+    for (var i = 0; i < msgData.attachments.length; i++) {
+        if (msgData.attachments[i] && msgData.attachments[i].stored_name) return msgData.attachments[i];
+    }
+    return msgData.attachments[0] || null;
+}
+
+function _resolveMessageAttachmentFile(att) {
+    if (!att || !att.stored_name) return Promise.reject(new Error('File is not ready yet'));
+    return RS.fileDownload(att.stored_name);
+}
+
+function _saveDownloadedMediaFile(file, opts) {
+    opts = opts || {};
+    return RS.saveDownloadedFile(file, opts).then(function() {
+        if (typeof showToast === 'function') {
+            showToast(/^image\//i.test(file.mime || '') && opts.preferPhotos ? 'Saved to photos!' : 'Saved', 'toast-green', 2500);
+        }
+        return true;
+    });
+}
+
+function _messageMediaContextAction(msgData) {
+    if (msgData && msgData.image) {
+        var canCopyImage = _canCopyDownloadedImages();
+        return {
+            label: canCopyImage ? 'Copy' : 'Save',
+            icon: canCopyImage ? 'copy' : 'save',
+            run: function() {
+                return _resolveMessageImageFile(msgData).then(function(file) {
+                    if (canCopyImage) {
+                        return _copyDownloadedImage(file).then(function() {
+                            if (typeof showCopyConfirmationToast === 'function') showCopyConfirmationToast('Image');
+                            return true;
+                        });
+                    }
+                    return _saveDownloadedMediaFile(file, { preferPhotos: true });
+                });
+            }
+        };
+    }
+    var attachment = _messageFirstAttachment(msgData);
+    if (attachment) {
+        return {
+            label: 'Save',
+            icon: 'save',
+            run: function() {
+                return _resolveMessageAttachmentFile(attachment).then(function(file) {
+                    return _saveDownloadedMediaFile(file);
+                });
+            }
+        };
+    }
+    return null;
+}
+
 function _positionMsgContextMenu(menu, x, y, bubble) {
     var margin = 10;
     var rect = bubble ? bubble.getBoundingClientRect() : null;
@@ -3616,6 +3760,7 @@ function _positionMsgContextMenu(menu, x, y, bubble) {
 function _showMsgContextMenu(msgData, x, y, bubble) {
     _dismissContextMenu();
 
+    var preserveComposerKeyboard = _shouldPreserveLxmfComposerKeyboard();
     if (typeof haptic === 'function') haptic('selection');
     var container = document.getElementById('lxmf-messages');
     var row = bubble && bubble.closest ? bubble.closest('.msg-row') : null;
@@ -3629,6 +3774,8 @@ function _showMsgContextMenu(msgData, x, y, bubble) {
     var menu = document.createElement('div');
     menu.className = 'msg-context-menu msg-action-menu';
     menu.setAttribute('role', 'menu');
+    menu.addEventListener('mousedown', _preventMessageActionFocusSteal);
+    menu.addEventListener('touchstart', _preventMessageActionFocusSteal, { passive: false });
 
     var reactBar = document.createElement('div');
     reactBar.className = 'msg-quick-react';
@@ -3639,8 +3786,7 @@ function _showMsgContextMenu(msgData, x, y, bubble) {
         btn.className = 'quick-react-emoji';
         btn.textContent = em;
         btn.setAttribute('aria-label', 'React ' + em);
-        btn.addEventListener('click', function(e) {
-            e.stopPropagation();
+        _bindMessageFocusPreservingActivation(btn, function() {
             _sendReactionForMessage(msgData, em);
         });
         reactBar.appendChild(btn);
@@ -3652,11 +3798,12 @@ function _showMsgContextMenu(msgData, x, y, bubble) {
     plusBtn.textContent = '+';
     plusBtn.title = 'More emoji';
     plusBtn.setAttribute('aria-label', 'More emoji');
-    plusBtn.addEventListener('click', function(e) {
-        e.stopPropagation();
+    _bindMessageFocusPreservingActivation(plusBtn, function() {
+        var shouldRestoreComposer = _messageActionShouldPreserveComposer();
         // Capture before dismiss removes plusBtn from the DOM.
         var btnRect = plusBtn.getBoundingClientRect();
         _dismissContextMenu();
+        _restoreLxmfComposerKeyboard(shouldRestoreComposer);
         var tempAnchor = document.createElement('div');
         tempAnchor.style.cssText = 'position:fixed;left:' + btnRect.left + 'px;top:' + btnRect.top + 'px;width:' + btnRect.width + 'px;height:' + btnRect.height + 'px;pointer-events:none;';
         document.body.appendChild(tempAnchor);
@@ -3691,8 +3838,7 @@ function _showMsgContextMenu(msgData, x, y, bubble) {
     replyBtn.className = 'msg-ctx-btn msg-ctx-reply';
     replyBtn.type = 'button';
     replyBtn.innerHTML = _messageActionIcon('reply') + '<span>Reply</span>';
-    replyBtn.addEventListener('click', function(e) {
-        e.stopPropagation();
+    _bindMessageFocusPreservingActivation(replyBtn, function() {
         _dismissContextMenu();
         setReplyTarget(msgData);
         if (typeof haptic === 'function') haptic('light');
@@ -3702,15 +3848,25 @@ function _showMsgContextMenu(msgData, x, y, bubble) {
     var copyBtn = document.createElement('button');
     copyBtn.className = 'msg-ctx-btn msg-ctx-copy';
     copyBtn.type = 'button';
-    copyBtn.innerHTML = _messageActionIcon('copy') + '<span>Copy</span>';
-    copyBtn.addEventListener('click', function(e) {
-        e.stopPropagation();
+    var mediaAction = _messageMediaContextAction(msgData);
+    copyBtn.innerHTML = _messageActionIcon(mediaAction ? mediaAction.icon : 'copy') +
+        '<span>' + (mediaAction ? mediaAction.label : 'Copy') + '</span>';
+    _bindMessageFocusPreservingActivation(copyBtn, function() {
+        var shouldRestoreComposer = _messageActionShouldPreserveComposer();
         _dismissContextMenu();
-        _copyToClipboard(msgData.content || '').then(function(ok) {
+        var action = mediaAction ? mediaAction.run() : _copyToClipboard(msgData.content || '');
+        action.then(function(ok) {
             if (typeof showToast === 'function') {
-                showToast(ok ? 'Message copied' : 'Could not copy', ok ? 'toast-green' : 'toast-orange', 1600);
+                if (!mediaAction) showToast(ok ? 'Message copied' : 'Could not copy', ok ? 'toast-green' : 'toast-orange', 1600);
             }
             if (typeof haptic === 'function') haptic(ok ? 'success' : 'warning');
+            _restoreLxmfComposerKeyboard(shouldRestoreComposer);
+        }).catch(function(err) {
+            if (typeof showToast === 'function') {
+                showToast((mediaAction && mediaAction.label === 'Save' ? 'Save failed: ' : 'Copy failed: ') + ((err && err.message) || 'error'), 'toast-red', 3500);
+            }
+            if (typeof haptic === 'function') haptic('warning');
+            _restoreLxmfComposerKeyboard(shouldRestoreComposer);
         });
     });
     actions.appendChild(copyBtn);
@@ -3718,7 +3874,7 @@ function _showMsgContextMenu(msgData, x, y, bubble) {
     menu.appendChild(actions);
 
     document.body.appendChild(menu);
-    _activeContextMenu = { menu: menu, row: row, container: container };
+    _activeContextMenu = { menu: menu, row: row, container: container, preserveComposerKeyboard: preserveComposerKeyboard };
     _positionMsgContextMenu(menu, x, y, bubble);
 }
 
@@ -5052,8 +5208,13 @@ function _blobFromDownloadedFile(file) {
     return new Blob([bytes], { type: file.mime || 'image/png' });
 }
 
+function _canCopyDownloadedImages() {
+    if (typeof isAndroid === 'function' && isAndroid()) return false;
+    return !!(navigator.clipboard && typeof navigator.clipboard.write === 'function' && typeof ClipboardItem !== 'undefined');
+}
+
 function _copyDownloadedImage(file) {
-    if (!navigator.clipboard || typeof ClipboardItem === 'undefined') {
+    if (!_canCopyDownloadedImages()) {
         return Promise.reject(new Error('Image copy is not supported on this device'));
     }
     var blob = _blobFromDownloadedFile(file);
@@ -5061,9 +5222,21 @@ function _copyDownloadedImage(file) {
     return navigator.clipboard.write([new ClipboardItem({ [mime]: blob })]);
 }
 
+function _syncImageViewerActions(viewer) {
+    var copyBtn = viewer && viewer.querySelector ? viewer.querySelector('#image-viewer-copy') : null;
+    if (!copyBtn) return;
+    var canCopy = _canCopyDownloadedImages();
+    copyBtn.hidden = !canCopy;
+    copyBtn.style.display = canCopy ? '' : 'none';
+    copyBtn.setAttribute('aria-hidden', canCopy ? 'false' : 'true');
+}
+
 function _ensureImageViewer() {
     var existing = document.getElementById('rs-image-viewer');
-    if (existing) return existing;
+    if (existing) {
+        _syncImageViewerActions(existing);
+        return existing;
+    }
     var viewer = document.createElement('div');
     viewer.id = 'rs-image-viewer';
     viewer.className = 'image-viewer lightbox-zoomable';
@@ -5111,9 +5284,7 @@ function _ensureImageViewer() {
         e.stopPropagation();
         var source = viewer._sourceImage;
         _fileFromImageElement(source).then(function(file) {
-            return RS.saveDownloadedFile(file, { preferPhotos: true }).then(function() {
-                showToast(/^image\//i.test(file.mime || '') ? 'Saved to photos!' : 'Saved', 'toast-green', 2500);
-            });
+            return _saveDownloadedMediaFile(file, { preferPhotos: true });
         }).catch(function(err) {
             showToast('Save failed: ' + ((err && err.message) || 'error'), 'toast-red', 4000);
         });
@@ -5122,6 +5293,7 @@ function _ensureImageViewer() {
         if (e.key === 'Escape' && viewer.classList.contains('open')) closeImageViewer();
     });
     _wireImageViewerSwipeDismiss(viewer, stage, viewerImg);
+    _syncImageViewerActions(viewer);
     return viewer;
 }
 
@@ -5221,6 +5393,7 @@ function _wireImageViewerSwipeDismiss(viewer, stage, img) {
 function openImageViewer(img) {
     if (!img || !img.src) return;
     var viewer = _ensureImageViewer();
+    _syncImageViewerActions(viewer);
     var viewerImg = viewer.querySelector('#image-viewer-img');
     var stage = viewer.querySelector('.image-viewer-stage');
     viewer._sourceImage = img;

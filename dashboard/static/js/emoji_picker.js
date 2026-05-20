@@ -221,11 +221,32 @@
             var display = em.e;
             btn.textContent = display;
             btn.title = em.n || display;
-            btn.addEventListener('click', function(e) {
+            var touchSelected = false;
+            function selectEmoji(e) {
                 e.preventDefault();
                 e.stopPropagation();
                 saveRecent(em.e);
                 self.onSelect(display);
+            }
+            btn.addEventListener('mousedown', function(e) { e.preventDefault(); });
+            btn.addEventListener('touchstart', function(e) { e.preventDefault(); }, { passive: false });
+            btn.addEventListener('touchend', function(e) {
+                var t = (e.changedTouches && e.changedTouches[0]) || null;
+                if (t) {
+                    var hit = document.elementFromPoint(t.clientX, t.clientY);
+                    if (hit !== btn && !btn.contains(hit)) return;
+                }
+                touchSelected = true;
+                setTimeout(function() { touchSelected = false; }, 500);
+                selectEmoji(e);
+            }, { passive: false });
+            btn.addEventListener('click', function(e) {
+                if (touchSelected) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return;
+                }
+                selectEmoji(e);
             });
             grid.appendChild(btn);
         });

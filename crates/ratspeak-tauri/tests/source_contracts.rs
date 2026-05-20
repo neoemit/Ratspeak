@@ -853,7 +853,11 @@ fn message_media_viewer_links_and_native_saves_are_wired() {
     assert!(lxmf.contains("viewer.classList.toggle('is-zoomed', zoomed);"));
     assert!(lxmf.contains("Math.abs(dy) > 64"));
     assert!(lxmf.contains("if (e.target === stage) closeImageViewer();"));
-    assert!(lxmf.contains("RS.saveDownloadedFile(file, { preferPhotos: true })"));
+    assert!(lxmf.contains("function _canCopyDownloadedImages()"));
+    assert!(lxmf.contains("if (typeof isAndroid === 'function' && isAndroid()) return false;"));
+    assert!(lxmf.contains("function _syncImageViewerActions(viewer)"));
+    assert!(lxmf.contains("copyBtn.hidden = !canCopy;"));
+    assert!(lxmf.contains("_saveDownloadedMediaFile(file, { preferPhotos: true })"));
     assert!(lxmf.contains("Saved to photos!"));
     assert!(lxmf.contains("function _compensateImageLoadScroll(container, img, before)"));
     assert!(lxmf.contains("function _messageHasTransferPayload(msg)"));
@@ -1871,6 +1875,9 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     let messaging_css =
         read_source(root.join("dashboard/static/css/09-messaging.css")).expect("messaging css");
     let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    let gestures = read_source(root.join("dashboard/static/js/gestures.js")).expect("gestures js");
+    let emoji_picker =
+        read_source(root.join("dashboard/static/js/emoji_picker.js")).expect("emoji picker js");
     let runtime =
         read_source(root.join("crates/ratspeak-runtime/src/lxmf.rs")).expect("runtime lxmf");
     let inbound =
@@ -1879,10 +1886,25 @@ fn message_actions_use_mobile_long_press_and_action_state() {
         .expect("messaging command");
 
     assert!(lxmf.contains("RS.gestures.attachLongPress(bubble"));
+    assert!(lxmf.contains("preventDefaultOnStart: function()"));
+    assert!(lxmf.contains("function _bindMessageFocusPreservingActivation"));
+    assert!(lxmf.contains("preserveComposerKeyboard"));
+    assert!(lxmf.contains("function _restoreLxmfComposerKeyboard"));
     assert!(lxmf.contains("window.RS.closeMessageActionMenu"));
     assert!(lxmf.contains("function _copyToClipboardFallback(text)"));
+    assert!(lxmf.contains("function _messageMediaContextAction(msgData)"));
+    assert!(lxmf.contains("function _resolveMessageImageFile(msgData)"));
+    assert!(lxmf.contains("function _resolveMessageAttachmentFile(att)"));
+    assert!(lxmf.contains("var mediaAction = _messageMediaContextAction(msgData);"));
+    assert!(lxmf.contains("_messageActionIcon(mediaAction ? mediaAction.icon : 'copy')"));
+    assert!(lxmf.contains("mediaAction ? mediaAction.label : 'Copy'"));
     assert!(lxmf.contains("function _optimisticApplyReaction"));
     assert!(lxmf.contains("showToast(ok ? 'Message copied'"));
+    assert!(gestures.contains("var preventDefaultOnStart = opts.preventDefaultOnStart || null;"));
+    assert!(gestures.contains(
+        "var touchStartOpts = preventDefaultOnStart ? { passive: false } : { passive: true };"
+    ));
+    assert!(emoji_picker.contains("btn.addEventListener('touchstart', function(e) { e.preventDefault(); }, { passive: false });"));
     assert!(messaging_css.contains(".lxmf-messages.msg-action-mode .msg-row"));
     assert!(messaging_css.contains(".msg-row.msg-action-selected .lxmf-msg"));
     assert!(nav.contains("RS.closeMessageActionMenu()"));

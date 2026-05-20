@@ -103,6 +103,7 @@ RS.gestures = RS.gestures || {};
         var moveCancelSq = moveCancelPx * moveCancelPx;
         var excludeZone = opts.excludeZone || null;
         var hapticStages = (opts.hapticStages || []).slice();
+        var preventDefaultOnStart = opts.preventDefaultOnStart || null;
         var onStart = opts.onStart || function() {};
         var onProgress = opts.onProgress || function() {};
         var onFire = opts.onFire || function() {};
@@ -161,6 +162,10 @@ RS.gestures = RS.gestures || {};
             }
 
             startT = performance.now();
+            var shouldPreventDefault = (typeof preventDefaultOnStart === 'function')
+                ? preventDefaultOnStart(e, startTouch)
+                : !!preventDefaultOnStart;
+            if (shouldPreventDefault && e.cancelable) e.preventDefault();
             onStart(e);
             raf = requestAnimationFrame(_loop);
         }
@@ -188,7 +193,8 @@ RS.gestures = RS.gestures || {};
         function _onTouchCancel() { _reset(true); }
         function _onVisibilityChange() { if (document.hidden) _reset(true); }
 
-        el.addEventListener('touchstart', _onTouchStart, { passive: true });
+        var touchStartOpts = preventDefaultOnStart ? { passive: false } : { passive: true };
+        el.addEventListener('touchstart', _onTouchStart, touchStartOpts);
         el.addEventListener('touchend', _onTouchEnd);
         el.addEventListener('touchmove', _onTouchMove);
         el.addEventListener('touchcancel', _onTouchCancel);
@@ -196,7 +202,7 @@ RS.gestures = RS.gestures || {};
 
         return function detach() {
             _reset(false);
-            el.removeEventListener('touchstart', _onTouchStart);
+            el.removeEventListener('touchstart', _onTouchStart, touchStartOpts);
             el.removeEventListener('touchend', _onTouchEnd);
             el.removeEventListener('touchmove', _onTouchMove);
             el.removeEventListener('touchcancel', _onTouchCancel);
