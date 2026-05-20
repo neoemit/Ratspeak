@@ -698,6 +698,13 @@ fn message_media_viewer_links_and_native_saves_are_wired() {
     assert!(lxmf.contains("RS.saveDownloadedFile(file, { preferPhotos: true })"));
     assert!(lxmf.contains("Saved to photos!"));
     assert!(lxmf.contains("function _compensateImageLoadScroll(container, img, before)"));
+    assert!(lxmf.contains("function _messageHasTransferPayload(msg)"));
+    assert!(lxmf.contains("function _messageCanCancelTransfer(msg)"));
+    assert!(lxmf.contains("function _messageTransferPayloadSize(msg)"));
+    assert!(lxmf.contains("function _messageShowsTransferPercent(msg)"));
+    assert!(lxmf.contains("lxmfLimits.efficient_resource_bytes || 1048575"));
+    assert!(lxmf.contains("if (!_messageShowsTransferPercent(msg)) return null;"));
+    assert!(lxmf.contains("if (!_messageCanCancelTransfer(msg)) return '';"));
 
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
     assert!(state_js.contains("saveImageToPhotos"));

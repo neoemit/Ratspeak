@@ -1353,9 +1353,9 @@ function _messageStateIconHtml(msg) {
     if ((state === 'sent' || state === 'delivered') && method !== 'direct') return wrap('msg-state-sent', 'Sent', ICON.check);
     // In-flight: sending, routing, propagating, generating, outbound,
     // resending, or `sent` awaiting a Direct LXMF link receipt.
-    var progress = typeof msg.delivery_progress === 'number' ? msg.delivery_progress : null;
-    var label = progress !== null && progress > 0.05 && progress < 1.0
-        ? 'Sending ' + Math.round(progress * 100) + '%'
+    var progressPercent = _messageProgressPercent(msg);
+    var label = progressPercent !== null
+        ? 'Sending ' + progressPercent + '%'
         : 'Sending';
     return wrap('msg-state-sending', label, ICON.clock);
 }
@@ -1385,7 +1385,39 @@ function _messageCanCancelSend(msg) {
     ].indexOf(msg.state) !== -1;
 }
 
+function _messageHasTransferPayload(msg) {
+    return !!(msg && (msg.image || (Array.isArray(msg.attachments) && msg.attachments.length > 0)));
+}
+
+function _messageCanCancelTransfer(msg) {
+    return _messageHasTransferPayload(msg) && _messageCanCancelSend(msg);
+}
+
+function _messageTransferPayloadSize(msg) {
+    if (!msg) return 0;
+    var total = 0;
+    if (msg.image && typeof msg.image.size === 'number' && isFinite(msg.image.size)) {
+        total += Math.max(0, msg.image.size);
+    }
+    if (Array.isArray(msg.attachments)) {
+        for (var i = 0; i < msg.attachments.length; i++) {
+            var attachment = msg.attachments[i] || {};
+            if (typeof attachment.size === 'number' && isFinite(attachment.size)) {
+                total += Math.max(0, attachment.size);
+            }
+        }
+    }
+    return total;
+}
+
+function _messageShowsTransferPercent(msg) {
+    if (!_messageCanCancelTransfer(msg)) return false;
+    var efficientBytes = lxmfLimits.efficient_resource_bytes || 1048575;
+    return _messageTransferPayloadSize(msg) > efficientBytes;
+}
+
 function _messageProgressPercent(msg) {
+    if (!_messageShowsTransferPercent(msg)) return null;
     var progress = msg && typeof msg.delivery_progress === 'number' ? msg.delivery_progress : null;
     if (progress === null || !isFinite(progress) || progress <= 0 || progress >= 1) return null;
     return Math.max(1, Math.min(99, Math.round(progress * 100)));
@@ -1406,7 +1438,7 @@ function _messageSendCancelOverlayHtml(msg, percent) {
 }
 
 function _messageInlineCancelHtml(msg) {
-    if (!_messageCanCancelSend(msg)) return '';
+    if (!_messageCanCancelTransfer(msg)) return '';
     return '<button type="button" class="msg-send-cancel-inline" ' +
         'data-msg-id="' + escapeHtml(msg.id || '') + '" aria-label="Cancel send">&times;</button>';
 }
@@ -2667,7 +2699,7 @@ function renderConversation(options) {
         var time = formatTime(msg.timestamp);
         var stateIcon = isOut ? _messageStateIconHtml(msg) : '';
         var progressPercent = isOut ? _messageProgressPercent(msg) : null;
-        var canCancelSend = isOut && _messageCanCancelSend(msg);
+        var canCancelSend = isOut && _messageCanCancelTransfer(msg);
 
         var replyHtml = '';
         if (msg.reply_to_id || msg.reply_to_preview) {
