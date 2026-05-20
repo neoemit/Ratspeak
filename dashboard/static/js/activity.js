@@ -13,6 +13,7 @@ var activityFilters = {
 };
 
 var ACTIVITY_MAX_ENTRIES = 500;
+var _activityRenderScheduled = false;
 
 // Auto-scroll new entries only when pinned to bottom; 8px tolerance for sub-pixel rounding.
 var activityStickToBottom = true;
@@ -215,12 +216,18 @@ function addActivityEntry(entry) {
 
     activityLog.push(item);
     if (activityLog.length > ACTIVITY_MAX_ENTRIES) {
-        activityLog.shift();
+        activityLog = activityLog.slice(-ACTIVITY_MAX_ENTRIES);
     }
+    scheduleActivityRender();
+}
 
-    if (isEntryVisible(item)) {
-        appendActivityEntry(item);
-    }
+function scheduleActivityRender() {
+    if (_activityRenderScheduled) return;
+    _activityRenderScheduled = true;
+    requestAnimationFrame(function() {
+        _activityRenderScheduled = false;
+        renderActivityFeed();
+    });
 }
 
 function isEntryVisible(entry) {
@@ -251,6 +258,9 @@ function appendActivityEntry(entry) {
         (entry.detail ? '<span class="activity-entry-detail">' + escapeHtml(entry.detail) + '</span>' : '');
 
     feed.appendChild(div);
+    while (feed.children.length > ACTIVITY_MAX_ENTRIES) {
+        feed.removeChild(feed.firstElementChild);
+    }
 
     if (activityStickToBottom) {
         feed.scrollTop = feed.scrollHeight;

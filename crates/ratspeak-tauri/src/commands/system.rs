@@ -557,9 +557,15 @@ pub async fn api_factory_reset(state: State<'_, Arc<AppState>>) -> AppResult<Val
     if let Ok(mut paths) = state.known_path_hashes.lock() {
         paths.clear();
     }
+    state
+        .path_activity_baselined
+        .store(false, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut seen) = state.seen_announce_hashes.lock() {
         seen.clear();
     }
+    state
+        .announce_activity_baselined
+        .store(false, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut times) = state.message_send_times.lock() {
         times.clear();
     }

@@ -42,9 +42,15 @@ pub struct AppState {
     #[cfg(feature = "lxst-voice")]
     pub lxst_rejected_call_attempts: Mutex<HashMap<String, (u32, Instant)>>,
     pub known_path_hashes: Mutex<std::collections::HashSet<String>>,
+    /// False until the first non-empty path-table snapshot has seeded
+    /// `known_path_hashes`; prevents restored paths from flooding Activity.
+    pub path_activity_baselined: AtomicBool,
     pub lrgp_router: lrgp::router::LrgpRouter,
     pub message_send_times: Mutex<HashMap<String, f64>>,
     pub seen_announce_hashes: Mutex<std::collections::HashSet<String>>,
+    /// False until the first non-empty announce snapshot has seeded
+    /// `seen_announce_hashes`; prevents cached announces from replaying as live.
+    pub announce_activity_baselined: AtomicBool,
     pub msg_id_map: Mutex<HashMap<String, String>>,
     /// LRGP msg_id → originating session for delivery-state routing.
     pub lrgp_msg_to_session: Mutex<HashMap<String, LrgpMsgMeta>>,
@@ -156,9 +162,11 @@ impl AppState {
             #[cfg(feature = "lxst-voice")]
             lxst_rejected_call_attempts: Mutex::new(HashMap::new()),
             known_path_hashes: Mutex::new(std::collections::HashSet::new()),
+            path_activity_baselined: AtomicBool::new(false),
             lrgp_router,
             message_send_times: Mutex::new(HashMap::new()),
             seen_announce_hashes: Mutex::new(std::collections::HashSet::new()),
+            announce_activity_baselined: AtomicBool::new(false),
             msg_id_map: Mutex::new(HashMap::new()),
             lrgp_msg_to_session: Mutex::new(HashMap::new()),
             session_shutdown: RwLock::new(ShutdownSignal::new()),
@@ -229,6 +237,7 @@ impl AppState {
         if let Ok(mut known) = self.known_path_hashes.lock() {
             known.clear();
         }
+        self.path_activity_baselined.store(false, Ordering::Relaxed);
         if let Ok(mut history) = self.announce_history.write() {
             history.clear();
         }
@@ -241,6 +250,8 @@ impl AppState {
         if let Ok(mut seen) = self.seen_announce_hashes.lock() {
             seen.clear();
         }
+        self.announce_activity_baselined
+            .store(false, Ordering::Relaxed);
         if let Ok(mut times) = self.message_send_times.lock() {
             times.clear();
         }

@@ -2974,10 +2974,13 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
             {
                 Some(rns_transport::messages::TransportQueryResponse::PathTable(entries)) => {
                     cache_lxmf_route_hops_from_path_table(&state, &entries);
+                    let path_activity_ready = state
+                        .path_activity_baselined
+                        .load(std::sync::atomic::Ordering::Relaxed);
                     let hashes: std::collections::HashSet<String> =
                         entries.iter().map(|e| hex::encode(e.hash)).collect();
 
-                    let newly_reachable: Vec<String> =
+                    let newly_reachable: Vec<String> = if path_activity_ready {
                         if let Ok(cached) = state.known_path_hashes.lock() {
                             hashes
                                 .iter()
@@ -2986,10 +2989,18 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                 .collect()
                         } else {
                             Vec::new()
-                        };
+                        }
+                    } else {
+                        Vec::new()
+                    };
 
                     if let Ok(mut cached) = state.known_path_hashes.lock() {
                         *cached = hashes;
+                    }
+                    if !path_activity_ready && !entries.is_empty() {
+                        state
+                            .path_activity_baselined
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
                     }
 
                     if !newly_reachable.is_empty()
@@ -3028,6 +3039,9 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
             if let Some(rns_transport::messages::TransportQueryResponse::Announces(announces)) =
                 announce_result
             {
+                let announce_activity_ready = state
+                    .announce_activity_baselined
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 // Aspect-agnostic: crypto cache, announce_history, contact-name refresh.
                 if let Ok(mut lxmf) = state.lxmf.lock()
                     && let Some(mgr) = lxmf.as_mut()
@@ -3052,9 +3066,10 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                     has_ratchet = a.ratchet.is_some(),
                                     "new remote identity cached from announce"
                                 );
-                                if state
-                                    .network_log_enabled
-                                    .load(std::sync::atomic::Ordering::Relaxed)
+                                if announce_activity_ready
+                                    && state
+                                        .network_log_enabled
+                                        .load(std::sync::atomic::Ordering::Relaxed)
                                 {
                                     state.emit_network_event(
                                         "announce",
@@ -3089,6 +3104,17 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                 }
 
                 if let Ok(mut history) = state.announce_history.write() {
+                    let current_announce_hashes: std::collections::HashSet<String> =
+                        announces.iter().map(|a| hex::encode(a.dest_hash)).collect();
+                    if let Ok(mut seen) = state.seen_announce_hashes.lock()
+                        && seen.len() > 50_000
+                    {
+                        if current_announce_hashes.is_empty() {
+                            seen.clear();
+                        } else {
+                            seen.retain(|hash| current_announce_hashes.contains(hash));
+                        }
+                    }
                     for a in &announces {
                         let hash_hex = hex::encode(a.dest_hash);
                         let display_name = a
@@ -3097,14 +3123,6 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                             .map(|d| extract_display_name(d))
                             .unwrap_or_default();
                         let is_new = if let Ok(mut seen) = state.seen_announce_hashes.lock() {
-                            // Batch-shrink to avoid per-insert thrash under flood.
-                            if seen.len() > 10_000 {
-                                let to_remove: Vec<String> =
-                                    seen.iter().take(5_000).cloned().collect();
-                                for key in to_remove {
-                                    seen.remove(&key);
-                                }
-                            }
                             seen.insert(hash_hex.clone())
                         } else {
                             false
@@ -3129,7 +3147,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                 }),
                             );
                         }
-                        if is_new {
+                        if announce_activity_ready && is_new {
                             state.emit_to_all(
                                 "announce_received",
                                 json!({
@@ -3173,6 +3191,11 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                 );
                             }
                         }
+                    }
+                    if !announce_activity_ready && !announces.is_empty() {
+                        state
+                            .announce_activity_baselined
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                     // Belt-and-braces: a large batch could push us past the
                     // per-insert cap if we were already just below it.
