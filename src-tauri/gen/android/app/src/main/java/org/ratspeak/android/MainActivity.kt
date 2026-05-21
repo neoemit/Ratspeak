@@ -50,6 +50,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.webkit.WebViewCompat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -568,6 +569,52 @@ class MainActivity : TauriActivity() {
         return permissions.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
+    }
+
+    private fun isKnownGoogleWebViewPackage(packageName: String): Boolean {
+        return when (packageName.lowercase()) {
+            "com.google.android.webview",
+            "com.android.chrome",
+            "com.chrome.beta",
+            "com.chrome.dev",
+            "com.chrome.canary" -> true
+            else -> false
+        }
+    }
+
+    private fun packageLabel(packageName: String): String {
+        return try {
+            val appInfo = packageManager.getApplicationInfo(packageName, 0)
+            packageManager.getApplicationLabel(appInfo).toString()
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
+    private fun buildQrScannerEnvironment(): String {
+        val webViewPackageInfo = try {
+            WebViewCompat.getCurrentWebViewPackage(this)
+        } catch (_: Throwable) {
+            null
+        }
+        val webViewPackage = webViewPackageInfo?.packageName ?: ""
+        val gmsLabel = packageLabel("com.google.android.gms")
+        val microGDetected = gmsLabel.contains("microg", ignoreCase = true)
+        val preferLive = isKnownGoogleWebViewPackage(webViewPackage) && !microGDetected
+        val reason = when {
+            microGDetected -> "microg"
+            webViewPackage.isBlank() -> "unknown_webview"
+            preferLive -> "google_webview"
+            else -> "non_google_webview"
+        }
+        return JSONObject().apply {
+            put("platform", "android")
+            put("webview_package", webViewPackage)
+            put("webview_version", webViewPackageInfo?.versionName ?: "")
+            put("microg_detected", microGDetected)
+            put("prefer_live_scanner", preferLive)
+            put("reason", reason)
+        }.toString()
     }
 
     private fun normalizedCallRingtoneMode(mode: String): String {
@@ -1819,6 +1866,11 @@ class MainActivity : TauriActivity() {
                     MEDIA_PERMISSION_REQUEST_CODE
                 )
             }
+        }
+
+        @JavascriptInterface
+        fun getQrScannerEnvironment(): String {
+            return this@MainActivity.buildQrScannerEnvironment()
         }
 
         @JavascriptInterface

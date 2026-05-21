@@ -1,10 +1,24 @@
 (function() {
     var CONTACT_QR_FILE = 'ratspeak-contact-card.png';
+    var CONTACT_SCAN_MAX_IMAGE_DIMENSION = 1800;
     var activeContactAddDial = null;
+
+    function contactScanDiag(step, detail) {
+        if (!window.RS || typeof RS.diag !== 'function') return;
+        try {
+            RS.diag('info', '[contact-scan] ' + step, detail || {});
+        } catch (_) {}
+    }
 
     function iconSvg(name) {
         if (name === 'qr') {
             return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/></svg>';
+        }
+        if (name === 'scan') {
+            return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3H5a2 2 0 0 0-2 2v2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg>';
+        }
+        if (name === 'image') {
+            return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>';
         }
         if (name === 'copy') {
             return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><rect x="2" y="2" width="13" height="13" rx="2"/></svg>';
@@ -625,7 +639,10 @@ z`,
         var built = buildSheet('contact-scan-sheet');
         var stream = null;
         var stopped = false;
+        var liveActive = false;
+        var liveStarting = false;
         var detecting = false;
+        var firstDetectLogged = false;
         built.sheet.innerHTML =
             '<div class="contact-card-topbar">' +
                 '<div class="contact-scan-title">Scan Contact QR</div>' +
@@ -634,14 +651,24 @@ z`,
             '<div class="contact-scan-body">' +
                 '<div class="contact-scan-camera-wrap">' +
                     '<video class="contact-scan-video" autoplay muted playsinline></video>' +
+                    '<div class="contact-scan-fallback-label">' + iconSvg('image') + '<span>Scan Photo</span></div>' +
                     '<div class="contact-scan-frame"></div>' +
                 '</div>' +
-                '<div class="contact-scan-status">Opening camera...</div>' +
+                '<div class="contact-scan-status">Preparing scanner...</div>' +
+                '<div class="contact-scan-picker-actions">' +
+                    '<button class="nr-btn contact-scan-live-btn" type="button" id="contact-scan-live">' + iconSvg('scan') + '<span>Live Scan</span></button>' +
+                    '<button class="nr-btn nr-btn-ghost contact-scan-file-btn" type="button" id="contact-scan-file">' + iconSvg('image') + '<span>Scan Photo</span></button>' +
+                '</div>' +
+                '<input class="contact-scan-file-input" type="file" accept="image/*">' +
             '</div>';
 
         var body = built.sheet.querySelector('.contact-scan-body');
         var status = built.sheet.querySelector('.contact-scan-status');
         var video = built.sheet.querySelector('video');
+        var cameraWrap = built.sheet.querySelector('.contact-scan-camera-wrap');
+        var fileInput = built.sheet.querySelector('.contact-scan-file-input');
+        var fileButton = built.sheet.querySelector('#contact-scan-file');
+        var liveButton = built.sheet.querySelector('#contact-scan-live');
         var scanCanvas = document.createElement('canvas');
         var scanCtx = null;
         try {
@@ -650,129 +677,372 @@ z`,
             scanCtx = scanCanvas.getContext('2d');
         }
 
-        function stop() {
-            stopped = true;
+        function getScannerEnvironment() {
+            if (!window.RatspeakAndroid || typeof window.RatspeakAndroid.getQrScannerEnvironment !== 'function') {
+                return null;
+            }
+            try {
+                return JSON.parse(window.RatspeakAndroid.getQrScannerEnvironment() || '{}');
+            } catch (err) {
+                contactScanDiag('android_env_parse_failed', { message: err && err.message ? err.message : String(err) });
+                return null;
+            }
+        }
+
+        function scanErrorDetail(err) {
+            if (!err) return {};
+            return {
+                name: err.name || '',
+                message: err.message || String(err),
+            };
+        }
+
+        function stopStream() {
+            liveActive = false;
+            detecting = false;
             if (stream && typeof _rsStopMediaStream === 'function') _rsStopMediaStream(stream);
             else if (stream && stream.getTracks) stream.getTracks().forEach(function(t) { try { t.stop(); } catch (_) {} });
             stream = null;
+            if (video) {
+                try { video.pause(); } catch (_) {}
+                try { video.srcObject = null; } catch (_) {}
+            }
         }
+
+        function stop() {
+            stopped = true;
+            stopStream();
+        }
+
         function closeAll() {
             stop();
             closeSheet(built.overlay, built.sheet);
         }
+
+        function setFallbackReady(ready) {
+            if (!cameraWrap) return;
+            cameraWrap.classList.toggle('fallback-ready', !!ready);
+        }
+
+        function setScannerMode(mode) {
+            var fallback = mode === 'fallback';
+            built.sheet.classList.toggle('contact-scan-prefers-fallback', fallback);
+            built.sheet.classList.toggle('contact-scan-prefers-live', !fallback);
+            liveButton.classList.toggle('nr-btn-ghost', fallback);
+            fileButton.classList.toggle('nr-btn-ghost', !fallback);
+        }
+
+        function setLiveButtonEnabled(enabled) {
+            liveButton.disabled = !enabled;
+        }
+
+        function handleScannedPayload(payload, source, invalidMessage, retry) {
+            status.textContent = 'Checking contact card...';
+            contactScanDiag('payload_detected', { source: source });
+            return RS.invoke('api_preview_contact_card', { payload: payload }).then(function(card) {
+                stopStream();
+                showScannedCardPreview(body, payload, card, closeAll);
+            }).catch(function(err) {
+                contactScanDiag('payload_rejected', scanErrorDetail(err));
+                status.textContent = invalidMessage || 'That QR is not a valid Ratspeak contact card.';
+                if (typeof retry === 'function') retry();
+            });
+        }
+
+        function nativeQrDetectorAvailable() {
+            if (!('BarcodeDetector' in window)) {
+                contactScanDiag('barcode_detector_missing');
+                return Promise.resolve(false);
+            }
+            if (typeof BarcodeDetector.getSupportedFormats !== 'function') return Promise.resolve(true);
+            try {
+                return BarcodeDetector.getSupportedFormats().then(function(formats) {
+                    var supported = Array.isArray(formats) && formats.indexOf('qr_code') !== -1;
+                    contactScanDiag('barcode_detector_formats', { qr_code: supported, count: Array.isArray(formats) ? formats.length : 0 });
+                    return supported;
+                }).catch(function(err) {
+                    contactScanDiag('barcode_detector_formats_failed', scanErrorDetail(err));
+                    return false;
+                });
+            } catch (err) {
+                contactScanDiag('barcode_detector_formats_threw', scanErrorDetail(err));
+                return Promise.resolve(false);
+            }
+        }
+
+        function decodeImageFile(file) {
+            if (!file) return;
+            stopStream();
+            setFallbackReady(true);
+            setScannerMode('fallback');
+            setLiveButtonEnabled(true);
+            status.textContent = 'Reading QR image...';
+            contactScanDiag('file_selected', {
+                type: file.type || '',
+                size: file.size || 0,
+            });
+            if (typeof window.jsQR !== 'function') {
+                contactScanDiag('file_decoder_missing');
+                status.textContent = 'QR image scanning is not available in this build.';
+                return;
+            }
+            var img = new Image();
+            var url = URL.createObjectURL(file);
+            img.onload = function() {
+                try {
+                    var naturalWidth = img.naturalWidth || img.width;
+                    var naturalHeight = img.naturalHeight || img.height;
+                    if (!naturalWidth || !naturalHeight) throw new Error('Image has no readable dimensions.');
+                    var scale = Math.min(1, CONTACT_SCAN_MAX_IMAGE_DIMENSION / Math.max(naturalWidth, naturalHeight));
+                    var width = Math.max(1, Math.round(naturalWidth * scale));
+                    var height = Math.max(1, Math.round(naturalHeight * scale));
+                    var canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    var ctx = null;
+                    try {
+                        ctx = canvas.getContext('2d', { willReadFrequently: true });
+                    } catch (_) {
+                        ctx = canvas.getContext('2d');
+                    }
+                    if (!ctx) throw new Error('Could not read image pixels.');
+                    ctx.drawImage(img, 0, 0, width, height);
+                    var image = ctx.getImageData(0, 0, width, height);
+                    var code = window.jsQR(image.data, width, height, { inversionAttempts: 'attemptBoth' });
+                    if (code && code.data) {
+                        contactScanDiag('file_decode_success', { width: width, height: height });
+                        handleScannedPayload(code.data, 'file', 'That image does not contain a valid Ratspeak contact QR.');
+                    } else {
+                        contactScanDiag('file_decode_empty', { width: width, height: height });
+                        status.textContent = 'No Ratspeak contact QR found in that image.';
+                    }
+                } catch (err) {
+                    contactScanDiag('file_decode_failed', scanErrorDetail(err));
+                    status.textContent = err && err.message ? err.message : 'Could not read that QR image.';
+                } finally {
+                    URL.revokeObjectURL(url);
+                }
+            };
+            img.onerror = function() {
+                contactScanDiag('file_image_load_failed');
+                URL.revokeObjectURL(url);
+                status.textContent = 'Could not open that image.';
+            };
+            img.src = url;
+        }
+
+        function startLiveScanner(reason) {
+            if (stopped || liveActive || liveStarting) return;
+            liveStarting = true;
+            firstDetectLogged = false;
+            setFallbackReady(false);
+            setScannerMode('live');
+            setLiveButtonEnabled(true);
+            status.textContent = 'Opening camera...';
+            contactScanDiag('live_start_requested', { reason: reason || 'manual' });
+
+            nativeQrDetectorAvailable().then(function(available) {
+                if (!available) {
+                    liveStarting = false;
+                    setFallbackReady(true);
+                    setScannerMode('fallback');
+                    setLiveButtonEnabled(false);
+                    status.textContent = 'Live QR scanning is not available in this WebView. Use Scan Photo.';
+                    return;
+                }
+                if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+                    liveStarting = false;
+                    setFallbackReady(true);
+                    setScannerMode('fallback');
+                    setLiveButtonEnabled(false);
+                    status.textContent = 'Camera access is not available in this WebView. Use Scan Photo.';
+                    contactScanDiag('get_user_media_missing');
+                    return;
+                }
+                var permission = (window.RS && RS.mediaPermissions && RS.mediaPermissions.ensure)
+                    ? RS.mediaPermissions.ensure({ camera: true })
+                    : Promise.resolve(true);
+
+                contactScanDiag('permission_request');
+                permission.then(function(granted) {
+                    contactScanDiag('permission_result', { granted: !!granted });
+                    if (!granted) {
+                        liveStarting = false;
+                        setFallbackReady(true);
+                        setScannerMode('fallback');
+                        setLiveButtonEnabled(true);
+                        status.textContent = 'Camera permission is required for live scan. You can still use Scan Photo.';
+                        return null;
+                    }
+                    var constraints = {
+                        video: { facingMode: { ideal: 'environment' } },
+                        audio: false,
+                    };
+                    contactScanDiag('get_user_media_start', { facingMode: 'environment' });
+                    return navigator.mediaDevices.getUserMedia(constraints);
+                }).then(function(s) {
+                    if (!s || stopped) return;
+                    stream = s;
+                    liveStarting = false;
+                    liveActive = true;
+                    video.srcObject = stream;
+                    status.textContent = 'Point the camera at a Ratspeak QR.';
+                    var tracks = stream.getVideoTracks ? stream.getVideoTracks() : [];
+                    contactScanDiag('get_user_media_ready', { video_tracks: tracks.length });
+                    var detector = null;
+                    try {
+                        detector = new BarcodeDetector({ formats: ['qr_code'] });
+                        contactScanDiag('detector_created');
+                    } catch (err) {
+                        liveStarting = false;
+                        stopStream();
+                        setFallbackReady(true);
+                        setScannerMode('fallback');
+                        setLiveButtonEnabled(false);
+                        status.textContent = 'Live QR scanning is not available in this WebView. Use Scan Photo.';
+                        contactScanDiag('detector_create_failed', scanErrorDetail(err));
+                        return;
+                    }
+                    var scanStarted = false;
+
+                    function scheduleScan() {
+                        if (stopped || !liveActive) return;
+                        setTimeout(function() {
+                            if (!stopped && liveActive) requestAnimationFrame(scan);
+                        }, 90);
+                    }
+
+                    function detectFrame() {
+                        if (!firstDetectLogged) {
+                            firstDetectLogged = true;
+                            contactScanDiag('first_detect_start');
+                        }
+                        if (!scanCtx || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+                            return detector.detect(video);
+                        }
+                        var vw = video.videoWidth;
+                        var vh = video.videoHeight;
+                        var side = Math.min(vw, vh);
+                        var sx = (vw - side) / 2;
+                        var sy = (vh - side) / 2;
+                        var target = Math.round(Math.max(480, Math.min(900, side)));
+                        if (scanCanvas.width !== target) scanCanvas.width = target;
+                        if (scanCanvas.height !== target) scanCanvas.height = target;
+                        scanCtx.drawImage(video, sx, sy, side, side, 0, 0, target, target);
+                        return detector.detect(scanCanvas).then(function(codes) {
+                            if (codes && codes.length) return codes;
+                            return detector.detect(video).catch(function() { return codes || []; });
+                        }).catch(function() {
+                            return detector.detect(video).catch(function() { return []; });
+                        });
+                    }
+
+                    function scan() {
+                        if (stopped || !liveActive || detecting) return;
+                        if (video.readyState < 2) {
+                            scheduleScan();
+                            return;
+                        }
+                        detecting = true;
+                        var detection = null;
+                        try {
+                            detection = detectFrame();
+                        } catch (err) {
+                            contactScanDiag('detect_frame_threw', scanErrorDetail(err));
+                            detecting = false;
+                            scheduleScan();
+                            return;
+                        }
+                        detection.then(function(codes) {
+                            detecting = false;
+                            if (stopped || !liveActive) return;
+                            if (firstDetectLogged === true) {
+                                contactScanDiag('first_detect_resolved', { count: codes && codes.length ? codes.length : 0 });
+                                firstDetectLogged = 'done';
+                            }
+                            if (codes && codes.length && codes[0].rawValue) {
+                                handleScannedPayload(codes[0].rawValue, 'live', 'That QR is not a valid Ratspeak contact card.', function() {
+                                    setTimeout(function() {
+                                        if (!stopped && liveActive) {
+                                            status.textContent = 'Point the camera at a Ratspeak QR.';
+                                            scheduleScan();
+                                        }
+                                    }, 1200);
+                                });
+                                return;
+                            }
+                            scheduleScan();
+                        }).catch(function(err) {
+                            detecting = false;
+                            if (firstDetectLogged === true) {
+                                contactScanDiag('first_detect_failed', scanErrorDetail(err));
+                                firstDetectLogged = 'done';
+                            }
+                            scheduleScan();
+                        });
+                    }
+
+                    function beginScanning() {
+                        if (scanStarted || stopped || !liveActive) return;
+                        scanStarted = true;
+                        video.play().catch(function() {});
+                        scheduleScan();
+                    }
+                    video.addEventListener('loadedmetadata', beginScanning, { once: true });
+                    video.addEventListener('canplay', beginScanning, { once: true });
+                    video.play().then(beginScanning).catch(function(err) {
+                        contactScanDiag('video_play_failed', scanErrorDetail(err));
+                    });
+                }).catch(function(err) {
+                    liveStarting = false;
+                    stopStream();
+                    setFallbackReady(true);
+                    setScannerMode('fallback');
+                    setLiveButtonEnabled(true);
+                    contactScanDiag('get_user_media_failed', scanErrorDetail(err));
+                    status.textContent = err && err.message ? err.message : 'Could not open camera. Use Scan Photo.';
+                });
+            });
+        }
+
         built.overlay.addEventListener('click', function(e) {
             if (e.target === built.overlay) closeAll();
         });
         built.sheet.querySelector('.contact-card-close').addEventListener('click', closeAll);
 
-        if (!('BarcodeDetector' in window)) {
-            status.textContent = 'QR scanning is not available in this WebView.';
-            return;
+        function openImageInput(input, message, diagStep) {
+            contactScanDiag(diagStep);
+            stopStream();
+            setFallbackReady(true);
+            setScannerMode('fallback');
+            setLiveButtonEnabled(true);
+            status.textContent = message;
+            input.value = '';
+            input.click();
         }
 
-        var permission = (window.RS && RS.mediaPermissions && RS.mediaPermissions.ensure)
-            ? RS.mediaPermissions.ensure({ camera: true })
-            : Promise.resolve(true);
-
-        permission.then(function(granted) {
-            if (!granted) {
-                status.textContent = 'Camera permission is required to scan contact cards.';
-                return;
-            }
-            return navigator.mediaDevices.getUserMedia({
-                video: { facingMode: { ideal: 'environment' } },
-                audio: false,
-            });
-        }).then(function(s) {
-            if (!s) return;
-            stream = s;
-            video.srcObject = stream;
-            status.textContent = 'Point the camera at a Ratspeak QR.';
-            var detector = new BarcodeDetector({ formats: ['qr_code'] });
-            var scanStarted = false;
-
-            function scheduleScan() {
-                if (stopped) return;
-                setTimeout(function() {
-                    if (!stopped) requestAnimationFrame(scan);
-                }, 90);
-            }
-
-            function detectFrame() {
-                if (!scanCtx || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
-                    return detector.detect(video);
-                }
-                var vw = video.videoWidth;
-                var vh = video.videoHeight;
-                var side = Math.min(vw, vh);
-                var sx = (vw - side) / 2;
-                var sy = (vh - side) / 2;
-                var target = Math.round(Math.max(480, Math.min(900, side)));
-                if (scanCanvas.width !== target) scanCanvas.width = target;
-                if (scanCanvas.height !== target) scanCanvas.height = target;
-                scanCtx.drawImage(video, sx, sy, side, side, 0, 0, target, target);
-                return detector.detect(scanCanvas).then(function(codes) {
-                    if (codes && codes.length) return codes;
-                    return detector.detect(video).catch(function() { return codes || []; });
-                }).catch(function() {
-                    return detector.detect(video).catch(function() { return []; });
-                });
-            }
-
-            function scan() {
-                if (stopped || detecting) return;
-                if (video.readyState < 2) {
-                    scheduleScan();
-                    return;
-                }
-                detecting = true;
-                var detection = null;
-                try {
-                    detection = detectFrame();
-                } catch (_) {
-                    detecting = false;
-                    scheduleScan();
-                    return;
-                }
-                detection.then(function(codes) {
-                    detecting = false;
-                    if (stopped) return;
-                    if (codes && codes.length && codes[0].rawValue) {
-                        var payload = codes[0].rawValue;
-                        status.textContent = 'Checking contact card...';
-                        RS.invoke('api_preview_contact_card', { payload: payload }).then(function(card) {
-                            stop();
-                            showScannedCardPreview(body, payload, card, closeAll);
-                        }).catch(function() {
-                            status.textContent = 'That QR is not a valid Ratspeak contact card.';
-                            setTimeout(function() {
-                                if (!stopped) {
-                                    status.textContent = 'Point the camera at a Ratspeak QR.';
-                                    scheduleScan();
-                                }
-                            }, 1200);
-                        });
-                        return;
-                    }
-                    scheduleScan();
-                }).catch(function() {
-                    detecting = false;
-                    scheduleScan();
-                });
-            }
-
-            function beginScanning() {
-                if (scanStarted) return;
-                scanStarted = true;
-                video.play().catch(function() {});
-                scheduleScan();
-            }
-            video.addEventListener('loadedmetadata', beginScanning, { once: true });
-            video.addEventListener('canplay', beginScanning, { once: true });
-            video.play().then(beginScanning).catch(function() {});
-        }).catch(function(err) {
-            status.textContent = err && err.message ? err.message : 'Could not open camera.';
+        fileButton.addEventListener('click', function() {
+            openImageInput(fileInput, 'Choose a QR image.', 'file_picker_open');
         });
+        fileInput.addEventListener('change', function() {
+            decodeImageFile(fileInput.files && fileInput.files[0]);
+        });
+        liveButton.addEventListener('click', function() {
+            startLiveScanner('manual');
+        });
+
+        var env = getScannerEnvironment();
+        contactScanDiag('sheet_open', env || {});
+        if (env && env.platform === 'android' && env.prefer_live_scanner === false) {
+            setFallbackReady(true);
+            setScannerMode('fallback');
+            setLiveButtonEnabled(true);
+            status.textContent = 'Use Scan Photo on this WebView, or try Live Scan.';
+        } else {
+            setScannerMode('live');
+            setLiveButtonEnabled(true);
+            requestAnimationFrame(function() { startLiveScanner('auto'); });
+        }
     }
 
     function addContactByAddress() {

@@ -1765,9 +1765,16 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
     let contact_card_js =
         read_source(root.join("dashboard/static/js/contact_card.js")).expect("contact card js");
+    let js_qr = read_source(root.join("dashboard/static/js/vendor/jsQR.js")).expect("jsQR vendor");
+    let js_qr_license = read_source(root.join("dashboard/static/js/vendor/jsQR.LICENSE.txt"))
+        .expect("jsQR license");
     let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
     let responsive_css =
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
+    let android_main = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .expect("android main activity");
     let tauri_build = read_source(root.join("src-tauri/build.rs")).expect("tauri build script");
     let contact_card_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/contact_card.rs"))
@@ -1776,6 +1783,18 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("db");
 
     assert!(index.contains(r#"/static/js/contact_card.js"#));
+    let js_qr_script = index
+        .find(r#"/static/js/vendor/jsQR.js"#)
+        .expect("jsQR script is loaded");
+    let contact_card_script = index
+        .find(r#"/static/js/contact_card.js"#)
+        .expect("contact card script is loaded");
+    assert!(
+        js_qr_script < contact_card_script,
+        "QR decoder must load before contact card scanner"
+    );
+    assert!(js_qr.contains("root[\"jsQR\"] = factory();"));
+    assert!(js_qr_license.contains("Apache License"));
     assert!(identity.contains("Share Contact Card"));
     assert!(identity.contains("openIdentityShareScreen(identityHash)"));
     assert!(settings.contains("function openActiveIdentityContactCard()"));
@@ -1820,6 +1839,14 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(contact_card_js.contains("var scanCanvas = document.createElement('canvas')"));
     assert!(contact_card_js.contains("scanCtx.drawImage(video"));
     assert!(contact_card_js.contains("detector.detect(scanCanvas)"));
+    assert!(contact_card_js.contains("window.jsQR(image.data, width, height"));
+    assert!(contact_card_js.contains("contact-scan-file-input"));
+    assert!(contact_card_js.contains("'<span>Live Scan</span></button>'"));
+    assert!(contact_card_js.contains("'<span>Scan Photo</span></button>'"));
+    assert!(!contact_card_js.contains("Take Photo"));
+    assert!(!contact_card_js.contains("Choose Photo"));
+    assert!(contact_card_js.contains("getQrScannerEnvironment"));
+    assert!(contact_card_js.contains("env.prefer_live_scanner === false"));
     assert!(contact_card_js.contains("RATSPEAK_MARK_PATHS"));
     assert!(contact_card_js.contains("drawOfficialRatspeakMark"));
     assert!(contact_card_js.contains("new Path2D(RATSPEAK_MARK_PATHS[i])"));
@@ -1857,6 +1884,11 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(tauri_build.contains("build_dashboard_css();"));
     assert!(tauri_build.contains(r#""10-views.css""#));
     assert!(tauri_build.contains(r#""13-responsive.css""#));
+    assert!(android_main.contains("WebViewCompat.getCurrentWebViewPackage(this)"));
+    assert!(android_main.contains("gmsLabel.contains(\"microg\", ignoreCase = true)"));
+    assert!(android_main.contains("fun getQrScannerEnvironment(): String"));
+    assert!(android_main.contains("put(\"microg_detected\", microGDetected)"));
+    assert!(android_main.contains("put(\"prefer_live_scanner\", preferLive)"));
 
     assert!(contact_card_rs.contains(r#"const CONTACT_CARD_PREFIX: &str = "RSCP1:""#));
     assert!(contact_card_rs.contains("Identity::from_public_key(&public_key)"));

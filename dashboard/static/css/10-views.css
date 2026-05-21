@@ -3675,6 +3675,70 @@ body.setup-active .bottom-bar {
     box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.24);
 }
 
+.contact-scan-fallback-label {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: var(--space-3);
+    color: var(--text-muted);
+    font-size: var(--type-row-meta-size);
+    font-weight: var(--type-weight-semibold);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(0, 0, 0, 0.1));
+}
+
+.contact-scan-fallback-label svg {
+    width: 34px;
+    height: 34px;
+    color: var(--accent);
+}
+
+.contact-scan-camera-wrap.fallback-ready .contact-scan-video,
+.contact-scan-camera-wrap.fallback-ready .contact-scan-frame {
+    display: none;
+}
+
+.contact-scan-camera-wrap.fallback-ready .contact-scan-fallback-label {
+    display: flex;
+}
+
+.contact-scan-picker-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-3);
+}
+
+.contact-scan-picker-actions .nr-btn {
+    min-height: 44px;
+}
+
+.contact-scan-live-btn,
+.contact-scan-file-btn {
+    min-width: 0;
+    gap: var(--space-2);
+}
+
+.contact-scan-prefers-fallback .contact-scan-file-btn {
+    order: -1;
+}
+
+.contact-scan-live-btn svg,
+.contact-scan-file-btn svg {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+}
+
+.contact-scan-file-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+}
+
 .contact-scan-success {
     display: flex;
     flex-direction: column;
