@@ -175,13 +175,13 @@ fn save_image_to_photos(filename: String, mime: String, data_base64: String) -> 
 }
 
 #[tauri::command]
-async fn request_microphone_permission(app: tauri::AppHandle) -> Result<bool, String> {
+async fn request_microphone_permission(_app: tauri::AppHandle) -> Result<bool, String> {
     #[cfg(target_os = "macos")]
     {
         use std::time::Duration;
 
         let (tx, rx) = std::sync::mpsc::channel();
-        app.run_on_main_thread(move || request_microphone_permission_macos(tx))
+        _app.run_on_main_thread(move || request_microphone_permission_macos(tx))
             .map_err(|e| format!("Could not start microphone permission request: {e}"))?;
 
         tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(120)))

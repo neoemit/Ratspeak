@@ -1090,11 +1090,11 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(lxmf.contains("_ensureAttachmentMediaPermission({ camera: true, audio: true })"));
 
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
-    assert!(tauri_lib.contains("async fn request_microphone_permission(app: tauri::AppHandle)"));
+    assert!(tauri_lib.contains("async fn request_microphone_permission(_app: tauri::AppHandle)"));
     assert!(tauri_lib.contains("fn request_microphone_permission_macos("));
     assert!(tauri_lib.contains("AVCaptureDevice"));
     assert!(tauri_lib.contains("requestAccessForMediaType"));
-    assert!(tauri_lib.contains("app.run_on_main_thread"));
+    assert!(tauri_lib.contains("_app.run_on_main_thread"));
     assert!(tauri_lib.contains("request_microphone_permission,"));
 
     let mac_info_plist = read_source(root.join("src-tauri/Info.plist")).expect("mac info plist");
