@@ -177,6 +177,7 @@ pub async fn send_game_action(
         None,
     )
     .await?;
+    let _ = crate::maybe_opportunistic_announce_before_user_send(&state_arc, &dest_hash).await;
 
     // LRGP turn/winner fields keyed by LXMF hash.
     let identity_id = active_lxmf_hash(&state_arc);
@@ -667,6 +668,7 @@ pub async fn resend_last_game_action(
         None,
     )
     .await?;
+    let _ = crate::maybe_opportunistic_announce_before_user_send(&state_arc, &dest_hash).await;
 
     let st: Arc<AppState> = Arc::clone(&state_arc);
     let dh = dest_hash.clone();

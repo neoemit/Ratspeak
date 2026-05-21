@@ -2315,6 +2315,16 @@ pub fn touch_identity_last_heard(pool: &DbPool, dest_hash: &str, timestamp: f64)
     .unwrap_or(false)
 }
 
+pub fn get_identity_activity_first_seen(pool: &DbPool, dest_hash: &str) -> Option<f64> {
+    let conn = pool.get().ok()?;
+    conn.query_row(
+        "SELECT first_seen FROM identity_activity WHERE dest_hash = ?1",
+        params![dest_hash],
+        |row| row.get::<_, f64>(0),
+    )
+    .ok()
+}
+
 /// Same JOIN as `get_peers_snapshot`, scoped to an explicit hash list.
 pub fn get_peers_by_hashes(pool: &DbPool, hashes: &[String], identity_id: &str) -> Vec<PeerRow> {
     if hashes.is_empty() {
@@ -4543,6 +4553,18 @@ mod peers_snapshot_tests {
             .unwrap();
         assert_eq!(last_seen, 200.0);
         assert_eq!(announce_count, 0);
+    }
+
+    #[test]
+    fn identity_activity_first_seen_lookup_preserves_original_timestamp() {
+        let pool = test_pool();
+        assert_eq!(get_identity_activity_first_seen(&pool, "alice"), None);
+        assert!(touch_identity_last_heard(&pool, "alice", 100.0));
+        assert!(touch_identity_last_heard(&pool, "alice", 200.0));
+        assert_eq!(
+            get_identity_activity_first_seen(&pool, "alice"),
+            Some(100.0)
+        );
     }
 }
 

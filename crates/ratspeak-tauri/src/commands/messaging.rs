@@ -215,6 +215,10 @@ fn destination_identity_known(state: &AppState, dest_hash: &str) -> bool {
         .unwrap_or(false)
 }
 
+async fn maybe_announce_before_user_send(state: &Arc<AppState>, dest_hash: &str) {
+    let _ = crate::maybe_opportunistic_announce_before_user_send(state, dest_hash).await;
+}
+
 pub(crate) async fn ensure_propagation_ready_for_send(
     state: &Arc<AppState>,
     dest_hash: &str,
@@ -329,6 +333,7 @@ pub async fn send_lxmf_message(
         client_msg_id.as_deref(),
     )
     .await?;
+    maybe_announce_before_user_send(&state, &dest_hash).await;
 
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);
@@ -466,6 +471,7 @@ pub async fn send_reaction(
             None,
         )
         .await?;
+        maybe_announce_before_user_send(&state, &dest_hash).await;
     }
 
     let identity_id = active_identity_id(&state);
@@ -573,6 +579,7 @@ pub async fn send_lxmf_reply(
         client_msg_id.as_deref(),
     )
     .await?;
+    maybe_announce_before_user_send(&state, &dest_hash).await;
 
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);
@@ -681,6 +688,7 @@ pub async fn send_lxmf_propagated(
         client_msg_id.as_deref(),
     )
     .await?;
+    maybe_announce_before_user_send(&state, &dest_hash).await;
 
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);
@@ -862,6 +870,7 @@ pub async fn send_lxmf_with_attachment(
         client_msg_id.as_deref(),
     )
     .await?;
+    maybe_announce_before_user_send(&state, &dest_hash).await;
 
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);

@@ -1,7 +1,7 @@
 //! Shared application state. Narrowest sync primitive per field: `RwLock` for
 //! read-heavy caches, `Mutex` for write-heavy maps, `AtomicBool` for single flags.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
@@ -83,6 +83,13 @@ pub struct AppState {
     /// If true, this identity announces and serves its `lxmf.propagation` node.
     pub propagation_node_hosting_enabled: AtomicBool,
     pub propagation_node_stamp_cost: AtomicU8,
+    /// Unix milliseconds when this identity last queued its LXMF delivery
+    /// announce. Used to decide if a newly seen peer might not know our name.
+    pub last_lxmf_delivery_announce_at_ms: AtomicU64,
+    /// Session-local global throttle for announce-before-send nudges.
+    pub last_opportunistic_announce_at: Mutex<Option<Instant>>,
+    /// Peers currently covered by an in-flight opportunistic announce attempt.
+    pub opportunistic_announce_inflight: Mutex<HashSet<String>>,
     /// Coalesces conversation-list broadcasts; spawned task debounces 100ms.
     pub conversations_broadcast_pending: AtomicBool,
     /// 10s session-local throttle on Refresh button. `None` = never throttled.
@@ -188,6 +195,9 @@ impl AppState {
             required_stamp_cost: AtomicU8::new(initial_required_stamp_cost),
             propagation_node_hosting_enabled: AtomicBool::new(initial_prop_node_hosting),
             propagation_node_stamp_cost: AtomicU8::new(initial_prop_node_stamp_cost),
+            last_lxmf_delivery_announce_at_ms: AtomicU64::new(0),
+            last_opportunistic_announce_at: Mutex::new(None),
+            opportunistic_announce_inflight: Mutex::new(HashSet::new()),
             conversations_broadcast_pending: AtomicBool::new(false),
             last_refresh_request_at: Mutex::new(None),
             last_static_probe_at: Mutex::new(None),
@@ -278,6 +288,14 @@ impl AppState {
         }
         if let Ok(mut failures) = self.auto_failure_counts.lock() {
             failures.clear();
+        }
+        self.last_lxmf_delivery_announce_at_ms
+            .store(0, Ordering::Relaxed);
+        if let Ok(mut last) = self.last_opportunistic_announce_at.lock() {
+            *last = None;
+        }
+        if let Ok(mut inflight) = self.opportunistic_announce_inflight.lock() {
+            inflight.clear();
         }
         if let Ok(mut last) = self.last_refresh_request_at.lock() {
             *last = None;

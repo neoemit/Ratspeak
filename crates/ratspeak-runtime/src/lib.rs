@@ -29,7 +29,8 @@ pub use ratspeak_db as db;
 pub use ratspeak_db::static_nodes;
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use rns_identity::destination::Destination;
@@ -42,6 +43,7 @@ const CHANNEL_BUFFER_SIZE: usize = 64;
 // ~150 bytes/entry → ~750 KB ceiling for hub bootstrap bursts.
 const ANNOUNCE_HISTORY_CAP: usize = 5_000;
 const AUTO_INBOX_READY_RETRY_SECS: f64 = 30.0;
+const OPPORTUNISTIC_ANNOUNCE_COOLDOWN: Duration = Duration::from_secs(60);
 
 fn lxmf_progress_activity_label(step: &str) -> Option<&'static str> {
     match step {
@@ -139,6 +141,17 @@ fn local_now_ts() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64()
+}
+
+fn unix_now_ms() -> u64 {
+    unix_secs_to_ms(local_now_ts()).unwrap_or(0)
+}
+
+fn unix_secs_to_ms(timestamp: f64) -> Option<u64> {
+    if !timestamp.is_finite() || timestamp <= 0.0 {
+        return None;
+    }
+    Some((timestamp * 1000.0).round().clamp(0.0, u64::MAX as f64) as u64)
 }
 
 async fn next_chat_observed_timestamp(
@@ -1571,6 +1584,98 @@ pub async fn send_manual_announce_from_state(state: &AppState) -> AnnounceSendRe
     send_announce_from_state_inner(state, false).await
 }
 
+pub async fn maybe_opportunistic_announce_before_user_send(
+    state: &AppState,
+    dest_hash: &str,
+) -> AnnounceSendReport {
+    let report = AnnounceSendReport::default();
+
+    if *state.announce_interval_rx.borrow() == 0 {
+        return report;
+    }
+    if hex::decode(dest_hash)
+        .ok()
+        .is_none_or(|bytes| bytes.len() != 16)
+    {
+        return report;
+    }
+    if !matches!(any_interface_online_cached(state), Some(true)) {
+        return report;
+    }
+
+    let rns_ready = state
+        .rns
+        .read()
+        .ok()
+        .and_then(|rns| rns.as_ref().map(|_| ()))
+        .is_some();
+    if !rns_ready {
+        return report;
+    }
+    let lxmf_ready = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|lxmf| lxmf.as_ref().map(|_| ()))
+        .is_some();
+    if !lxmf_ready {
+        return report;
+    }
+
+    let hash_for_db = dest_hash.to_string();
+    let first_seen = db::spawn_db(state.db.clone(), move |p| {
+        db::get_identity_activity_first_seen(&p, &hash_for_db)
+    })
+    .await
+    .unwrap_or(None);
+    let Some(peer_first_seen_ms) = first_seen.and_then(unix_secs_to_ms) else {
+        return report;
+    };
+
+    let last_announce_ms = state
+        .last_lxmf_delivery_announce_at_ms
+        .load(Ordering::Relaxed);
+    if last_announce_ms >= peer_first_seen_ms {
+        return report;
+    }
+
+    if !claim_opportunistic_announce(state, dest_hash) {
+        return report;
+    }
+    let announce_report = send_announce_from_state(state).await;
+    release_opportunistic_announce(state, dest_hash);
+    announce_report
+}
+
+fn claim_opportunistic_announce(state: &AppState, dest_hash: &str) -> bool {
+    let now = Instant::now();
+    let mut last = match state.last_opportunistic_announce_at.lock() {
+        Ok(last) => last,
+        Err(_) => return false,
+    };
+    if last
+        .as_ref()
+        .is_some_and(|instant| now.duration_since(*instant) < OPPORTUNISTIC_ANNOUNCE_COOLDOWN)
+    {
+        return false;
+    }
+    let mut inflight = match state.opportunistic_announce_inflight.lock() {
+        Ok(inflight) => inflight,
+        Err(_) => return false,
+    };
+    if !inflight.insert(dest_hash.to_string()) {
+        return false;
+    }
+    *last = Some(now);
+    true
+}
+
+fn release_opportunistic_announce(state: &AppState, dest_hash: &str) {
+    if let Ok(mut inflight) = state.opportunistic_announce_inflight.lock() {
+        inflight.remove(dest_hash);
+    }
+}
+
 fn schedule_startup_auto_announce(state: Arc<AppState>) {
     if *state.announce_interval_rx.borrow() == 0 {
         return;
@@ -1637,7 +1742,7 @@ async fn send_announce_from_state_inner(
         return report;
     }
     let (packets, transport_tx) = {
-        let mut packets: Vec<([u8; 16], Vec<u8>, &'static str)> = Vec::new();
+        let mut packets: Vec<([u8; 16], Vec<u8>, &'static str, bool)> = Vec::new();
         if let Ok(mut lxmf) = state.lxmf.lock()
             && let Some(mgr) = lxmf.as_mut()
         {
@@ -1646,6 +1751,7 @@ async fn send_announce_from_state_inner(
                     mgr.lxmf_dest_hash,
                     raw,
                     "Identity announced on all interfaces",
+                    true,
                 ));
             }
             if state
@@ -1657,6 +1763,7 @@ async fn send_announce_from_state_inner(
                     mgr.propagation_dest_hash,
                     raw,
                     "Propagation node announced on all interfaces",
+                    false,
                 ));
             }
         }
@@ -1673,7 +1780,7 @@ async fn send_announce_from_state_inner(
         return report;
     };
 
-    for (destination_hash, raw, log_message) in packets {
+    for (destination_hash, raw, log_message, is_lxmf_delivery) in packets {
         match tx
             .send(rns_transport::messages::TransportMessage::Outbound(
                 rns_transport::messages::OutboundRequest {
@@ -1685,6 +1792,11 @@ async fn send_announce_from_state_inner(
         {
             Ok(_) => {
                 report.queued += 1;
+                if is_lxmf_delivery {
+                    state
+                        .last_lxmf_delivery_announce_at_ms
+                        .store(unix_now_ms(), Ordering::Relaxed);
+                }
                 tracing::info!(dest = %hex::encode(destination_hash), "announce sent");
                 if state
                     .network_log_enabled
@@ -4167,5 +4279,66 @@ mod notification_tests {
         assert_eq!(seen[0].notification_id, seen[1].notification_id);
         assert_eq!(seen[0].title, "Game update");
         assert!(seen[0].body.contains("Rook"));
+    }
+
+    #[test]
+    fn opportunistic_announce_timestamps_use_unix_milliseconds() {
+        assert_eq!(unix_secs_to_ms(1.234), Some(1234));
+        assert_eq!(unix_secs_to_ms(0.0), None);
+        assert_eq!(unix_secs_to_ms(f64::NAN), None);
+    }
+
+    #[test]
+    fn opportunistic_announce_claim_is_session_throttled() {
+        let notifier = Arc::new(RecordingNotifier::default());
+        let state = make_state(notifier);
+
+        assert!(claim_opportunistic_announce(&state, "alice"));
+        assert!(!claim_opportunistic_announce(&state, "alice"));
+        release_opportunistic_announce(&state, "alice");
+        assert!(!claim_opportunistic_announce(&state, "bob"));
+
+        *state.last_opportunistic_announce_at.lock().unwrap() = Some(
+            std::time::Instant::now() - OPPORTUNISTIC_ANNOUNCE_COOLDOWN - Duration::from_secs(1),
+        );
+        assert!(claim_opportunistic_announce(&state, "bob"));
+    }
+
+    #[test]
+    fn identity_scoped_state_clears_opportunistic_announce_suppression() {
+        let notifier = Arc::new(RecordingNotifier::default());
+        let state = make_state(notifier);
+        state
+            .last_lxmf_delivery_announce_at_ms
+            .store(1234, Ordering::Relaxed);
+        *state.last_opportunistic_announce_at.lock().unwrap() = Some(std::time::Instant::now());
+        state
+            .opportunistic_announce_inflight
+            .lock()
+            .unwrap()
+            .insert("alice".into());
+
+        state.clear_identity_scoped_runtime_state();
+
+        assert_eq!(
+            state
+                .last_lxmf_delivery_announce_at_ms
+                .load(Ordering::Relaxed),
+            0
+        );
+        assert!(
+            state
+                .last_opportunistic_announce_at
+                .lock()
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            state
+                .opportunistic_announce_inflight
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
     }
 }
