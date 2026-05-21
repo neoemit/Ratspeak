@@ -86,6 +86,10 @@ function renderDashboardPeersList() {
         var hasName = p.display_name && p.display_name !== '' && p.display_name !== hash;
         var displayName = hasName ? p.display_name : hash.substring(0, 8);
         var nameClass = 'dashboard-peers-name' + (hasName ? '' : ' dashboard-peers-name-hash');
+        var profileStatus = typeof ratspeakProfileStatusText === 'function' ? ratspeakProfileStatusText(p) : '';
+        var statusHtml = profileStatus
+            ? '<span class="dashboard-peers-status" title="' + escapeHtml(profileStatus) + '">' + escapeHtml(profileStatus) + '</span>'
+            : '';
         var hopText = (p.hops !== null && p.hops !== undefined)
             ? p.hops + (p.hops === 1 ? ' hop' : ' hops') : '';
 
@@ -96,10 +100,13 @@ function renderDashboardPeersList() {
         }
         actions += '</div>';
 
-        html += '<div class="dashboard-peers-row" data-hash="' + escapeHtml(hash) + '">' +
+        html += '<div class="dashboard-peers-row' + (profileStatus ? ' has-profile-status' : '') + '" data-hash="' + escapeHtml(hash) + '">' +
             '<span class="dashboard-peers-dot ' + statusClass + '"></span>' +
             '<div class="dashboard-peers-avatar">' + av + '</div>' +
-            '<span class="' + nameClass + '">' + ratspeakDisplayNameHtml(displayName, p) + '</span>' +
+            '<span class="dashboard-peers-main">' +
+                '<span class="' + nameClass + '">' + ratspeakDisplayNameHtml(displayName, p) + '</span>' +
+                statusHtml +
+            '</span>' +
             (hopText ? '<span class="dashboard-peers-hops">' + hopText + '</span>' : '') +
             actions +
             '</div>';

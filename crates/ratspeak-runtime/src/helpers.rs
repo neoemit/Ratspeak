@@ -2,6 +2,7 @@ use crate::db;
 use crate::state::AppState;
 
 pub const ANNOUNCED_DISPLAY_NAME_MAX_BYTES: usize = 128;
+pub const ANNOUNCED_STATUS_MAX_BYTES: usize = 50;
 
 pub fn validate_hex(value: &str, min_len: usize, max_len: usize) -> bool {
     if value.len() < min_len || value.len() > max_len {
@@ -25,6 +26,17 @@ pub fn sanitize_announced_display_name(value: &str) -> Result<String, String> {
     if trimmed.len() > ANNOUNCED_DISPLAY_NAME_MAX_BYTES {
         return Err(format!(
             "Display name must be {ANNOUNCED_DISPLAY_NAME_MAX_BYTES} UTF-8 bytes or less"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+pub fn sanitize_announced_status(value: &str) -> Result<String, String> {
+    let sanitized = value.replace('\0', "").replace(['\r', '\n', '\t'], " ");
+    let trimmed = sanitized.trim();
+    if trimmed.len() > ANNOUNCED_STATUS_MAX_BYTES {
+        return Err(format!(
+            "Status must be {ANNOUNCED_STATUS_MAX_BYTES} UTF-8 bytes or less"
         ));
     }
     Ok(trimmed.to_string())
@@ -60,5 +72,21 @@ mod tests {
                 .is_ok()
         );
         assert!(sanitize_announced_display_name(&"😀".repeat(33)).is_err());
+    }
+
+    #[test]
+    fn announced_status_limit_counts_utf8_bytes_and_allows_empty() {
+        assert!(sanitize_announced_status("").is_ok());
+        assert!(sanitize_announced_status(&"a".repeat(ANNOUNCED_STATUS_MAX_BYTES)).is_ok());
+        assert!(sanitize_announced_status(&"😀".repeat(ANNOUNCED_STATUS_MAX_BYTES / 4)).is_ok());
+        assert!(sanitize_announced_status(&"😀".repeat(13)).is_err());
+    }
+
+    #[test]
+    fn announced_status_is_single_line_metadata() {
+        assert_eq!(
+            sanitize_announced_status("  hello\nthere\tfriend\0  ").unwrap(),
+            "hello there friend"
+        );
     }
 }

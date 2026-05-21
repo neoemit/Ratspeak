@@ -36,6 +36,13 @@ function ratspeakNameBadgeHtml(recordOrHash) {
     return '<span class="ratspeak-name-badge" title="Ratspeak user" aria-label="Ratspeak user">&#9733;</span>';
 }
 
+function ratspeakProfileStatusText(recordOrHash) {
+    if (!ratspeakSupportsFeaturesFor(recordOrHash)) return '';
+    var record = typeof recordOrHash === 'string' ? ratspeakRecordForHash(recordOrHash) : recordOrHash;
+    if (!record || record.profile_status == null) return '';
+    return String(record.profile_status).trim();
+}
+
 function ratspeakDisplayNameHtml(displayName, recordOrHash) {
     var nameHtml = escapeHtml(String(displayName || ''));
     if (!ratspeakSupportsFeaturesFor(recordOrHash)) return nameHtml;
@@ -120,6 +127,7 @@ var PeersCache = (function() {
             last_seen: (r.last_seen === undefined || r.last_seen === null) ? null : r.last_seen,
             first_seen: (r.first_seen === undefined || r.first_seen === null) ? null : r.first_seen,
             display_name: typeof r.display_name === 'string' ? r.display_name : '',
+            profile_status: typeof r.profile_status === 'string' ? r.profile_status : '',
             is_contact: !!r.is_contact,
             last_interface: typeof r.last_interface === 'string' ? r.last_interface : '',
             services: services,
@@ -169,6 +177,7 @@ var PeersCache = (function() {
                 existing.first_seen = n.first_seen;
             }
             if (payload.display_name !== undefined) existing.display_name = n.display_name;
+            if (payload.profile_status !== undefined) existing.profile_status = n.profile_status;
             if (payload.is_contact !== undefined) existing.is_contact = n.is_contact;
             if (payload.last_interface !== undefined && n.last_interface) {
                 existing.last_interface = n.last_interface;
@@ -370,6 +379,7 @@ var PeersCache = (function() {
                 identity_hash: entry.identity_hash || '',
                 telephony_hash: entry.telephony_hash || '',
                 display_name: entry.display_name || '',
+                profile_status: entry.profile_status || '',
                 is_contact: !!entry.is_contact,
                 services: Array.isArray(entry.services) ? entry.services.slice() : [],
                 supports_ratspeak: _supportsRatspeakFeatures(entry),

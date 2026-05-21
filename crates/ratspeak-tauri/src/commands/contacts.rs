@@ -164,6 +164,7 @@ pub(crate) async fn emit_peer_delta_for(state: &Arc<AppState>, dest_hash: &str) 
                     "last_seen": row.last_seen,
                     "first_seen": row.first_seen,
                     "display_name": row.display_name,
+                    "profile_status": row.profile_status,
                     "is_contact": row.is_contact,
                     "last_interface": row.last_interface,
                     "services": row.services,

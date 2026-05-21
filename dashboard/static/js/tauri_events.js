@@ -263,6 +263,8 @@ RS.listen('node_operation_status', function(data) {
         'add_backbone_server': 'Starting Backbone server on',
         'update_backbone_server': 'Updating Backbone server on',
         'remove_backbone_server': 'Stopping Backbone server on',
+        'pause_interface': 'Pausing',
+        'resume_interface': 'Resuming',
         'transport': 'Updating',
         'enable_ble_peer': 'Enabling Bluetooth Peer on',
         'disable_ble_peer': 'Disabling Bluetooth Peer on',
@@ -299,6 +301,9 @@ RS.listen('node_operation_status', function(data) {
 
         if (data.operation === 'add_lora' && !data.error) {
             closeRnodeModal();
+        }
+        if (data.operation === 'resume_interface' && typeof clearConnectPublicPending === 'function') {
+            clearConnectPublicPending();
         }
     }
     if (data.done && progressHandling) {

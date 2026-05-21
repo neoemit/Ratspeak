@@ -950,6 +950,34 @@
     color: var(--text-muted);
 }
 
+.profile-status-editor-body {
+    gap: var(--space-3);
+}
+
+.profile-status-input {
+    min-height: 86px;
+    max-height: 140px;
+    resize: vertical;
+    font-family: var(--font-sans);
+    line-height: var(--type-leading-body);
+}
+
+.profile-status-editor-meta {
+    display: flex;
+    justify-content: flex-end;
+    min-height: 16px;
+}
+
+.profile-status-counter {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    color: var(--text-muted);
+}
+
+.profile-status-counter.at-limit {
+    color: var(--status-warning);
+}
+
 .rs-dialog-field-label {
     display: block;
     margin: var(--space-3) 0 var(--space-2);

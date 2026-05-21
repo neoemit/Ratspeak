@@ -24,6 +24,7 @@ pub struct PeerRow {
     /// `None` for contacts with no activity row.
     pub first_seen: Option<f64>,
     pub display_name: String,
+    pub profile_status: String,
     pub is_contact: bool,
     /// Empty for never-seen contacts.
     pub last_interface: String,

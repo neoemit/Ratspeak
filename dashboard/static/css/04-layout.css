@@ -82,6 +82,26 @@
 
 .header-mobile-identity { display: none; }
 
+.profile-status-text {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-muted);
+    line-height: 1.2;
+}
+
+.profile-status-empty {
+    opacity: 0.72;
+}
+
+.header-mobile-status {
+    font-size: var(--text-xs);
+    font-weight: var(--type-weight-medium);
+}
+
 .header-identity-chevron {
     display: none;
     opacity: 0.4;
@@ -396,6 +416,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     line-height: var(--type-leading-tight);
+}
+.sidebar-identity-status {
+    font-size: var(--text-2xs);
+    cursor: pointer;
 }
 .sidebar-identity-hash {
     font-family: var(--font-mono);

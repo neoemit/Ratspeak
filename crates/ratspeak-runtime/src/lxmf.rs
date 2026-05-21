@@ -77,6 +77,7 @@ fn encode_msgpack_value(value: &rmpv::Value) -> Vec<u8> {
 pub fn get_ratspeak_announce_app_data(
     display_name: Option<&str>,
     stamp_cost: Option<u8>,
+    status: Option<&str>,
     announce_ratspeak_usage: bool,
 ) -> Vec<u8> {
     use rmpv::Value;
@@ -99,9 +100,25 @@ pub fn get_ratspeak_announce_app_data(
     let ratspeak = Value::Array(vec![
         Value::from(RATSPEAK_ANNOUNCE_EXTENSION_VERSION as u64),
         Value::from(RATSPEAK_DEFAULT_CAPABILITIES),
+        Value::Map(vec![(
+            Value::String("s".into()),
+            Value::String(
+                crate::helpers::sanitize_announced_status(status.unwrap_or(""))
+                    .unwrap_or_default()
+                    .into(),
+            ),
+        )]),
     ]);
 
     encode_msgpack_value(&Value::Array(vec![name_val, cost_val, features, ratspeak]))
+}
+
+fn msgpack_text_value(value: &rmpv::Value) -> Option<String> {
+    match value {
+        rmpv::Value::String(s) => s.as_str().map(ToOwned::to_owned),
+        rmpv::Value::Binary(bytes) => String::from_utf8(bytes.clone()).ok(),
+        _ => None,
+    }
 }
 
 pub fn ratspeak_capability_services_from_app_data(data: &[u8]) -> Vec<&'static str> {
@@ -132,6 +149,28 @@ pub fn ratspeak_capability_services_from_app_data(data: &[u8]) -> Vec<&'static s
         services.push(db::PEER_SERVICE_RATSPEAK_CHAT);
     }
     services
+}
+
+pub fn ratspeak_status_from_app_data(data: &[u8]) -> Option<String> {
+    let Ok(value) = rmpv::decode::read_value(&mut &data[..]) else {
+        return None;
+    };
+    let arr = value.as_array()?;
+    let ext = arr.get(3)?.as_array()?;
+    if ext.first().and_then(|v| v.as_u64()) != Some(RATSPEAK_ANNOUNCE_EXTENSION_VERSION as u64) {
+        return None;
+    }
+    let rmpv::Value::Map(profile) = ext.get(2)? else {
+        return None;
+    };
+    let status = profile.iter().find_map(|(key, value)| {
+        if msgpack_text_value(key).as_deref() == Some("s") {
+            msgpack_text_value(value)
+        } else {
+            None
+        }
+    })?;
+    crate::helpers::sanitize_announced_status(&status).ok()
 }
 
 fn chat_map_entry(key: &str, value: rmpv::Value) -> (rmpv::Value, rmpv::Value) {
@@ -564,6 +603,7 @@ pub struct LxmfManager {
     pub data_dir: PathBuf,
     pub lxmf_storage_dir: PathBuf,
     pub display_name: String,
+    pub status: String,
     pub announce_ratspeak_usage: bool,
     pub ratchet_ring: RatchetRing,
     pub received_ratchets: HashMap<String, ReceivedRatchet>,
@@ -787,6 +827,7 @@ impl LxmfManager {
             data_dir: ratspeak_dir,
             lxmf_storage_dir: lxmf_storage,
             display_name: String::new(),
+            status: String::new(),
             announce_ratspeak_usage: true,
             ratchet_ring,
             received_ratchets,
@@ -2061,8 +2102,8 @@ impl LxmfManager {
         let ratchet_pub = self.ratchet_ring.current_public_key();
         let ratchet_ref = ratchet_pub.as_ref();
 
-        // Pack as msgpack `[display_name, stamp_cost, [SF_COMPRESSION]]`
-        // matching Python `LXMRouter.get_announce_app_data` (LXMRouter.py).
+        // Pack as LXMF-compatible msgpack with a Ratspeak extension tail.
+        // The first three fields match Python `LXMRouter.get_announce_app_data`.
         // Raw UTF-8 forces Python receivers onto a legacy path that skips
         // stamp-cost detection.
         let display_name_opt = if self.display_name.is_empty() {
@@ -2070,10 +2111,16 @@ impl LxmfManager {
         } else {
             Some(self.display_name.as_str())
         };
+        let status_opt = if self.announce_ratspeak_usage {
+            Some(self.status.as_str())
+        } else {
+            None
+        };
         let stamp_cost = self.router.config.stamp_cost;
         let app_data_bytes = get_ratspeak_announce_app_data(
             display_name_opt,
             stamp_cost,
+            status_opt,
             self.announce_ratspeak_usage,
         );
 
@@ -2171,6 +2218,16 @@ impl LxmfManager {
     ) -> Result<(), String> {
         self.display_name = name.to_string();
         db::update_identity(db_pool, identity_id, None, Some(name))
+    }
+
+    pub fn update_status(
+        &mut self,
+        status: &str,
+        db_pool: &DbPool,
+        identity_id: &str,
+    ) -> Result<(), String> {
+        self.status = status.to_string();
+        db::update_identity_status(db_pool, identity_id, status)
     }
 
     pub fn request_all_paths(&self, db_pool: &DbPool, identity_id: &str) -> usize {
@@ -4464,17 +4521,22 @@ mod tests {
 
     #[test]
     fn ratspeak_announce_extension_is_optional_and_parseable() {
-        let legacy = get_ratspeak_announce_app_data(Some("Alice"), Some(8), false);
+        let legacy = get_ratspeak_announce_app_data(Some("Alice"), Some(8), Some("Away"), false);
         assert!(ratspeak_capability_services_from_app_data(&legacy).is_empty());
+        assert_eq!(ratspeak_status_from_app_data(&legacy), None);
         let (name, cost) = lxmf_core::handlers::parse_announce_app_data(&legacy).unwrap();
         assert_eq!(name.as_deref(), Some("Alice"));
         assert_eq!(cost, Some(8));
 
-        let extended = get_ratspeak_announce_app_data(Some("Alice"), Some(8), true);
+        let extended = get_ratspeak_announce_app_data(Some("Alice"), Some(8), Some("Away"), true);
         let services = ratspeak_capability_services_from_app_data(&extended);
         assert!(services.contains(&db::PEER_SERVICE_RATSPEAK_CLIENT));
         assert!(services.contains(&db::PEER_SERVICE_RATSPEAK_GAMES));
         assert!(services.contains(&db::PEER_SERVICE_RATSPEAK_CHAT));
+        assert_eq!(
+            ratspeak_status_from_app_data(&extended).as_deref(),
+            Some("Away")
+        );
         let (name, cost) = lxmf_core::handlers::parse_announce_app_data(&extended).unwrap();
         assert_eq!(name.as_deref(), Some("Alice"));
         assert_eq!(cost, Some(8));
@@ -4484,9 +4546,18 @@ mod tests {
     }
 
     #[test]
+    fn ratspeak_announce_status_distinguishes_absent_from_cleared() {
+        let cleared = get_ratspeak_announce_app_data(Some("Alice"), Some(8), Some(""), true);
+        assert_eq!(ratspeak_status_from_app_data(&cleared).as_deref(), Some(""));
+        let legacy = lxmf_core::handlers::get_announce_app_data(Some("Alice"), Some(8));
+        assert_eq!(ratspeak_status_from_app_data(&legacy), None);
+    }
+
+    #[test]
     fn delivery_announce_packet_stays_under_reticulum_mtu_with_max_display_name() {
         let mut mgr = test_manager();
         mgr.display_name = "a".repeat(crate::helpers::ANNOUNCED_DISPLAY_NAME_MAX_BYTES);
+        mgr.status = "b".repeat(crate::helpers::ANNOUNCED_STATUS_MAX_BYTES);
         mgr.announce_ratspeak_usage = true;
 
         let raw = mgr.create_announce_packet().expect("announce packet");

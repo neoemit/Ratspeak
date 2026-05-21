@@ -1162,8 +1162,11 @@ function _peerPresenceClass(peer) {
 function _peerHeaderStatus(peer) {
     if (!peer) return '';
     var status = peer.status || 'unknown';
-    if (status === 'reachable' || status === 'direct') return 'Seen recently';
-    return _peerActivityLabel(peer);
+    var activity = (status === 'reachable' || status === 'direct') ? 'Seen recently' : _peerActivityLabel(peer);
+    var profileStatus = typeof ratspeakProfileStatusText === 'function'
+        ? ratspeakProfileStatusText(peer)
+        : (ratspeakSupportsFeatures(peer) ? (peer.profile_status || '') : '');
+    return profileStatus ? (activity + ' \u00b7 ' + profileStatus) : activity;
 }
 
 function _applyChatHeaderPresence() {
@@ -1173,13 +1176,16 @@ function _applyChatHeaderPresence() {
     var peer = (typeof _peerInfo === 'function') ? _peerInfo(lxmfActiveContact) : null;
     var statusText = (typeof _peerHeaderStatus === 'function') ? _peerHeaderStatus(peer) : '';
     var presenceClass = _peerPresenceClass(peer);
+    var hasProfileStatus = !!(typeof ratspeakProfileStatusText === 'function'
+        ? ratspeakProfileStatusText(peer)
+        : (peer && ratspeakSupportsFeatures(peer) && peer.profile_status));
     var title = statusText || 'Never seen';
     if (peer && peer.route_label) title += ' - ' + peer.route_label;
     if (statusEl) {
         statusEl.textContent = statusText;
         statusEl.style.display = statusText ? '' : 'none';
         statusEl.className = 'lxmf-chat-header-status' +
-            (presenceClass === 'online' ? ' is-online' : (presenceClass === 'stale' ? ' is-stale' : ''));
+            (!hasProfileStatus && presenceClass === 'online' ? ' is-online' : (!hasProfileStatus && presenceClass === 'stale' ? ' is-stale' : ''));
         statusEl.title = title;
     }
     if (avatarEl) {
@@ -1665,6 +1671,7 @@ function _formatDateLabel(timestamp) {
 function renderMsgProfileStrip() {
     var avatarEl = document.getElementById('msg-profile-avatar');
     var nameEl = document.getElementById('msg-profile-name');
+    var statusEl = document.getElementById('msg-profile-status');
 
     var active = null;
     if (typeof identityList !== 'undefined') {
@@ -1675,14 +1682,18 @@ function renderMsgProfileStrip() {
     if (active) {
         var hash = active.lxmf_hash || active.hash || '';
         var displayName = active.display_name || active.nickname || 'Me';
+        var status = typeof resolveActiveProfileStatus === 'function' ? resolveActiveProfileStatus() : '';
         if (avatarEl) avatarEl.innerHTML = identityAvatar(hash, 36);
         if (nameEl) nameEl.textContent = displayName;
+        if (statusEl && typeof updateProfileStatusElement === 'function') updateProfileStatusElement(statusEl, status);
 
         var hdrAvatar = document.getElementById('header-mobile-avatar');
         var hdrName = document.getElementById('header-mobile-name');
+        var hdrStatus = document.getElementById('header-mobile-status');
         var mobileName = active.display_name || active.nickname || 'Account 1';
         if (hdrAvatar) hdrAvatar.innerHTML = identityAvatar(hash, 36);
         if (hdrName) hdrName.textContent = mobileName;
+        if (hdrStatus && typeof updateProfileStatusElement === 'function') updateProfileStatusElement(hdrStatus, status);
     }
 }
 
@@ -4050,11 +4061,17 @@ RS.listen('lxmf_identity', function(data) {
     }
     var avatarEl = document.getElementById('msg-profile-avatar');
     var nameEl = document.getElementById('msg-profile-name');
+    var statusEl = document.getElementById('msg-profile-status');
     if (avatarEl && data.hash) {
         avatarEl.innerHTML = identityAvatar(data.hash, 36);
     }
     if (nameEl && data.display_name) {
         nameEl.textContent = data.display_name;
+    }
+    if (typeof syncActiveProfileStatusFromPayload === 'function') {
+        syncActiveProfileStatusFromPayload(data);
+    } else if (statusEl && data.status) {
+        statusEl.textContent = data.status;
     }
     // Re-render so we exclude self from the peer list.
     if (typeof renderConnectionsTable === 'function' && typeof PeersCache !== 'undefined' && PeersCache) {
@@ -4316,6 +4333,9 @@ function showContactAbout(hash) {
     var chipColor = _aboutChipColor(status);
     var avatarStateClass = (status === 'reachable' || status === 'direct') ? 'online' : (status === 'stale' ? 'stale' : '');
     var activityLabel = _peerActivityLabel(reach);
+    var profileStatus = reach && typeof ratspeakProfileStatusText === 'function'
+        ? ratspeakProfileStatusText(reach)
+        : (reach && ratspeakSupportsFeatures(reach) && reach.profile_status ? reach.profile_status : '');
     var routeLabel = _peerRouteLabel(reach);
 
     var hops = (reach && reach.hops !== null && reach.hops !== undefined) ? reach.hops : '\u2014';
@@ -4370,6 +4390,12 @@ function showContactAbout(hash) {
     html += escapeHtml(activityLabel);
     html += '    </span>';
     html += '  </div>';
+    if (profileStatus) {
+        html += '  <div class="about-row">';
+        html += '    <span class="about-row-label">Status</span>';
+        html += '    <span class="about-row-value">' + escapeHtml(profileStatus) + '</span>';
+        html += '  </div>';
+    }
     html += '  <div class="about-row">';
     html += '    <span class="about-row-label">Route</span>';
     html += '    <span class="about-row-value">' + escapeHtml(routeLabel) + '</span>';

@@ -39,6 +39,7 @@ pub async fn api_get_peers_snapshot(state: State<'_, Arc<AppState>>) -> AppResul
                 "last_seen": r.last_seen,
                 "first_seen": r.first_seen,
                 "display_name": r.display_name,
+                "profile_status": r.profile_status,
                 "is_contact": r.is_contact,
                 "last_interface": r.last_interface,
                 "services": r.services,

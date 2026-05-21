@@ -8,13 +8,26 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 30;
+const SCHEMA_VERSION: i64 = 31;
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = "lxmf.delivery";
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
 pub const PEER_SERVICE_RATSPEAK_CLIENT: &str = "ratspeak.client";
 pub const PEER_SERVICE_RATSPEAK_GAMES: &str = "ratspeak.games";
 pub const PEER_SERVICE_RATSPEAK_CHAT: &str = "ratspeak.chat";
+
+const IDENTITY_SELECT_COLUMNS: &str = "hash,
+    lxmf_hash,
+    nickname,
+    display_name,
+    COALESCE(status, '') AS status,
+    created_at,
+    last_used,
+    is_active,
+    propagation_node,
+    propagation_enabled,
+    propagation_mode,
+    propagation_auto_favor_static";
 
 const POOL_MAX_SIZE: u32 = 32;
 
@@ -114,6 +127,7 @@ CREATE TABLE IF NOT EXISTS identities (
     lxmf_hash TEXT,
     nickname TEXT DEFAULT '',
     display_name TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL,
     last_used REAL,
     is_active INTEGER DEFAULT 0,
@@ -317,6 +331,7 @@ CREATE TABLE IF NOT EXISTS identity_activity (
     first_seen     REAL NOT NULL,
     announce_count INTEGER NOT NULL DEFAULT 1,
     display_name   TEXT NOT NULL DEFAULT '',
+    status         TEXT NOT NULL DEFAULT '',
     last_interface TEXT NOT NULL DEFAULT '',
     services       TEXT NOT NULL DEFAULT ''
 );
@@ -1062,6 +1077,29 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         tracing::info!("Migrated to schema version 30 (messages scoped by identity)");
     }
 
+    if from_version < 31 {
+        if table_exists(conn, "identities")? {
+            let cols = get_column_names(conn, "identities").unwrap_or_default();
+            if !cols.iter().any(|c| c == "status") {
+                conn.execute_batch(
+                    "ALTER TABLE identities
+                        ADD COLUMN status TEXT NOT NULL DEFAULT '';",
+                )?;
+            }
+        }
+        if table_exists(conn, "identity_activity")? {
+            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+            if !cols.iter().any(|c| c == "status") {
+                conn.execute_batch(
+                    "ALTER TABLE identity_activity
+                        ADD COLUMN status TEXT NOT NULL DEFAULT '';",
+                )?;
+            }
+        }
+        conn.execute_batch("UPDATE schema_version SET version = 31;")?;
+        tracing::info!("Migrated to schema version 31 (announce status metadata)");
+    }
+
     Ok(())
 }
 
@@ -1086,7 +1124,9 @@ fn table_exists(conn: &Connection, table: &str) -> Result<bool, rusqlite::Error>
 pub fn get_active_identity(pool: &DbPool) -> Option<serde_json::Value> {
     let conn = pool.get().ok()?;
     let mut stmt = conn
-        .prepare("SELECT * FROM identities WHERE is_active = 1 LIMIT 1")
+        .prepare(&format!(
+            "SELECT {IDENTITY_SELECT_COLUMNS} FROM identities WHERE is_active = 1 LIMIT 1"
+        ))
         .ok()?;
     stmt.query_row([], row_to_identity).ok()
 }
@@ -1096,7 +1136,9 @@ pub fn get_all_identities(pool: &DbPool) -> Vec<serde_json::Value> {
         Ok(c) => c,
         Err(_) => return vec![],
     };
-    let mut stmt = match conn.prepare("SELECT * FROM identities ORDER BY created_at ASC") {
+    let mut stmt = match conn.prepare(&format!(
+        "SELECT {IDENTITY_SELECT_COLUMNS} FROM identities ORDER BY created_at ASC"
+    )) {
         Ok(s) => s,
         Err(_) => return vec![],
     };
@@ -1108,7 +1150,9 @@ pub fn get_all_identities(pool: &DbPool) -> Vec<serde_json::Value> {
 pub fn get_identity(pool: &DbPool, hash_hex: &str) -> Option<serde_json::Value> {
     let conn = pool.get().ok()?;
     let mut stmt = conn
-        .prepare("SELECT * FROM identities WHERE hash = ?1 LIMIT 1")
+        .prepare(&format!(
+            "SELECT {IDENTITY_SELECT_COLUMNS} FROM identities WHERE hash = ?1 LIMIT 1"
+        ))
         .ok()?;
     stmt.query_row(params![hash_hex], row_to_identity).ok()
 }
@@ -1195,6 +1239,16 @@ pub fn update_identity(
         )
         .map_err(|e| format!("display_name: {e}"))?;
     }
+    Ok(())
+}
+
+pub fn update_identity_status(pool: &DbPool, hash_hex: &str, status: &str) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| format!("pool: {e}"))?;
+    conn.execute(
+        "UPDATE identities SET status = ?1 WHERE hash = ?2",
+        params![status, hash_hex],
+    )
+    .map_err(|e| format!("status: {e}"))?;
     Ok(())
 }
 
@@ -2173,6 +2227,7 @@ pub struct IdentityActivityUpdate {
     pub dest_hash: String,
     pub timestamp: f64,
     pub display_name: Option<String>,
+    pub status: Option<String>,
     pub last_interface: Option<String>,
     pub identity_hash: Option<String>,
     pub services: Vec<String>,
@@ -2200,6 +2255,7 @@ pub fn touch_identity_activity_for_services(
             dest_hash: hash.clone(),
             timestamp: *ts,
             display_name: name.clone(),
+            status: None,
             last_interface: iface.clone(),
             identity_hash: identity_hash.map(str::to_owned),
             services: services.clone(),
@@ -2232,8 +2288,8 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
             Err(_) => return 0,
         };
         let mut stmt = match tx.prepare_cached(
-            "INSERT INTO identity_activity(dest_hash, identity_hash, last_seen, first_seen, announce_count, display_name, last_interface, services)
-             VALUES (?1, ?2, ?3, ?3, 1, COALESCE(?4, ''), COALESCE(?5, ''), ?6)
+            "INSERT INTO identity_activity(dest_hash, identity_hash, last_seen, first_seen, announce_count, display_name, status, last_interface, services)
+             VALUES (?1, ?2, ?3, ?3, 1, COALESCE(?4, ''), COALESCE(?5, ''), COALESCE(?6, ''), ?7)
              ON CONFLICT(dest_hash) DO UPDATE SET
                  last_seen = MAX(excluded.last_seen, last_seen),
                  announce_count = announce_count + 1,
@@ -2244,6 +2300,10 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
                  display_name = CASE
                      WHEN excluded.display_name != '' THEN excluded.display_name
                      ELSE display_name
+                 END,
+                 status = CASE
+                     WHEN ?5 IS NOT NULL THEN excluded.status
+                     ELSE status
                  END,
                  last_interface = CASE
                      WHEN excluded.last_interface != '' THEN excluded.last_interface
@@ -2281,6 +2341,7 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
                     identity_hash,
                     update.timestamp,
                     n,
+                    update.status.as_deref(),
                     i,
                     merged_services
                 ])
@@ -2345,6 +2406,7 @@ pub fn get_peers_by_hashes(pool: &DbPool, hashes: &[String], identity_id: &str) 
                 ia.last_seen,
                 ia.first_seen,
                 COALESCE(NULLIF(c.display_name, ''), ia.display_name, '') AS display_name,
+                COALESCE(ia.status, '') AS profile_status,
                 CASE WHEN c.dest_hash IS NOT NULL THEN 1 ELSE 0 END AS is_contact,
                 ia.last_interface,
                 ia.identity_hash,
@@ -2377,13 +2439,14 @@ pub fn get_peers_by_hashes(pool: &DbPool, hashes: &[String], identity_id: &str) 
                 |row| {
                     Ok(PeerRow {
                         hash: row.get::<_, String>(0)?,
-                        identity_hash: row.get::<_, String>(6)?,
+                        identity_hash: row.get::<_, String>(7)?,
                         last_seen: row.get::<_, Option<f64>>(1)?,
                         first_seen: row.get::<_, Option<f64>>(2)?,
                         display_name: row.get::<_, String>(3)?,
-                        is_contact: row.get::<_, i64>(4)? != 0,
-                        last_interface: row.get::<_, String>(5)?,
-                        services: parse_peer_services(row.get::<_, String>(7)?),
+                        profile_status: row.get::<_, String>(4)?,
+                        is_contact: row.get::<_, i64>(5)? != 0,
+                        last_interface: row.get::<_, String>(6)?,
+                        services: parse_peer_services(row.get::<_, String>(8)?),
                     })
                 },
             )
@@ -2427,6 +2490,7 @@ pub fn get_peers_snapshot(pool: &DbPool, cutoff_unix: f64, identity_id: &str) ->
             ia.last_seen,
             ia.first_seen,
             COALESCE(NULLIF(c.display_name, ''), ia.display_name, '') AS display_name,
+            COALESCE(ia.status, '') AS profile_status,
             CASE WHEN c.dest_hash IS NOT NULL THEN 1 ELSE 0 END AS is_contact,
             ia.last_interface,
             ia.identity_hash,
@@ -2443,6 +2507,7 @@ pub fn get_peers_snapshot(pool: &DbPool, cutoff_unix: f64, identity_id: &str) ->
             ia.last_seen,
             ia.first_seen,
             COALESCE(NULLIF(c.display_name, ''), ia.display_name, '') AS display_name,
+            COALESCE(ia.status, '') AS profile_status,
             1 AS is_contact,
             COALESCE(ia.last_interface, '') AS last_interface,
             COALESCE(ia.identity_hash, '') AS identity_hash,
@@ -2467,13 +2532,14 @@ pub fn get_peers_snapshot(pool: &DbPool, cutoff_unix: f64, identity_id: &str) ->
     stmt.query_map(params![cutoff_unix, identity_id], |row| {
         Ok(PeerRow {
             hash: row.get::<_, String>(0)?,
-            identity_hash: row.get::<_, String>(6)?,
+            identity_hash: row.get::<_, String>(7)?,
             last_seen: row.get::<_, Option<f64>>(1)?,
             first_seen: row.get::<_, Option<f64>>(2)?,
             display_name: row.get::<_, String>(3)?,
-            is_contact: row.get::<_, i64>(4)? != 0,
-            last_interface: row.get::<_, String>(5)?,
-            services: parse_peer_services(row.get::<_, String>(7)?),
+            profile_status: row.get::<_, String>(4)?,
+            is_contact: row.get::<_, i64>(5)? != 0,
+            last_interface: row.get::<_, String>(6)?,
+            services: parse_peer_services(row.get::<_, String>(8)?),
         })
     })
     .map(|it| it.filter_map(|r| r.ok()).collect())
@@ -3226,13 +3292,14 @@ fn row_to_identity(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Valu
         "lxmf_hash": row.get::<_, Option<String>>(1)?.unwrap_or_default(),
         "nickname": row.get::<_, String>(2).unwrap_or_default(),
         "display_name": row.get::<_, String>(3).unwrap_or_default(),
-        "created_at": row.get::<_, f64>(4)?,
-        "last_used": row.get::<_, Option<f64>>(5)?,
-        "is_active": row.get::<_, i64>(6).unwrap_or(0),
-        "propagation_node": row.get::<_, String>(7).unwrap_or_default(),
-        "propagation_enabled": row.get::<_, i64>(8).unwrap_or(0),
-        "propagation_mode": row.get::<_, String>(9).unwrap_or_else(|_| "auto".to_string()),
-        "propagation_auto_favor_static": row.get::<_, i64>(10).unwrap_or(1),
+        "status": row.get::<_, String>(4).unwrap_or_default(),
+        "created_at": row.get::<_, f64>(5)?,
+        "last_used": row.get::<_, Option<f64>>(6)?,
+        "is_active": row.get::<_, i64>(7).unwrap_or(0),
+        "propagation_node": row.get::<_, String>(8).unwrap_or_default(),
+        "propagation_enabled": row.get::<_, i64>(9).unwrap_or(0),
+        "propagation_mode": row.get::<_, String>(10).unwrap_or_else(|_| "auto".to_string()),
+        "propagation_auto_favor_static": row.get::<_, i64>(11).unwrap_or(1),
     }))
 }
 
@@ -4273,6 +4340,7 @@ mod peers_snapshot_tests {
                     dest_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                     timestamp: 100.0,
                     display_name: Some("Alice".into()),
+                    status: Some("Around".into()),
                     last_interface: None,
                     identity_hash: Some("11111111111111111111111111111111".into()),
                     services: vec![PEER_SERVICE_LXMF_DELIVERY.into()],
@@ -4282,6 +4350,7 @@ mod peers_snapshot_tests {
                     dest_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
                     timestamp: 200.0,
                     display_name: None,
+                    status: None,
                     last_interface: None,
                     identity_hash: Some("22222222222222222222222222222222".into()),
                     services: vec![PEER_SERVICE_LXST_TELEPHONY.into()],

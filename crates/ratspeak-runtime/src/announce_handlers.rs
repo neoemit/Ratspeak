@@ -178,6 +178,10 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
         .as_ref()
         .map(|d| crate::extract_display_name(d))
         .filter(|s| !s.is_empty());
+    let status = event
+        .app_data
+        .as_deref()
+        .and_then(crate::lxmf::ratspeak_status_from_app_data);
 
     if let Some(bytes) = event.app_data.as_deref()
         && let Some(cost) = lxmf_core::handlers::stamp_cost_from_app_data(bytes)
@@ -206,25 +210,28 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
 
     if should_touch_peer_activity(&event) {
         let identity_hash_hex = event.identity_hash.map(hex::encode);
-        let activity = vec![(hash_hex.clone(), now_f64(), display_name, iface)];
-        let mut services = vec![db::PEER_SERVICE_LXMF_DELIVERY];
+        let mut services = vec![db::PEER_SERVICE_LXMF_DELIVERY.to_string()];
         if let Some(bytes) = event.app_data.as_deref() {
-            services.extend(crate::lxmf::ratspeak_capability_services_from_app_data(
-                bytes,
-            ));
+            services.extend(
+                crate::lxmf::ratspeak_capability_services_from_app_data(bytes)
+                    .into_iter()
+                    .map(str::to_string),
+            );
         }
 
         let pool = state.db.clone();
-        let activity_owned = activity.clone();
-        let identity_hash_for_db = identity_hash_hex.as_deref().map(str::to_owned);
+        let update = db::IdentityActivityUpdate {
+            dest_hash: hash_hex.clone(),
+            timestamp: now_f64(),
+            display_name,
+            status,
+            last_interface: iface,
+            identity_hash: identity_hash_hex,
+            services,
+            clear_ratspeak_services: true,
+        };
         db::spawn_db(pool, move |p| {
-            db::touch_identity_activity_for_services(
-                &p,
-                &activity_owned,
-                identity_hash_for_db.as_deref(),
-                &services,
-                true,
-            );
+            db::touch_identity_activity_updates(&p, &[update]);
         })
         .await
         .expect("db task panicked");

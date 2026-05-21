@@ -349,9 +349,9 @@ pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) {
     if let Ok(sig) = state.session_shutdown.read() {
         sig.trigger();
     }
-    if let Ok(mut rns) = state.rns.write()
-        && let Some(mgr) = rns.take()
-    {
+    let rns_mgr = state.rns.write().ok().and_then(|mut rns| rns.take());
+    if let Some(mgr) = rns_mgr {
+        teardown_rns_runtime_interfaces(&mgr.handle).await;
         mgr.shutdown();
     }
     // Persist ratchet + peer-key state before dropping the manager.
@@ -367,6 +367,25 @@ pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) {
     tokio::time::sleep(Duration::from_millis(300)).await;
     state.set_startup_stage("stopped");
     state.emit_to_all("system_status", json!({"status": "stopped"}));
+}
+
+async fn teardown_rns_runtime_interfaces(handle: &rns_runtime::reticulum::ReticulumHandle) {
+    let stats = tokio::time::timeout(
+        Duration::from_secs(2),
+        handle.query_transport(rns_transport::messages::TransportQuery::GetInterfaceStats),
+    )
+    .await
+    .ok()
+    .flatten();
+
+    let Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) = stats else {
+        tracing::warn!("RNS shutdown could not enumerate live interfaces before actor stop");
+        return;
+    };
+
+    for iface in stats {
+        rns_runtime::reticulum::teardown_interface(handle, iface.id).await;
+    }
 }
 
 /// Initialize RNS runtime and LXMF manager.
@@ -451,6 +470,11 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                mgr.status = identity
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
             }
 
             apply_lxmf_settings_from_state(&state, &mut mgr);
@@ -471,21 +495,30 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
             .await
             .expect("db task panicked");
 
-            let display_name = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
-                .await
-                .expect("db task panicked")
-                .and_then(|i| {
-                    i.get("display_name")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                })
-                .unwrap_or_default();
+            let (display_name, status) =
+                db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
+                    .await
+                    .expect("db task panicked")
+                    .map(|i| {
+                        (
+                            i.get("display_name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            i.get("status")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                        )
+                    })
+                    .unwrap_or_default();
             state.emit_to_all(
                 "lxmf_identity",
                 json!({
                     "hash": mgr.lxmf_hash,
                     "identity_hash": mgr.identity_hash,
                     "display_name": display_name,
+                    "status": status,
                 }),
             );
 
@@ -3304,6 +3337,10 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                             .as_ref()
                             .map(|d| extract_display_name(d))
                             .unwrap_or_default();
+                        let status = a
+                            .app_data
+                            .as_deref()
+                            .and_then(crate::lxmf::ratspeak_status_from_app_data);
                         let previous_timestamp = history
                             .get(&hash_hex)
                             .and_then(|existing| existing.get("timestamp"))
@@ -3336,6 +3373,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                     } else {
                                         Some(display_name.clone())
                                     },
+                                    status: status.clone(),
                                     last_interface: None,
                                     identity_hash: a
                                         .public_key
@@ -3361,6 +3399,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                     dest_hash: lxmf_dest_hex.clone(),
                                     timestamp: a.timestamp,
                                     display_name: None,
+                                    status: None,
                                     last_interface: None,
                                     identity_hash: Some(hex::encode(identity_hash)),
                                     services: vec![db::PEER_SERVICE_LXST_TELEPHONY.to_string()],
@@ -3373,6 +3412,9 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                             if !display_name.is_empty() {
                                 existing["display_name"] = json!(display_name);
                             }
+                            if let Some(status) = status.clone() {
+                                existing["status"] = json!(status);
+                            }
                             existing["timestamp"] = json!(a.timestamp);
                             existing["hops"] = json!(a.hops);
                         } else {
@@ -3384,6 +3426,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                 json!({
                                     "hash": hash_hex.clone(),
                                     "display_name": display_name.clone(),
+                                    "status": status.clone().unwrap_or_default(),
                                     "timestamp": a.timestamp,
                                     "hops": a.hops,
                                 }),
@@ -3395,6 +3438,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                 json!({
                                     "hash": hash_hex,
                                     "display_name": display_name,
+                                    "status": status.unwrap_or_default(),
                                     "timestamp": a.timestamp,
                                     "hops": a.hops,
                                 }),
@@ -3778,6 +3822,7 @@ pub(crate) fn emit_peers_batch(state: &AppState, rows: &[db::PeerRow]) {
                 "last_seen": r.last_seen,
                 "first_seen": r.first_seen,
                 "display_name": r.display_name,
+                "profile_status": r.profile_status,
                 "is_contact": r.is_contact,
                 "last_interface": r.last_interface,
                 "services": r.services,

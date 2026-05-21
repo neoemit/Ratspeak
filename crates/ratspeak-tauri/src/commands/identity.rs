@@ -16,7 +16,8 @@ use crate::commands::shared::{
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::helpers::{
-    active_identity_id, sanitize_announced_display_name, sanitize_text, validate_hex,
+    active_identity_id, sanitize_announced_display_name, sanitize_announced_status, sanitize_text,
+    validate_hex,
 };
 use crate::state::AppState;
 
@@ -33,6 +34,8 @@ struct IdentityBackupV1 {
     lxmf_hash: String,
     #[serde(default)]
     display_name: String,
+    #[serde(default)]
+    status: String,
     #[serde(default)]
     nickname: String,
     exported_at: f64,
@@ -219,6 +222,7 @@ pub async fn api_identity(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
             "hash": identity.get("hash"),
             "lxmf_destination": identity.get("lxmf_hash"),
             "display_name": identity.get("display_name").and_then(|v| v.as_str()).unwrap_or(""),
+            "status": identity.get("status").and_then(|v| v.as_str()).unwrap_or(""),
             "nickname": identity.get("nickname").and_then(|v| v.as_str()).unwrap_or(""),
         }),
         None => json!({
@@ -226,6 +230,7 @@ pub async fn api_identity(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
             "hash": null,
             "lxmf_destination": null,
             "display_name": "",
+            "status": "",
             "nickname": "",
         }),
     })
@@ -520,6 +525,11 @@ pub async fn api_export_identity_backup_base64(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let status = identity_row
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
     let backup = IdentityBackupV1 {
         format: IDENTITY_BACKUP_FORMAT.to_string(),
@@ -528,6 +538,7 @@ pub async fn api_export_identity_backup_base64(
         identity_hash: identity_hash.clone(),
         lxmf_hash: lxmf_hash.clone(),
         display_name,
+        status,
         nickname,
         exported_at: now_ts(),
     };
@@ -684,6 +695,7 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
             "hash": hash_hex,
             "lxmf_hash": target.get("lxmf_hash").and_then(|v| v.as_str()).unwrap_or(""),
             "display_name": target.get("display_name").and_then(|v| v.as_str()).unwrap_or(""),
+            "status": target.get("status").and_then(|v| v.as_str()).unwrap_or(""),
         });
         return Ok(payload);
     }
@@ -725,7 +737,7 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
     state.set_startup_stage("checking");
     crate::init_rns_lxmf(Arc::clone(&state), state.config.data_root.clone()).await;
 
-    let (loaded_identity, loaded_lxmf, loaded_display) = {
+    let (loaded_identity, loaded_lxmf, loaded_display, loaded_status) = {
         state
             .lxmf
             .lock()
@@ -736,6 +748,7 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
                         mgr.identity_hash.clone(),
                         mgr.lxmf_hash.clone(),
                         mgr.display_name.clone(),
+                        mgr.status.clone(),
                     )
                 })
             })
@@ -757,6 +770,7 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
         "hash": hash_hex,
         "lxmf_hash": loaded_lxmf,
         "display_name": loaded_display,
+        "status": loaded_status,
         "generation": generation,
     });
     let ifaces = crate::rns_config::get_all_interfaces(&active_rns_config_dir(&state));
@@ -830,6 +844,65 @@ pub async fn api_set_display_name(
     Ok(json!({ "display_name": display_name }))
 }
 
+#[tauri::command]
+pub async fn set_identity_status(
+    state: State<'_, Arc<AppState>>,
+    status: Option<String>,
+) -> AppResult<Value> {
+    let status = sanitize_announced_status(status.as_deref().unwrap_or(""))
+        .map_err(AppError::bad_request)?;
+    let identity_id = active_identity_id(&state);
+    if identity_id.is_empty() {
+        return Err(AppError::conflict("no active identity"));
+    }
+
+    let mut identity_payload: Option<Value> = None;
+    let updated_in_memory = {
+        let mut guard = state
+            .lxmf
+            .lock()
+            .map_err(|_| AppError::internal("lxmf state lock poisoned"))?;
+        match guard.as_mut() {
+            Some(mgr) => {
+                mgr.update_status(&status, &state.db, &identity_id)
+                    .map_err(|e| {
+                        tracing::error!(error = %e, "status: update_identity_status failed");
+                        AppError::internal("failed to save status")
+                    })?;
+                identity_payload = Some(json!({
+                    "hash": mgr.lxmf_hash.clone(),
+                    "identity_hash": mgr.identity_hash.clone(),
+                    "display_name": mgr.display_name.clone(),
+                    "status": status.clone(),
+                }));
+                true
+            }
+            None => false,
+        }
+    };
+
+    if !updated_in_memory {
+        let id = identity_id.clone();
+        let saved_status = status.clone();
+        db::spawn_db(state.db.clone(), move |p| {
+            db::update_identity_status(&p, &id, &saved_status)
+        })
+        .await
+        .map_err(|_| AppError::internal("failed to save status"))?
+        .map_err(|e| {
+            tracing::error!(error = %e, "status: update_identity_status failed (no lxmf)");
+            AppError::internal("failed to save status")
+        })?;
+    }
+
+    if let Some(payload) = identity_payload {
+        state.emit_to_all("lxmf_identity", payload);
+        crate::send_announce_from_state(&state).await;
+    }
+
+    Ok(json!({ "status": status }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -866,6 +939,7 @@ mod tests {
                 .unwrap()
                 .to_string(),
             display_name: "Sir".to_string(),
+            status: "Away".to_string(),
             nickname: "Sir".to_string(),
             exported_at: 1.0,
         };
@@ -912,6 +986,7 @@ mod tests {
             identity_hash: String::new(),
             lxmf_hash: String::new(),
             display_name: String::new(),
+            status: String::new(),
             nickname: String::new(),
             exported_at: 1.0,
         };
@@ -931,6 +1006,7 @@ mod tests {
             identity_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
             lxmf_hash: String::new(),
             display_name: String::new(),
+            status: String::new(),
             nickname: String::new(),
             exported_at: 1.0,
         };

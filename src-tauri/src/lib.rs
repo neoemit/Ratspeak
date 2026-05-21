@@ -545,6 +545,7 @@ pub fn run() {
             ratspeak_tauri::commands::identity::api_update_identity,
             ratspeak_tauri::commands::identity::api_delete_identity,
             ratspeak_tauri::commands::identity::api_set_display_name,
+            ratspeak_tauri::commands::identity::set_identity_status,
             ratspeak_tauri::commands::system::api_setup_complete,
             ratspeak_tauri::commands::system::api_setup_restart,
             ratspeak_tauri::commands::system::api_set_foreground,

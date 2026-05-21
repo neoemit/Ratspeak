@@ -407,7 +407,8 @@ function loadIdentities(retryCount) {
         if (_activeIdent && typeof updateHeaderIdentity === 'function') {
             updateHeaderIdentity(
                 _activeIdent.lxmf_hash || _activeIdent.hash || '',
-                _activeIdent.display_name || _activeIdent.nickname || ''
+                _activeIdent.display_name || _activeIdent.nickname || '',
+                typeof profileStatusFromPayload === 'function' ? profileStatusFromPayload(_activeIdent) : null
             );
         }
         document.body.classList.toggle('multi-identity', identityList.length > 1);
@@ -1205,6 +1206,8 @@ RS.listen('identity_switching', function() {
     if (typeof clearNetworkInterfaceCaches === 'function') {
         clearNetworkInterfaceCaches({ render: true });
     }
+    if (typeof _clearConnectTimeout === 'function') _clearConnectTimeout();
+    if (typeof clearConnectPublicPending === 'function') clearConnectPublicPending();
 });
 
 RS.listen('identity_switched', function(data) {
@@ -1216,7 +1219,11 @@ RS.listen('identity_switched', function(data) {
     selectedIdentityHash = data.hash;
 
     if (data.lxmf_hash && typeof updateHeaderIdentity === 'function') {
-        updateHeaderIdentity(data.lxmf_hash, data.display_name || '');
+        updateHeaderIdentity(
+            data.lxmf_hash,
+            data.display_name || '',
+            typeof profileStatusFromPayload === 'function' ? profileStatusFromPayload(data) : null
+        );
     }
 
     loadIdentities();

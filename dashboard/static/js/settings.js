@@ -355,7 +355,302 @@ function openActiveIdentityContactCard() {
     }
 }
 
-function updateHeaderIdentity(hash, displayName) {
+var PROFILE_STATUS_MAX_BYTES = 50;
+var _activeProfileStatus = '';
+
+function profileStatusFromPayload(data) {
+    if (!data || typeof data !== 'object') return null;
+    if (Object.prototype.hasOwnProperty.call(data, 'status')) {
+        return data.status == null ? '' : String(data.status);
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'profile_status')) {
+        return data.profile_status == null ? '' : String(data.profile_status);
+    }
+    return null;
+}
+
+function profileStatusByteLength(value) {
+    value = value || '';
+    if (window.TextEncoder) return new TextEncoder().encode(value).length;
+    return new Blob([value]).size;
+}
+
+function trimProfileStatusToByteLimit(value, limit) {
+    value = String(value || '');
+    limit = limit || PROFILE_STATUS_MAX_BYTES;
+    if (profileStatusByteLength(value) <= limit) return value;
+
+    var out = '';
+    var bytes = 0;
+    for (var i = 0; i < value.length;) {
+        var code = value.charCodeAt(i);
+        var ch = value.charAt(i);
+        if (code >= 0xD800 && code <= 0xDBFF && i + 1 < value.length) {
+            var next = value.charCodeAt(i + 1);
+            if (next >= 0xDC00 && next <= 0xDFFF) {
+                ch = value.substring(i, i + 2);
+                i += 2;
+            } else {
+                i++;
+            }
+        } else {
+            i++;
+        }
+        var chBytes = profileStatusByteLength(ch);
+        if (bytes + chBytes > limit) break;
+        out += ch;
+        bytes += chBytes;
+    }
+    return out;
+}
+
+function resolveActiveProfileStatus(explicitStatus) {
+    if (typeof explicitStatus === 'string') return trimProfileStatusToByteLimit(explicitStatus, PROFILE_STATUS_MAX_BYTES);
+    if (typeof activeIdentity === 'function') {
+        var active = activeIdentity();
+        var activeStatus = profileStatusFromPayload(active);
+        if (activeStatus !== null) return trimProfileStatusToByteLimit(activeStatus, PROFILE_STATUS_MAX_BYTES);
+    }
+    if (typeof lxmfIdentity !== 'undefined' && lxmfIdentity) {
+        var lxmfStatus = profileStatusFromPayload(lxmfIdentity);
+        if (lxmfStatus !== null) return trimProfileStatusToByteLimit(lxmfStatus, PROFILE_STATUS_MAX_BYTES);
+    }
+    return _activeProfileStatus || '';
+}
+
+function ensureProfileStatusText(parent, id, tagName, className, beforeEl) {
+    var existing = document.getElementById(id);
+    if (existing) return existing;
+    if (!parent) return null;
+    var el = document.createElement(tagName || 'span');
+    el.id = id;
+    el.className = className + ' profile-status-text profile-status-empty';
+    el.textContent = 'Set a status';
+    if (beforeEl && beforeEl.parentNode === parent) parent.insertBefore(el, beforeEl);
+    else parent.appendChild(el);
+    return el;
+}
+
+function ensureProfileStatusElements() {
+    var headerInfo = document.getElementById('header-mobile-info') || document.querySelector('.header-mobile-info');
+    if (headerInfo && !headerInfo.id) headerInfo.id = 'header-mobile-info';
+    ensureProfileStatusText(
+        headerInfo,
+        'header-mobile-status',
+        'span',
+        'header-mobile-status',
+        null
+    );
+
+    var sidebarMeta = document.querySelector('.sidebar-identity-meta');
+    ensureProfileStatusText(
+        sidebarMeta,
+        'sidebar-identity-status',
+        'div',
+        'sidebar-identity-status',
+        document.getElementById('sidebar-identity-hash')
+    );
+
+    var msgProfileInfo = document.querySelector('.msg-profile-info');
+    ensureProfileStatusText(
+        msgProfileInfo,
+        'msg-profile-status',
+        'span',
+        'msg-profile-status',
+        document.getElementById('lxmf-own-hash')
+    );
+}
+
+function updateProfileStatusElement(el, status) {
+    if (!el) return;
+    var value = status || '';
+    el.textContent = value || 'Set a status';
+    el.classList.toggle('profile-status-empty', !value);
+    el.title = value ? 'Edit status' : 'Set a status';
+}
+
+function renderActiveProfileStatus(status) {
+    ensureProfileStatusElements();
+    var value = trimProfileStatusToByteLimit(status || '', PROFILE_STATUS_MAX_BYTES);
+    updateProfileStatusElement(document.getElementById('header-mobile-status'), value);
+    updateProfileStatusElement(document.getElementById('sidebar-identity-status'), value);
+    updateProfileStatusElement(document.getElementById('msg-profile-status'), value);
+}
+
+function setActiveProfileStatus(status) {
+    _activeProfileStatus = trimProfileStatusToByteLimit(status || '', PROFILE_STATUS_MAX_BYTES);
+    renderActiveProfileStatus(_activeProfileStatus);
+
+    if (typeof activeIdentity === 'function') {
+        var active = activeIdentity();
+        if (active) active.status = _activeProfileStatus;
+    }
+    if (typeof lxmfIdentity !== 'undefined' && lxmfIdentity) {
+        lxmfIdentity.status = _activeProfileStatus;
+    }
+}
+
+function syncActiveProfileStatusFromPayload(data) {
+    var status = profileStatusFromPayload(data);
+    if (status !== null) setActiveProfileStatus(status);
+    else renderActiveProfileStatus(_activeProfileStatus);
+}
+
+function wireProfileStatusEditorTrigger(el) {
+    if (!el || el._profileStatusEditorWired) return;
+    el._profileStatusEditorWired = true;
+    el.title = el.title || 'Edit status';
+    el.addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (typeof openIdentityStatusEditor === 'function') openIdentityStatusEditor();
+    });
+    el.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            if (typeof openIdentityStatusEditor === 'function') openIdentityStatusEditor();
+        }
+    });
+}
+
+function wireProfileStatusEditorTriggers() {
+    ensureProfileStatusElements();
+    wireProfileStatusEditorTrigger(document.getElementById('header-mobile-info'));
+    wireProfileStatusEditorTrigger(document.getElementById('msg-profile-name'));
+    wireProfileStatusEditorTrigger(document.getElementById('msg-profile-status'));
+    wireProfileStatusEditorTrigger(document.getElementById('sidebar-identity-status'));
+}
+
+function saveIdentityStatus(nextStatus) {
+    return RS.invoke('set_identity_status', { status: nextStatus });
+}
+
+function openIdentityStatusEditor() {
+    if (typeof _rsBuildSheet !== 'function') return;
+
+    var initialStatus = resolveActiveProfileStatus();
+    var built = _rsBuildSheet({}, function() {});
+
+    built.overlay.addEventListener('click', function(e) {
+        if (e.target === built.overlay) built.dismiss(null);
+    });
+
+    var label = document.createElement('label');
+    label.className = 'rs-dialog-field-label';
+    label.textContent = 'Status';
+
+    var textarea = document.createElement('textarea');
+    textarea.className = 'rs-dialog-input profile-status-input';
+    textarea.placeholder = 'Set a status';
+    textarea.rows = 3;
+    textarea.value = initialStatus;
+    disableAutoCorrect(textarea);
+
+    var meta = document.createElement('div');
+    meta.className = 'profile-status-editor-meta';
+    var counter = document.createElement('span');
+    counter.className = 'profile-status-counter';
+    meta.appendChild(counter);
+
+    function updateCounter() {
+        var trimmed = trimProfileStatusToByteLimit(textarea.value, PROFILE_STATUS_MAX_BYTES);
+        if (trimmed !== textarea.value) textarea.value = trimmed;
+        var bytes = profileStatusByteLength(textarea.value);
+        counter.textContent = bytes + '/' + PROFILE_STATUS_MAX_BYTES;
+        counter.classList.toggle('at-limit', bytes >= PROFILE_STATUS_MAX_BYTES);
+    }
+
+    textarea.addEventListener('input', updateCounter);
+    updateCounter();
+
+    built.body.classList.add('profile-status-editor-body');
+    built.body.appendChild(label);
+    built.body.appendChild(textarea);
+    built.body.appendChild(meta);
+
+    var cancelBtn = document.createElement('button');
+    cancelBtn.className = 'rs-dialog-cancel';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', function() { built.dismiss(null); });
+
+    var saveBtn = document.createElement('button');
+    saveBtn.className = 'rs-dialog-confirm';
+    saveBtn.textContent = 'Save';
+    saveBtn.addEventListener('click', function() {
+        var nextStatus = trimProfileStatusToByteLimit(textarea.value.trim(), PROFILE_STATUS_MAX_BYTES);
+        textarea.value = nextStatus;
+        updateCounter();
+        saveBtn.disabled = true;
+        cancelBtn.disabled = true;
+        saveBtn.textContent = 'Saving...';
+        saveIdentityStatus(nextStatus).then(function(result) {
+            var savedStatus = profileStatusFromPayload(result);
+            setActiveProfileStatus(savedStatus === null ? nextStatus : savedStatus);
+            built.dismiss(nextStatus);
+            if (typeof showToast === 'function') showToast('Status saved', 'toast-green', 2500);
+            if (typeof loadIdentities === 'function') loadIdentities();
+        }).catch(function(err) {
+            saveBtn.disabled = false;
+            cancelBtn.disabled = false;
+            saveBtn.textContent = 'Save';
+            if (typeof showToast === 'function') {
+                showToast((err && err.message) ? err.message : 'Failed to save status', 'toast-red', 3000);
+            }
+        });
+    });
+
+    built.footer.appendChild(cancelBtn);
+    built.footer.appendChild(saveBtn);
+
+    built.sheet.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            e.stopPropagation();
+            built.dismiss(null);
+        }
+        if ((e.key === 'Enter' && (e.metaKey || e.ctrlKey)) && !saveBtn.disabled) {
+            e.preventDefault();
+            saveBtn.click();
+        }
+        if (e.key === 'Tab') {
+            var focusable = built.sheet.querySelectorAll('textarea, button');
+            if (!focusable.length) return;
+            var first = focusable[0];
+            var last = focusable[focusable.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
+        }
+    });
+
+    if (RS.gestures && typeof RS.gestures.attachDragDismiss === 'function') {
+        RS.gestures.attachDragDismiss(built.sheet, {
+            axis: 'y',
+            blockIfScrolled: true,
+            skipIf: function(e) {
+                return !!(e.target.closest('button') || e.target.tagName === 'TEXTAREA');
+            },
+            parallaxOverlay: built.overlay,
+            onCommit: function() { built.dismiss(null); }
+        });
+    }
+
+    built.present();
+
+    if (typeof isMobile !== 'function' || !isMobile()) {
+        textarea.focus();
+        textarea.select();
+    }
+}
+
+function updateHeaderIdentity(hash, displayName, status) {
+    var resolvedStatus = resolveActiveProfileStatus(status);
+    setActiveProfileStatus(resolvedStatus);
+    wireProfileStatusEditorTriggers();
+
     var pill = document.getElementById('header-identity-pill');
     var iconEl = document.getElementById('header-identity-icon');
     var hashEl = document.getElementById('header-identity-hash');
@@ -409,6 +704,7 @@ function updateHeaderIdentity(hash, displayName) {
     var hdrName = document.getElementById('header-mobile-name');
     if (hash && hdrAvatar) hdrAvatar.innerHTML = (typeof identityAvatar === 'function') ? identityAvatar(hash, 36) : '';
     if (hdrName) hdrName.textContent = displayName || localStorage.getItem('ratspeak_identity_name') || 'Account 1';
+    renderActiveProfileStatus(resolvedStatus);
 
     // JS fallback for WebView CSS caching. Header profile controls no longer
     // include chevrons; sidebar identity management keeps its switch affordance.
@@ -446,7 +742,7 @@ RS.invoke('api_identity').then(function(data) {
             localStorage.setItem('ratspeak_identity_name', data.display_name);
         }
         if (data.lxmf_destination) {
-            updateHeaderIdentity(data.lxmf_destination, data.display_name);
+            updateHeaderIdentity(data.lxmf_destination, data.display_name, profileStatusFromPayload(data));
             localStorage.setItem('ratspeak_identity_hash', data.lxmf_destination);
         }
         if (data.hash) {
@@ -469,11 +765,13 @@ RS.listen('lxmf_identity', function(data) {
     var h = data.lxmf_hash || data.hash;
     if (h) {
         if (data.display_name) localStorage.setItem('ratspeak_identity_name', data.display_name);
-        updateHeaderIdentity(h, data.display_name);
+        updateHeaderIdentity(h, data.display_name, profileStatusFromPayload(data));
         localStorage.setItem('ratspeak_identity_hash', h);
         if (!window._identitySwitchInProgress && typeof loadConversations === 'function') {
             loadConversations();
         }
+    } else {
+        syncActiveProfileStatusFromPayload(data);
     }
 });
 

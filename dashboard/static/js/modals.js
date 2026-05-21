@@ -1512,19 +1512,19 @@ function renderPublicTcpServers(ifaces) {
 
     PUBLIC_TCP_SERVERS.forEach(function(server) {
         var match = _connectMatchingPublicInterface(server, ifaces);
-        var pending = _connectPendingPublicServerKey === _tcpServerKey(server.host, server.port) && !match;
         var connected = !!(match && match.online);
-        var added = !!match && !connected;
-        var action = pending ? 'Connecting...' : (connected ? 'Connected' : (added ? 'Added' : 'Connect'));
-        var actionIcon = connected || added ? PUBLIC_SERVER_CHECK_ICON : PUBLIC_SERVER_ARROW_ICON;
+        var pending = _connectPendingPublicServerKey === _tcpServerKey(server.host, server.port) && !connected;
+        var configured = !!match && !connected;
+        var action = pending ? 'Connecting...' : (connected ? 'Connected' : 'Connect');
+        var actionIcon = connected ? PUBLIC_SERVER_CHECK_ICON : PUBLIC_SERVER_ARROW_ICON;
 
         var btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'public-server-card public-server-card--' + server.tone +
             (pending ? ' is-pending' : '') +
             (connected ? ' is-connected' : '') +
-            (added ? ' is-added' : '');
-        btn.disabled = !!match || pending;
+            (configured ? ' is-added' : '');
+        btn.disabled = connected || pending;
         btn.setAttribute('aria-label', action + ' ' + server.name);
         btn.title = action + ' ' + server.name;
 
@@ -1540,9 +1540,10 @@ function renderPublicTcpServers(ifaces) {
             '</span>' +
             '<span class="public-server-action" aria-hidden="true">' + actionIcon + '</span>';
 
-        if (!match) {
+        if (!connected && !pending) {
             btn.addEventListener('click', function() {
-                connectPublicServer(server);
+                if (match) resumePublicServerInterface(server, match);
+                else connectPublicServer(server);
             });
         }
 
@@ -1559,6 +1560,28 @@ function connectPublicServer(server) {
 function clearConnectPublicPending() {
     _connectPendingPublicServerKey = null;
     refreshConnectPublicServers();
+}
+
+function resumePublicServerInterface(server, match) {
+    var iface = match && match.iface ? match.iface : null;
+    if (!iface || !iface.name) {
+        connectPublicServer(server);
+        return;
+    }
+
+    _connectPendingPublicServerKey = _tcpServerKey(server.host, server.port);
+    renderPublicTcpServers(window._hubInterfacesData || window._cachedConfigIfaces || {});
+    RS.invoke('resume_interface', {
+        args: {
+            name: iface.name,
+            iface_type: 'tcp_client'
+        }
+    }).then(function() {
+        if (typeof refreshConfigInterfaces === 'function') refreshConfigInterfaces();
+    }).catch(function(err) {
+        clearConnectPublicPending();
+        showToast((err && err.message) || 'Failed to reconnect', 'toast-red', 8000);
+    });
 }
 
 function refreshConnectPublicServers(ifaces, opts) {

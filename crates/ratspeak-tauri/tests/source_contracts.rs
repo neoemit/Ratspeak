@@ -85,6 +85,71 @@ fn ratspeak_capability_marker_drives_name_badge() {
 }
 
 #[test]
+fn profile_status_frontend_contract_is_wired() {
+    let root = repo_root();
+    let settings_js =
+        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    assert!(settings_js.contains("var PROFILE_STATUS_MAX_BYTES = 50;"));
+    assert!(settings_js.contains("function profileStatusFromPayload"));
+    assert!(settings_js.contains("function ensureProfileStatusElements"));
+    assert!(settings_js.contains("'header-mobile-status'"));
+    assert!(settings_js.contains("'sidebar-identity-status'"));
+    assert!(settings_js.contains("'msg-profile-status'"));
+    assert!(settings_js.contains("Set a status"));
+    assert!(settings_js.contains("profile_status"));
+    assert!(settings_js.contains("function trimProfileStatusToByteLimit"));
+    assert!(settings_js.contains("function openIdentityStatusEditor"));
+    assert!(settings_js.contains("RS.invoke('set_identity_status', { status: nextStatus })"));
+    assert!(settings_js.contains("counter.textContent = bytes + '/' + PROFILE_STATUS_MAX_BYTES;"));
+
+    let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    assert!(lxmf_js.contains("var statusEl = document.getElementById('msg-profile-status');"));
+    assert!(lxmf_js.contains("syncActiveProfileStatusFromPayload(data);"));
+    assert!(lxmf_js.contains("peer.profile_status"));
+    assert!(lxmf_js.contains("profileStatus ? (activity + ' \\u00b7 ' + profileStatus)"));
+
+    let peers_cache_js =
+        read_source(root.join("dashboard/static/js/peers_cache.js")).expect("peers cache js");
+    assert!(peers_cache_js.contains("function ratspeakProfileStatusText"));
+    assert!(peers_cache_js.contains("profile_status: typeof r.profile_status === 'string'"));
+    assert!(peers_cache_js.contains("existing.profile_status = n.profile_status"));
+
+    let peers_js = read_source(root.join("dashboard/static/js/peers.js")).expect("peers js");
+    assert!(peers_js.contains("class=\"peers-row-status\""));
+    assert!(peers_js.contains("statusRowHeight"));
+    assert!(peers_js.contains("_peerListMetrics"));
+
+    let health_js = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
+    assert!(health_js.contains("class=\"dashboard-peers-status\""));
+    assert!(health_js.contains("ratspeakProfileStatusText(p)"));
+
+    let identity_js =
+        read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
+    assert!(identity_js.contains("profileStatusFromPayload(_activeIdent)"));
+
+    let layout_css =
+        read_source(root.join("dashboard/static/css/04-layout.css")).expect("layout css");
+    assert!(layout_css.contains(".profile-status-text"));
+    assert!(layout_css.contains(".profile-status-empty"));
+
+    let modals_css =
+        read_source(root.join("dashboard/static/css/08-modals.css")).expect("modals css");
+    assert!(modals_css.contains(".profile-status-input"));
+    assert!(modals_css.contains(".profile-status-counter.at-limit"));
+
+    let responsive_css =
+        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
+    assert!(responsive_css.contains(".header-mobile-status"));
+
+    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+    assert!(views_css.contains(".peers-row-status"));
+    assert!(views_css.contains(".dashboard-peers-status"));
+    assert!(views_css.contains(".dashboard-peers-row.has-profile-status"));
+    assert!(!views_css.contains("calc(var(--type-row-meta-size)"));
+    assert!(!views_css.contains("calc(var(--text-xs)"));
+}
+
+#[test]
 fn linux_package_metadata_is_explicit_for_app_stores() {
     let root = repo_root();
     let summary = "Ratspeak: An all-in-one Reticulum & LXMF client in Rust.";
@@ -1419,7 +1484,10 @@ fn contact_detail_sheet_centers_identity_and_separates_primary_actions() {
 fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
     let root = repo_root();
     let peers = read_source(root.join("dashboard/static/js/peers.js")).expect("peers js");
-    assert!(peers.contains("_peersRowHeight = window.innerWidth <= 768 ? 58 : 36;"));
+    assert!(peers.contains("var mobileRows = window.innerWidth <= 768;"));
+    assert!(peers.contains("var baseRowHeight = mobileRows ? 58 : 36;"));
+    assert!(peers.contains("var statusRowHeight = mobileRows ? 68 : 48;"));
+    assert!(peers.contains("_peersRowHeight = baseRowHeight;"));
     assert!(peers.contains("var avatarSize = window.innerWidth <= 768 ? 44 : 28;"));
     assert!(peers.contains("showConnectionDetailSheet(hash, { progressive: true });"));
 
@@ -2170,6 +2238,8 @@ fn identity_switch_refreshes_interface_state_without_stale_public_servers() {
     let modals = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
     let events =
         read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri events js");
+    let runtime_lib =
+        read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
     let identity_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/identity.rs"))
         .expect("identity command");
 
@@ -2178,13 +2248,22 @@ fn identity_switch_refreshes_interface_state_without_stale_public_servers() {
     assert!(health.contains("window._hubInterfacesData = empty;"));
     assert!(identity.contains("RS.listen('identity_switching'"));
     assert!(identity.contains("clearNetworkInterfaceCaches({ render: true });"));
+    assert!(identity.contains("clearConnectPublicPending();"));
     assert!(identity.contains("refreshConnectPublicServers(null, { force: true });"));
     assert!(modals.contains("function refreshConnectPublicServers(ifaces, opts)"));
+    assert!(modals.contains("function resumePublicServerInterface(server, match)"));
+    assert!(modals.contains("RS.invoke('resume_interface'"));
     assert!(
         modals.contains("!opts.force && (window._hubInterfacesData || window._cachedConfigIfaces)")
     );
+    assert!(events.contains("'resume_interface': 'Resuming'"));
     assert!(
         events.contains("applyNetworkInterfacePayload(data, { render: isViewActive('network') });")
+    );
+    assert!(runtime_lib.contains("teardown_rns_runtime_interfaces(&mgr.handle).await;"));
+    assert!(runtime_lib.contains("TransportQuery::GetInterfaceStats"));
+    assert!(
+        runtime_lib.contains("rns_runtime::reticulum::teardown_interface(handle, iface.id).await;")
     );
     assert!(identity_rs.contains(
         "let ifaces = crate::rns_config::get_all_interfaces(&active_rns_config_dir(&state));"

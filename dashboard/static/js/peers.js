@@ -20,6 +20,48 @@ var _peersCacheGen = 0;
 // same-frame caller asked for one.
 var _peersRenderRaf = null;
 var _peersPendingScrollOnly = false;
+
+function _peerRowProfileStatus(peer) {
+    if (typeof ratspeakProfileStatusText === 'function') return ratspeakProfileStatusText(peer);
+    if (!peer || !peer.supports_ratspeak || !peer.profile_status) return '';
+    return String(peer.profile_status).trim();
+}
+
+function _peerRowHeight(item, baseHeight, statusHeight) {
+    return item && item.type === 'row' && _peerRowProfileStatus(item.data) ? statusHeight : baseHeight;
+}
+
+function _peerListMetrics(flatItems, baseHeight, statusHeight) {
+    var offsets = new Array(flatItems.length);
+    var heights = new Array(flatItems.length);
+    var total = 0;
+    for (var i = 0; i < flatItems.length; i++) {
+        offsets[i] = total;
+        var h = _peerRowHeight(flatItems[i], baseHeight, statusHeight);
+        heights[i] = h;
+        total += h;
+    }
+    return { offsets: offsets, heights: heights, total: total };
+}
+
+function _peerIndexAtScrollTop(metrics, scrollTop) {
+    var offsets = metrics.offsets;
+    var heights = metrics.heights;
+    var lo = 0;
+    var hi = offsets.length - 1;
+    var result = offsets.length;
+    while (lo <= hi) {
+        var mid = Math.floor((lo + hi) / 2);
+        if (offsets[mid] + heights[mid] > scrollTop) {
+            result = mid;
+            hi = mid - 1;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    return result;
+}
+
 function scheduleRenderPeersList(scrollOnly) {
     if (_peersRenderRaf == null) {
         _peersPendingScrollOnly = !!scrollOnly;
@@ -177,7 +219,10 @@ function renderPeersList(scrollOnly) {
     var scrollContainer = document.getElementById('peers-list-scroll');
     if (!container || !scrollContainer) return;
     if (typeof PeersCache === 'undefined' || !PeersCache) return;
-    _peersRowHeight = window.innerWidth <= 768 ? 58 : 36;
+    var mobileRows = window.innerWidth <= 768;
+    var baseRowHeight = mobileRows ? 58 : 36;
+    var statusRowHeight = mobileRows ? 68 : 48;
+    _peersRowHeight = baseRowHeight;
 
     if (!scrollOnly) {
         var dirtyKey = peersSearch + '|' + peersSort + '|' + JSON.stringify(peersCollapsedGroups) + '|' + peersSelectedHash + '|' + _peersCacheGen;
@@ -202,7 +247,8 @@ function renderPeersList(scrollOnly) {
         filtered = filtered.filter(function(c) {
             var name = (c.display_name || '').toLowerCase();
             var hash = (c.hash || '').toLowerCase();
-            return name.indexOf(peersSearch) >= 0 || hash.indexOf(peersSearch) >= 0;
+            var statusText = _peerRowProfileStatus(c).toLowerCase();
+            return name.indexOf(peersSearch) >= 0 || hash.indexOf(peersSearch) >= 0 || statusText.indexOf(peersSearch) >= 0;
         });
     }
 
@@ -267,30 +313,36 @@ function renderPeersList(scrollOnly) {
     // Virtualized: only visible window + buffer is in the DOM, spacer divs
     // preserve total scroll height. Avoids rebuilding ~1.6k rows per poll on mobile.
     var viewportHeight = scrollContainer.clientHeight;
-    if (viewportHeight < 50) viewportHeight = Math.max(flatItems.length * _peersRowHeight, 500);
-    var totalHeight = flatItems.length * _peersRowHeight;
+    var metrics = _peerListMetrics(flatItems, baseRowHeight, statusRowHeight);
+    if (viewportHeight < 50) viewportHeight = Math.max(metrics.total, 500);
+    var totalHeight = metrics.total;
 
-    var startIdx = Math.max(0, Math.floor(_peersScrollTop / _peersRowHeight) - _peersBufferRows);
-    var endIdx = Math.min(flatItems.length, Math.ceil((_peersScrollTop + viewportHeight) / _peersRowHeight) + _peersBufferRows);
+    var startIdx = Math.max(0, _peerIndexAtScrollTop(metrics, _peersScrollTop) - _peersBufferRows);
+    startIdx = Math.min(startIdx, flatItems.length);
+    var endIdx = Math.min(flatItems.length, _peerIndexAtScrollTop(metrics, _peersScrollTop + viewportHeight) + _peersBufferRows);
+    if (endIdx < startIdx) endIdx = startIdx;
 
     var html = '';
     // flex-shrink:0 — #peers-list-body is a flex column on mobile.
-    if (startIdx > 0) html += '<div style="height:' + (startIdx * _peersRowHeight) + 'px;flex-shrink:0"></div>';
-    html += buildPeersHTML(flatItems, startIdx, endIdx);
-    var remaining = totalHeight - (endIdx * _peersRowHeight);
+    var startOffset = startIdx < flatItems.length ? metrics.offsets[startIdx] : totalHeight;
+    if (startIdx > 0) html += '<div style="height:' + startOffset + 'px;flex-shrink:0"></div>';
+    html += buildPeersHTML(flatItems, startIdx, endIdx, metrics.heights);
+    var endOffset = endIdx < flatItems.length ? metrics.offsets[endIdx] : totalHeight;
+    var remaining = totalHeight - endOffset;
     if (remaining > 0) html += '<div style="height:' + remaining + 'px;flex-shrink:0"></div>';
 
     container.innerHTML = html;
 }
 
-function buildPeersHTML(flatItems, start, end) {
+function buildPeersHTML(flatItems, start, end, rowHeights) {
     var html = '';
     for (var i = start; i < end; i++) {
         var item = flatItems[i];
+        var rowHeight = rowHeights && rowHeights[i] ? rowHeights[i] : _peersRowHeight;
         if (item.type === 'header') {
             var isCollapsed = peersCollapsedGroups[item.group];
             var chevron = isCollapsed ? '&#9654;' : '&#9660;';
-            html += '<div class="conn-group-header" data-group="' + item.group + '" style="height:' + _peersRowHeight + 'px;flex-shrink:0">' +
+            html += '<div class="conn-group-header" data-group="' + item.group + '" style="height:' + rowHeight + 'px;flex-shrink:0">' +
                 '<span class="conn-group-chevron">' + chevron + '</span>' +
                 '<span class="conn-group-label">' + item.label + '</span>' +
                 '<span class="conn-group-count">(' + item.count + ')</span>' +
@@ -310,11 +362,18 @@ function buildPeersHTML(flatItems, start, end) {
                 ? '<span class="peers-iface-badge" title="' + escapeHtml('Live via ' + (c.iface || '')) + '">'
                   + escapeHtml(ifaceLabel) + '</span>'
                 : '';
+            var profileStatus = _peerRowProfileStatus(c);
+            var statusHtml = profileStatus
+                ? '<span class="peers-row-status" title="' + escapeHtml(profileStatus) + '">' + escapeHtml(profileStatus) + '</span>'
+                : '';
 
-            html += '<div class="peers-row' + (isSelected ? ' selected' : '') + '" data-hash="' + escapeHtml(c.hash) + '" style="height:' + _peersRowHeight + 'px;flex-shrink:0">' +
+            html += '<div class="peers-row' + (isSelected ? ' selected' : '') + (profileStatus ? ' has-profile-status' : '') + '" data-hash="' + escapeHtml(c.hash) + '" style="height:' + rowHeight + 'px;flex-shrink:0">' +
                 '<span class="conn-status-dot ' + statusClass + '"></span>' +
                 '<div class="peers-row-avatar">' + av + '</div>' +
-                '<span class="' + nameClass + '">' + ratspeakDisplayNameHtml(displayName, c) + '</span>' +
+                '<span class="peers-row-main">' +
+                    '<span class="' + nameClass + '">' + ratspeakDisplayNameHtml(displayName, c) + '</span>' +
+                    statusHtml +
+                '</span>' +
                 '<span class="peers-row-meta">' +
                     ifaceBadge +
                 '</span>' +
