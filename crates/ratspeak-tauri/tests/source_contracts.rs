@@ -1293,6 +1293,8 @@ fn settings_version_display_uses_package_version_api() {
     let index = read_source(root.join("dashboard/index.html")).expect("index");
     assert!(index.contains("id=\"settings-version-sidebar\""));
     assert!(index.contains("id=\"settings-version-system\""));
+    assert!(index.contains("class=\"system-data-tip\""));
+    assert!(index.contains("Tap and hold the send button in Messages"));
 
     let settings_js = read_source(root.join("dashboard/static/js/settings.js")).expect("settings");
     assert!(settings_js.contains("function renderSettingsVersion()"));
@@ -1307,6 +1309,9 @@ fn settings_version_display_uses_package_version_api() {
     let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
     assert!(views_css.contains(".settings-sidebar-version"));
     assert!(views_css.contains(".settings-version-system"));
+    let forms_css = read_source(root.join("dashboard/static/css/06-forms.css")).expect("forms css");
+    assert!(forms_css.contains(".system-data-tip"));
+    assert!(forms_css.contains(".system-data-tip-icon"));
 
     let responsive_css =
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
@@ -2015,6 +2020,11 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     assert!(lxmf.contains("if (Date.now() < _suppressImageOpenUntil)"));
     assert!(lxmf.contains("function _restoreLxmfComposerKeyboard"));
     assert!(lxmf.contains("window.RS.closeMessageActionMenu"));
+    assert!(lxmf.contains("var ICON_SEND_OPPORTUNISTIC"));
+    assert!(lxmf.contains("var ICON_SEND_DIRECT"));
+    assert!(lxmf.contains("label: 'Opportunistic', icon: ICON_SEND_OPPORTUNISTIC"));
+    assert!(lxmf.contains("label: 'Direct', icon: ICON_SEND_DIRECT"));
+    assert!(!lxmf.contains("label: 'Direct', icon: ICON_ROUTE"));
     assert!(lxmf.contains("function _copyToClipboardFallback(text)"));
     assert!(lxmf.contains("function _messageMediaContextAction(msgData)"));
     assert!(lxmf.contains("function _resolveMessageImageFile(msgData)"));

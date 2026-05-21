@@ -4859,7 +4859,8 @@ document.addEventListener('DOMContentLoaded', function() {
     var ICON_PHOTOS = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>';
     var ICON_CONTACTS = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>';
     var ICON_NEW = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
-    var ICON_ROUTE = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 17c5-2 7-4 9-9"/></svg>';
+    var ICON_SEND_OPPORTUNISTIC = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>';
+    var ICON_SEND_DIRECT = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"><path d="M8 19V5"/><path d="m4 9 4-4 4 4"/><path d="M16 5v14"/><path d="m12 15 4 4 4-4"/></svg>';
     var ICON_RELAY = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>';
 
     function openSendMethodPopover() {
@@ -4873,8 +4874,8 @@ document.addEventListener('DOMContentLoaded', function() {
         var input = document.getElementById('lxmf-input');
         var wasFocused = !!(input && document.activeElement === input);
         actionPopover(sendBtn, [
-            { label: 'Opportunistic', icon: ICON_ROUTE, onSelect: function() { sendLxmfMessage('opportunistic'); } },
-            { label: 'Direct', icon: ICON_ROUTE, onSelect: function() { sendLxmfMessage('direct'); } },
+            { label: 'Opportunistic', icon: ICON_SEND_OPPORTUNISTIC, onSelect: function() { sendLxmfMessage('opportunistic'); } },
+            { label: 'Direct', icon: ICON_SEND_DIRECT, onSelect: function() { sendLxmfMessage('direct'); } },
             { label: 'Offline Inbox', icon: ICON_RELAY, disabled: !hasRelay, onSelect: function() { sendLxmfMessage('propagated'); } },
         ], {
             onClose: function() {

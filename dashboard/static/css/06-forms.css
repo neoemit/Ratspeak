@@ -302,6 +302,40 @@
     gap: var(--space-3);
     padding: var(--space-6);
 }
+
+.system-data-tip {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
+    padding: var(--space-4) var(--space-5);
+    border: 1px solid rgba(var(--accent-rgb), 0.18);
+    border-radius: var(--radius-md);
+    background: rgba(var(--accent-rgb), 0.06);
+    color: var(--text-secondary);
+    font-size: var(--type-hint-size);
+    line-height: var(--type-leading-copy);
+}
+
+.system-data-tip-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    margin-top: 1px;
+    border-radius: var(--radius-full);
+    background: rgba(var(--accent-rgb), 0.14);
+    color: var(--accent);
+    flex: 0 0 20px;
+}
+
+.system-data-tip-icon svg {
+    display: block;
+}
+
+.system-data-tip-copy {
+    min-width: 0;
+}
 /* === System Data panel — collapsible subsections =========================
    Header is the only always-visible affordance; body collapses via
    grid-template-rows. Destructive/nuclear visual cues (left rule, tinted
