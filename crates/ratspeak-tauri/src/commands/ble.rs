@@ -118,7 +118,7 @@ pub struct EnableBlePeerArgs {
     #[serde(default)]
     pub duration: u64,
     #[serde(default)]
-    pub high_duty_advertising: bool,
+    pub low_power_advertising: bool,
 }
 
 #[tauri::command]
@@ -130,7 +130,7 @@ pub async fn enable_ble_peer_interface(
     #[allow(unused_variables)]
     let duration_secs = args.duration;
     #[allow(unused_variables)]
-    let high_duty_advertising = args.high_duty_advertising;
+    let low_power_advertising = args.low_power_advertising;
 
     // Mark `ble_peer_enabled=1` only after spawn success.
     tokio::spawn(async move {
@@ -206,7 +206,7 @@ pub async fn enable_ble_peer_interface(
                     Some(event_tx),
                     state_arc.foreground_changed.clone(),
                     seed_identities,
-                    high_duty_advertising,
+                    low_power_advertising,
                 ),
             )
             .await
