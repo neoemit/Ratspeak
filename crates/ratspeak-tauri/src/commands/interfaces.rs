@@ -2670,7 +2670,17 @@ async fn teardown_rnode_handoff_broadcast(
             {
                 for iface in stats {
                     if &iface.name == name {
-                        rns_runtime::reticulum::teardown_interface(handle, iface.id).await;
+                        #[cfg(feature = "ble")]
+                        if other_prefix == "ble://" {
+                            rns_runtime::reticulum::teardown_ble_rnode_interface(handle, iface.id)
+                                .await;
+                        } else {
+                            rns_runtime::reticulum::teardown_interface(handle, iface.id).await;
+                        }
+                        #[cfg(not(feature = "ble"))]
+                        {
+                            rns_runtime::reticulum::teardown_interface(handle, iface.id).await;
+                        }
                         break;
                     }
                 }

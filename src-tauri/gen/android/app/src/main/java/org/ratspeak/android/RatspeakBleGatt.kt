@@ -280,6 +280,7 @@ class RatspeakBleGatt(private val context: Context) {
         }
         Log.i(TAG, "TCP→BLE stopped")
         running.set(false)
+        cleanup()
     }
 
     @SuppressLint("MissingPermission")

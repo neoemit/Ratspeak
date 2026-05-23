@@ -786,7 +786,8 @@ pub async fn cancel_ble_connect(state: State<'_, Arc<AppState>>, name: String) -
                 {
                     for iface in stats {
                         if iface.name == name_clone {
-                            rns_runtime::reticulum::teardown_interface(&handle, iface.id).await;
+                            rns_runtime::reticulum::teardown_ble_rnode_interface(&handle, iface.id)
+                                .await;
                             break;
                         }
                     }
@@ -859,7 +860,8 @@ pub async fn disconnect_ble_rnode(
                 {
                     for iface in stats {
                         if iface.name == name_clone {
-                            rns_runtime::reticulum::teardown_interface(&handle, iface.id).await;
+                            rns_runtime::reticulum::teardown_ble_rnode_interface(&handle, iface.id)
+                                .await;
                             break;
                         }
                     }
