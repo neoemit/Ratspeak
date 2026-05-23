@@ -551,6 +551,9 @@ if (typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.subscri
 // identity_hash. On Apple-without-bonding the central/peripheral identifiers
 // diverge for the same physical peer, so address-only counting double-counts.
 function _bleConnectedPeerCount() {
+    if (typeof window._bleVisiblePeersFromCache === 'function') {
+        return window._bleVisiblePeersFromCache().length;
+    }
     if (!window._blePeers) return 0;
     var seenIdentities = {};
     var unidentified = 0;
@@ -593,7 +596,7 @@ function _refreshBlePeerSectionState() {
     if (!section) return;
     var state = _deriveBlePeerState();
     var peerCount = _bleConnectedPeerCount();
-    if (typeof window._blePeerCount === 'number' && window._blePeerCount > peerCount) {
+    if (peerCount === 0 && typeof window._blePeerCount === 'number' && window._blePeerCount > peerCount) {
         peerCount = window._blePeerCount;
     }
     section.setAttribute('data-ble-state', state);

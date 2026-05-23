@@ -2398,22 +2398,26 @@ function updateBlePeerToggle() {
 // Cache clears on ble_peer_disconnected echo, not eagerly on click.
 function showBlePeerActions(evt, btn) {
     if (evt) { evt.stopPropagation(); evt.preventDefault(); }
-    var address = btn && btn.getAttribute('data-peer-address');
-    if (!address) return;
+    var addressAttr = btn && (btn.getAttribute('data-peer-addresses') || btn.getAttribute('data-peer-address'));
+    var addresses = String(addressAttr || '').split(',').map(function(a) { return a.trim(); }).filter(Boolean);
+    if (!addresses.length) return;
+    function disconnectVisiblePeer() {
+        addresses.forEach(function(address) {
+            RS.invoke('disconnect_ble_peer', { address: address }).catch(function(err) {
+                showToast((err && err.message) || 'Failed to disconnect Bluetooth Peer', 'toast-red', 8000);
+            });
+        });
+    }
     if (typeof rsConfirm === 'function') {
         rsConfirm({
             message: 'Disconnect this peer?\nThe peer can reconnect on the next scan cycle.',
             danger: true,
             confirmText: 'Disconnect',
         }).then(function(ok) {
-            if (ok) RS.invoke('disconnect_ble_peer', { address: address }).catch(function(err) {
-                showToast((err && err.message) || 'Failed to disconnect Bluetooth Peer', 'toast-red', 8000);
-            });
+            if (ok) disconnectVisiblePeer();
         });
     } else {
-        RS.invoke('disconnect_ble_peer', { address: address }).catch(function(err) {
-            showToast((err && err.message) || 'Failed to disconnect Bluetooth Peer', 'toast-red', 8000);
-        });
+        disconnectVisiblePeer();
     }
 }
 window.showBlePeerActions = showBlePeerActions;

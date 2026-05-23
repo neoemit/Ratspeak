@@ -219,6 +219,31 @@ pub async fn enable_ble_peer_interface(
                         // Disconnected events lack identity; track per-address.
                         let mut address_to_identity: std::collections::HashMap<String, String> =
                             std::collections::HashMap::new();
+                        fn logical_ble_peer_count(
+                            address_to_identity: &std::collections::HashMap<String, String>,
+                        ) -> usize {
+                            let mut identities = std::collections::HashSet::new();
+                            let mut unidentified = 0usize;
+                            for identity in address_to_identity.values() {
+                                if identity.is_empty() {
+                                    unidentified += 1;
+                                } else {
+                                    identities.insert(identity.as_str());
+                                }
+                            }
+                            identities.len() + unidentified
+                        }
+
+                        fn store_logical_ble_peer_count(
+                            state: &AppState,
+                            address_to_identity: &std::collections::HashMap<String, String>,
+                        ) {
+                            state.ble_peer_count.store(
+                                logical_ble_peer_count(address_to_identity),
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
+                        }
+
                         while let Some(ev) = event_rx.recv().await {
                             match ev {
                                 BlePeerEvent::Discovered {
@@ -240,11 +265,12 @@ pub async fn enable_ble_peer_interface(
                                     identity_hash,
                                     protocol,
                                 } => {
-                                    state_relay
-                                        .ble_peer_count
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                     address_to_identity
                                         .insert(address.clone(), identity_hash.clone());
+                                    store_logical_ble_peer_count(
+                                        &state_relay,
+                                        &address_to_identity,
+                                    );
                                     state_relay.emit_to_all(
                                         "ble_peer_connected",
                                         json!({
@@ -255,11 +281,6 @@ pub async fn enable_ble_peer_interface(
                                     );
                                 }
                                 BlePeerEvent::Disconnected { address, reason } => {
-                                    let _ = state_relay.ble_peer_count.fetch_update(
-                                        std::sync::atomic::Ordering::Relaxed,
-                                        std::sync::atomic::Ordering::Relaxed,
-                                        |n| Some(n.saturating_sub(1)),
-                                    );
                                     if let Some(id_hex) = address_to_identity.remove(&address) {
                                         let db = state_relay.db.clone();
                                         tokio::spawn(async move {
@@ -285,6 +306,10 @@ pub async fn enable_ble_peer_interface(
                                             .await;
                                         });
                                     }
+                                    store_logical_ble_peer_count(
+                                        &state_relay,
+                                        &address_to_identity,
+                                    );
                                     state_relay.emit_to_all(
                                         "ble_peer_disconnected",
                                         json!({
@@ -300,6 +325,10 @@ pub async fn enable_ble_peer_interface(
                                     // Disconnect path persists ble_recent_disconnects from this map.
                                     address_to_identity
                                         .insert(address.clone(), identity_hash.clone());
+                                    store_logical_ble_peer_count(
+                                        &state_relay,
+                                        &address_to_identity,
+                                    );
                                     state_relay.emit_to_all(
                                         "ble_peer_identity_resolved",
                                         json!({

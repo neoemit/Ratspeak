@@ -1824,6 +1824,20 @@ pub fn update_message_state(pool: &DbPool, msg_id: &str, state: &str, rtt_ms: Op
     }
 }
 
+pub fn cancel_outbound_message_state(pool: &DbPool, msg_id: &str) -> bool {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    conn.execute(
+        "UPDATE messages SET state = 'cancelled' \
+         WHERE id = ?1 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
+        params![msg_id],
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
+}
+
 pub fn get_conversation(
     pool: &DbPool,
     dest_hash: &str,
@@ -3860,6 +3874,98 @@ mod unread_breakdown_tests {
             .unwrap();
         assert_eq!(inbound_state, "received");
         assert_eq!(outbound_state, "delivered");
+    }
+
+    #[test]
+    fn cancel_outbound_message_state_only_cancels_non_terminal_outbound_rows() {
+        let pool = test_pool();
+        save_message(
+            &pool,
+            "cancel-me",
+            "me",
+            "peer",
+            "pending",
+            "",
+            10.0,
+            "sent",
+            "outbound",
+            "identity-a",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            Some("direct"),
+        );
+        save_message(
+            &pool,
+            "already-done",
+            "me",
+            "peer",
+            "done",
+            "",
+            11.0,
+            "delivered",
+            "outbound",
+            "identity-a",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            Some("direct"),
+        );
+        save_message(
+            &pool,
+            "inbound-row",
+            "peer",
+            "me",
+            "incoming",
+            "",
+            12.0,
+            "received",
+            "inbound",
+            "identity-a",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            None,
+        );
+
+        assert!(cancel_outbound_message_state(&pool, "cancel-me"));
+        assert!(!cancel_outbound_message_state(&pool, "already-done"));
+        assert!(!cancel_outbound_message_state(&pool, "inbound-row"));
+
+        let conn = pool.get().unwrap();
+        let cancel_state: String = conn
+            .query_row(
+                "SELECT state FROM messages WHERE id = 'cancel-me'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let done_state: String = conn
+            .query_row(
+                "SELECT state FROM messages WHERE id = 'already-done'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let inbound_state: String = conn
+            .query_row(
+                "SELECT state FROM messages WHERE id = 'inbound-row'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cancel_state, "cancelled");
+        assert_eq!(done_state, "delivered");
+        assert_eq!(inbound_state, "received");
     }
 
     #[test]

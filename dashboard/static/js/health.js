@@ -653,7 +653,10 @@ function classifyInterface(iface) {
     return null;
 }
 
-// Populated from `ble_peer_*` events; per-peer rows keyed by BLE address.
+// Populated from `ble_peer_*` events; raw records stay keyed by BLE address.
+// The visible Network section collapses rows by resolved identity because a
+// symmetric BLE peering can briefly expose central+peripheral GATT paths for
+// the same Ratspeak peer.
 window._blePeers = window._blePeers || {};
 
 function _formatAgo(ms) {
@@ -695,26 +698,54 @@ function _resolveBlePeerLabel(peer) {
     return { label: addr, title: addr };
 }
 
-function renderBlePeerRow(peer) {
-    var addr = peer.address || '';
-    var resolved = _resolveBlePeerLabel(peer);
-    var protocol = peer.protocol || 'Ratspeak';
-    var protoClass = protocol === 'Columba' ? 'badge-columba' : 'badge-ratspeak';
-    var ago = _formatAgo(peer.connected_at);
-
-    return '<div class="conn-iface-row ble-peer-row" data-peer-address="' + escapeHtml(addr) + '" data-peer-protocol="' + escapeHtml(protocol) + '" role="button" tabindex="0">' +
-        '<span class="conn-iface-dot up" title="Connected"></span>' +
-        '<span class="conn-iface-name ble-peer-id" title="' + escapeHtml(resolved.title) + '">' + escapeHtml(resolved.label) + '</span>' +
-        '<span class="ble-peer-protocol ' + protoClass + '">' + escapeHtml(protocol) + '</span>' +
-        '<span class="ble-peer-time">' + escapeHtml(ago) + '</span>' +
-        '<button class="ble-peer-kebab" aria-label="Peer actions" data-peer-address="' + escapeHtml(addr) + '">\u22ee</button>' +
-    '</div>';
+function _blePeerRepresentativeScore(peer) {
+    if (!peer) return -1;
+    var score = 0;
+    if (peer.protocol === 'Ratspeak') score += 1000;
+    if (peer.identity_hash) score += 100;
+    if (peer.rssi !== undefined && peer.rssi !== null) score += 10;
+    return score;
 }
 
-function _renderBleSection(bodyEl, sectionEl, countEl) {
-    var peers = Object.keys(window._blePeers || {})
+function _betterBlePeerRepresentative(current, candidate) {
+    if (!current) return candidate;
+    var curScore = _blePeerRepresentativeScore(current);
+    var nextScore = _blePeerRepresentativeScore(candidate);
+    if (nextScore > curScore) return candidate;
+    if (nextScore < curScore) return current;
+    return (candidate.connected_at || 0) >= (current.connected_at || 0) ? candidate : current;
+}
+
+function _bleVisiblePeersFromCache() {
+    var raw = Object.keys(window._blePeers || {})
         .map(function(k) { return window._blePeers[k]; })
         .filter(function(p) { return p && p.connected === true; });
+    var byIdentity = {};
+    var unidentified = [];
+
+    raw.forEach(function(peer) {
+        var id = peer.identity_hash || '';
+        if (!id) {
+            unidentified.push(Object.assign({}, peer, { addresses: [peer.address] }));
+            return;
+        }
+        if (!byIdentity[id]) {
+            byIdentity[id] = { peer: null, addresses: [] };
+        }
+        byIdentity[id].peer = _betterBlePeerRepresentative(byIdentity[id].peer, peer);
+        if (peer.address && byIdentity[id].addresses.indexOf(peer.address) === -1) {
+            byIdentity[id].addresses.push(peer.address);
+        }
+    });
+
+    var peers = Object.keys(byIdentity).map(function(id) {
+        var group = byIdentity[id];
+        var peer = Object.assign({}, group.peer || {});
+        peer.identity_hash = id;
+        peer.addresses = group.addresses.slice();
+        return peer;
+    }).concat(unidentified);
+
     // Ratspeak before Columba; most recent connect first within each.
     peers.sort(function(a, b) {
         var pa = (a.protocol === 'Columba') ? 1 : 0;
@@ -722,6 +753,30 @@ function _renderBleSection(bodyEl, sectionEl, countEl) {
         if (pa !== pb) return pa - pb;
         return (b.connected_at || 0) - (a.connected_at || 0);
     });
+    return peers;
+}
+window._bleVisiblePeersFromCache = _bleVisiblePeersFromCache;
+
+function renderBlePeerRow(peer) {
+    var addr = peer.address || '';
+    var addresses = Array.isArray(peer.addresses) && peer.addresses.length ? peer.addresses : [addr];
+    var addressList = addresses.filter(Boolean).join(',');
+    var resolved = _resolveBlePeerLabel(peer);
+    var protocol = peer.protocol || 'Ratspeak';
+    var protoClass = protocol === 'Columba' ? 'badge-columba' : 'badge-ratspeak';
+    var ago = _formatAgo(peer.connected_at);
+
+    return '<div class="conn-iface-row ble-peer-row" data-peer-address="' + escapeHtml(addr) + '" data-peer-addresses="' + escapeHtml(addressList) + '" data-peer-protocol="' + escapeHtml(protocol) + '" role="button" tabindex="0">' +
+        '<span class="conn-iface-dot up" title="Connected"></span>' +
+        '<span class="conn-iface-name ble-peer-id" title="' + escapeHtml(resolved.title) + '">' + escapeHtml(resolved.label) + '</span>' +
+        '<span class="ble-peer-protocol ' + protoClass + '">' + escapeHtml(protocol) + '</span>' +
+        '<span class="ble-peer-time">' + escapeHtml(ago) + '</span>' +
+        '<button class="ble-peer-kebab" aria-label="Peer actions" data-peer-address="' + escapeHtml(addr) + '" data-peer-addresses="' + escapeHtml(addressList) + '">\u22ee</button>' +
+    '</div>';
+}
+
+function _renderBleSection(bodyEl, sectionEl, countEl) {
+    var peers = _bleVisiblePeersFromCache();
     var count = peers.length;
     if (countEl) {
         countEl.textContent = count;

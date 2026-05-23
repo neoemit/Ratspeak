@@ -448,6 +448,26 @@ fn frontend_console_output_is_silent_by_default() {
 }
 
 #[test]
+fn ble_peer_network_rows_are_identity_deduped() {
+    let root = repo_root();
+    let health_js = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
+    assert!(health_js.contains("function _bleVisiblePeersFromCache()"));
+    assert!(health_js.contains("var byIdentity = {};"));
+    assert!(health_js.contains("peer.addresses = group.addresses.slice();"));
+    assert!(health_js.contains("window._bleVisiblePeersFromCache = _bleVisiblePeersFromCache;"));
+    assert!(health_js.contains("data-peer-addresses"));
+
+    let tauri_events =
+        read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri events js");
+    assert!(tauri_events.contains("return window._bleVisiblePeersFromCache().length;"));
+    assert!(tauri_events.contains("peerCount === 0 && typeof window._blePeerCount === 'number'"));
+
+    let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
+    assert!(modals_js.contains("getAttribute('data-peer-addresses')"));
+    assert!(modals_js.contains("addresses.forEach(function(address)"));
+}
+
+#[test]
 fn frontend_ipc_waits_and_connect_errors_are_visible() {
     let root = repo_root();
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
@@ -942,12 +962,18 @@ fn message_media_viewer_links_and_native_saves_are_wired() {
     assert!(lxmf.contains("Saved to photos!"));
     assert!(lxmf.contains("function _compensateImageLoadScroll(container, img, before)"));
     assert!(lxmf.contains("function _messageHasTransferPayload(msg)"));
+    assert!(lxmf.contains("function _messageCanCancelSend(msg)"));
     assert!(lxmf.contains("function _messageCanCancelTransfer(msg)"));
+    assert!(
+        lxmf.contains("if (msg.state === 'sent') return _messageDeliveryMethod(msg) === 'direct';")
+    );
     assert!(lxmf.contains("function _messageTransferPayloadSize(msg)"));
     assert!(lxmf.contains("function _messageShowsTransferPercent(msg)"));
     assert!(lxmf.contains("lxmfLimits.efficient_resource_bytes || 1048575"));
     assert!(lxmf.contains("if (!_messageShowsTransferPercent(msg)) return null;"));
-    assert!(lxmf.contains("if (!_messageCanCancelTransfer(msg)) return '';"));
+    assert!(lxmf.contains("if (!_messageCanCancelSend(msg)) return '';"));
+    assert!(lxmf.contains("aria-label=\"Cancel send\">Cancel</button>"));
+    assert!(lxmf.contains("canCancelSend ? _messageInlineCancelHtml(msg) : '<span class=\"msg-time\">' + time + '</span>'"));
 
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
     assert!(state_js.contains("saveImageToPhotos"));

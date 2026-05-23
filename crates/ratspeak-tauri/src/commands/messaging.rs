@@ -978,7 +978,7 @@ pub async fn cancel_lxmf_message(
 
     let st: Arc<AppState> = Arc::clone(&state);
     let msg_id_for_cancel = msg_id.clone();
-    let cancelled = tokio::task::spawn_blocking(move || {
+    let transport_cancelled = tokio::task::spawn_blocking(move || {
         st.lxmf
             .lock()
             .ok()
@@ -991,14 +991,15 @@ pub async fn cancel_lxmf_message(
     .await
     .map_err(|_| AppError::internal("cancel_lxmf_message task panicked"))?;
 
-    if cancelled {
-        let msg_id_for_db = msg_id.clone();
-        db::spawn_db(state.db.clone(), move |p| {
-            db::update_message_state(&p, &msg_id_for_db, "cancelled", None);
-        })
-        .await
-        .map_err(|_| AppError::internal("cancel_lxmf_message db task panicked"))?;
+    let msg_id_for_db = msg_id.clone();
+    let db_cancelled = db::spawn_db(state.db.clone(), move |p| {
+        db::cancel_outbound_message_state(&p, &msg_id_for_db)
+    })
+    .await
+    .map_err(|_| AppError::internal("cancel_lxmf_message db task panicked"))?;
 
+    let cancelled = transport_cancelled || db_cancelled;
+    if cancelled {
         if let Ok(mut times) = state.message_send_times.lock() {
             times.remove(&msg_id);
         }

@@ -1407,9 +1407,15 @@ function _isTerminalMessageState(state) {
     return ['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout'].indexOf(state) !== -1;
 }
 
+function _messageDeliveryMethod(msg) {
+    return String((msg && msg.delivery_method) || 'opportunistic').toLowerCase();
+}
+
 function _messageCanCancelSend(msg) {
     if (!msg || msg.direction !== 'outbound' || _isTerminalMessageState(msg.state)) return false;
+    if (msg.state === 'sent') return _messageDeliveryMethod(msg) === 'direct';
     return [
+        'pending',
         'outbound',
         'generating',
         'sending',
@@ -1481,9 +1487,9 @@ function _messageSendCancelOverlayHtml(msg, percent) {
 }
 
 function _messageInlineCancelHtml(msg) {
-    if (!_messageCanCancelTransfer(msg)) return '';
+    if (!_messageCanCancelSend(msg)) return '';
     return '<button type="button" class="msg-send-cancel-inline" ' +
-        'data-msg-id="' + escapeHtml(msg.id || '') + '" aria-label="Cancel send">&times;</button>';
+        'data-msg-id="' + escapeHtml(msg.id || '') + '" aria-label="Cancel send">Cancel</button>';
 }
 
 function _findLxmfMessageById(msgId) {
@@ -2785,7 +2791,8 @@ function renderConversation(options) {
         var time = formatTime(msg.timestamp);
         var stateIcon = isOut ? _messageStateIconHtml(msg) : '';
         var progressPercent = isOut ? _messageProgressPercent(msg) : null;
-        var canCancelSend = isOut && _messageCanCancelTransfer(msg);
+        var canCancelSend = isOut && _messageCanCancelSend(msg);
+        var canCancelTransfer = isOut && _messageCanCancelTransfer(msg);
 
         var replyHtml = '';
         if (msg.reply_to_id || msg.reply_to_preview) {
@@ -2814,8 +2821,8 @@ function renderConversation(options) {
         if (msg.image) {
             var imageFilename = msg.image.filename || 'image';
             var imageMime = msg.image.mime_type || msg.image.mime || '';
-            var imageSendingClass = canCancelSend ? ' is-sending' : '';
-            imageSendOverlay = canCancelSend ? _messageSendCancelOverlayHtml(msg, progressPercent) : '';
+            var imageSendingClass = canCancelTransfer ? ' is-sending' : '';
+            imageSendOverlay = canCancelTransfer ? _messageSendCancelOverlayHtml(msg, progressPercent) : '';
             // stored_name \u2192 async fetch via RS.fileDownload; data_url \u2192 embed direct.
             if (msg.image.stored_name) {
                 imageHtml = '<div class="lxmf-msg-image' + imageSendingClass + '">' +
@@ -2873,8 +2880,7 @@ function renderConversation(options) {
         var hasImage = !!imageHtml;
         var hasAttachment = !!attachHtml;
         var metaHtml = _messageProgressMetaHtml(msg) +
-            '<span class="msg-time">' + time + '</span>' +
-            (!hasImage ? _messageInlineCancelHtml(msg) : '') +
+            (canCancelSend ? _messageInlineCancelHtml(msg) : '<span class="msg-time">' + time + '</span>') +
             stateIcon;
         var bubbleClass = bubbleClassBase +
             (hasImage ? ' msg-has-image' : '') +
