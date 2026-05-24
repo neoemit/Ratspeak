@@ -45,8 +45,19 @@ const AUTO_PROPAGATION_CHECK_INTERVAL_SECS: f64 = 5.0 * 60.0;
 const BACKCHANNEL_COMMAND_BUFFER: usize = 64;
 const DIRECT_PATH_FAILURE_SUPPRESSION_SECS: f64 = 30.0;
 const DIRECT_BACKCHANNEL_IDENTIFY_GRACE: Duration = Duration::from_secs(3);
-pub const RATSPEAK_CHAT_CUSTOM_TYPE: &[u8] = b"ratspeak.chat.v1";
+// Wire tag for the original (v1) Ratspeak chat extension. Kept for inbound
+// decoding of messages from peers that haven't upgraded.
+pub const RATSPEAK_CHAT_CUSTOM_TYPE_V1: &[u8] = b"ratspeak.chat.v1";
+// v2 wire tag — same envelope, but hash-bearing fields (target, target_sender)
+// are encoded as 32 raw bytes instead of 64-char hex strings (~32 B saved
+// per reference). Emitted whenever the target hex-decodes cleanly; v1 still
+// emitted as a fallback when the id isn't a 32-byte hash (UUID case).
+pub const RATSPEAK_CHAT_CUSTOM_TYPE_V2: &[u8] = b"ratspeak.chat.v2";
 pub const LEGACY_RATSPEAK_REACTION_TYPE: &[u8] = b"ratspeak.reaction";
+
+// Back-compat alias for callers (tests, source-contract guards) that still
+// reference the old single-version constant.
+pub const RATSPEAK_CHAT_CUSTOM_TYPE: &[u8] = RATSPEAK_CHAT_CUSTOM_TYPE_V1;
 pub const RATSPEAK_ANNOUNCE_EXTENSION_VERSION: u8 = 1;
 pub const RATSPEAK_CAP_CLIENT: u64 = 0x01;
 pub const RATSPEAK_CAP_GAMES: u64 = 0x02;
@@ -187,17 +198,41 @@ fn chat_string_value(map: &[(rmpv::Value, rmpv::Value)], key: &str) -> Option<St
     })
 }
 
+// v2 hash extractor: expects rmpv::Value::Binary of exactly 32 bytes and
+// returns a hex string (so the rest of the codebase keeps treating ids
+// as strings). Returns None on any shape mismatch — callers will then
+// drop the message rather than thread it against a garbage target.
+fn chat_hash_value(map: &[(rmpv::Value, rmpv::Value)], key: &str) -> Option<String> {
+    map.iter().find_map(|(k, v)| {
+        if k.as_str() != Some(key) {
+            return None;
+        }
+        match v {
+            rmpv::Value::Binary(bytes) if bytes.len() == 32 => Some(hex::encode(bytes)),
+            _ => None,
+        }
+    })
+}
+
 fn chat_custom_type(msg: &LxMessage) -> Option<&[u8]> {
     msg.fields
         .get(&lxmf_core::constants::FIELD_CUSTOM_TYPE)
         .map(Vec::as_slice)
 }
 
-fn encode_chat_extension_data(ext: &RatspeakChatExtension) -> Option<Vec<u8>> {
-    let mut entries = vec![
-        chat_map_entry("v", rmpv::Value::Integer(1.into())),
-        chat_map_entry("type", rmpv::Value::String("ratspeak.chat.v1".into())),
-    ];
+// Try to interpret an id string as a 64-char hex-encoded 32-byte hash. Used
+// to pick the v2 (raw bytes) vs v1 (string) wire shape — UUIDs and other
+// non-hash ids fall through to the v1 fallback path.
+fn id_as_32_bytes(id: &str) -> Option<[u8; 32]> {
+    let decoded = hex::decode(id).ok()?;
+    decoded.try_into().ok()
+}
+
+fn encode_chat_extension_data_v1(ext: &RatspeakChatExtension) -> Option<Vec<u8>> {
+    // `v` + `type` previously written here are redundant with the 0xFB
+    // custom-type namespace tag and ignored by every decoder. Omitted to
+    // save ~25 bytes per message.
+    let mut entries: Vec<(rmpv::Value, rmpv::Value)> = Vec::new();
     match ext {
         RatspeakChatExtension::Reaction {
             target,
@@ -249,15 +284,89 @@ fn encode_chat_extension_data(ext: &RatspeakChatExtension) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+fn encode_chat_extension_data_v2(ext: &RatspeakChatExtension) -> Option<Vec<u8>> {
+    let mut entries: Vec<(rmpv::Value, rmpv::Value)> = Vec::new();
+    match ext {
+        RatspeakChatExtension::Reaction {
+            target,
+            emoji,
+            action,
+        } => {
+            let target_bytes = id_as_32_bytes(target)?;
+            entries.push(chat_map_entry(
+                "kind",
+                rmpv::Value::String("reaction".into()),
+            ));
+            entries.push(chat_map_entry(
+                "target",
+                rmpv::Value::Binary(target_bytes.to_vec()),
+            ));
+            entries.push(chat_map_entry(
+                "emoji",
+                rmpv::Value::String(emoji.as_str().into()),
+            ));
+            entries.push(chat_map_entry(
+                "action",
+                rmpv::Value::String(action.as_str().into()),
+            ));
+        }
+        RatspeakChatExtension::Reply {
+            target,
+            preview,
+            target_sender,
+        } => {
+            let target_bytes = id_as_32_bytes(target)?;
+            // If target_sender is provided, it must also be a hash — otherwise
+            // fall through to v1 (we don't want a half-binary, half-string
+            // shape on the wire).
+            let target_sender_bytes = match target_sender {
+                Some(sender) => Some(id_as_32_bytes(sender)?),
+                None => None,
+            };
+            entries.push(chat_map_entry("kind", rmpv::Value::String("reply".into())));
+            entries.push(chat_map_entry(
+                "target",
+                rmpv::Value::Binary(target_bytes.to_vec()),
+            ));
+            entries.push(chat_map_entry(
+                "preview",
+                rmpv::Value::String(preview.as_str().into()),
+            ));
+            if let Some(sender_bytes) = target_sender_bytes {
+                entries.push(chat_map_entry(
+                    "target_sender",
+                    rmpv::Value::Binary(sender_bytes.to_vec()),
+                ));
+            }
+        }
+    }
+
+    let mut bytes = Vec::new();
+    rmpv::encode::write_value(&mut bytes, &rmpv::Value::Map(entries)).ok()?;
+    Some(bytes)
+}
+
 pub fn ratspeak_chat_custom_fields(ext: &RatspeakChatExtension) -> Option<Vec<(u8, Vec<u8>)>> {
+    // Prefer v2 (~32 B saved per hash reference). Fall back to v1 when the
+    // ids in `ext` aren't 32-byte hashes — covers the UUID-id'd-outbound
+    // edge case where msg.hash was None at send time.
+    if let Some(payload) = encode_chat_extension_data_v2(ext) {
+        return Some(vec![
+            (
+                lxmf_core::constants::FIELD_CUSTOM_TYPE,
+                RATSPEAK_CHAT_CUSTOM_TYPE_V2.to_vec(),
+            ),
+            (lxmf_core::constants::FIELD_CUSTOM_DATA, payload),
+        ]);
+    }
     Some(vec![
         (
             lxmf_core::constants::FIELD_CUSTOM_TYPE,
-            RATSPEAK_CHAT_CUSTOM_TYPE.to_vec(),
+            RATSPEAK_CHAT_CUSTOM_TYPE_V1.to_vec(),
         ),
         (
             lxmf_core::constants::FIELD_CUSTOM_DATA,
-            encode_chat_extension_data(ext)?,
+            encode_chat_extension_data_v1(ext)?,
         ),
     ])
 }
@@ -299,9 +408,13 @@ pub fn decode_ratspeak_chat_extension(msg: &LxMessage) -> Option<RatspeakChatExt
         });
     }
 
-    if custom_type != RATSPEAK_CHAT_CUSTOM_TYPE {
+    let read_target = if custom_type == RATSPEAK_CHAT_CUSTOM_TYPE_V2 {
+        chat_hash_value
+    } else if custom_type == RATSPEAK_CHAT_CUSTOM_TYPE_V1 {
+        chat_string_value
+    } else {
         return None;
-    }
+    };
 
     let data = msg.fields.get(&lxmf_core::constants::FIELD_CUSTOM_DATA)?;
     let value = rmpv::decode::read_value(&mut &data[..]).ok()?;
@@ -309,7 +422,7 @@ pub fn decode_ratspeak_chat_extension(msg: &LxMessage) -> Option<RatspeakChatExt
     let kind = chat_string_value(map, "kind")?;
     match kind.as_str() {
         "reaction" => {
-            let target = chat_string_value(map, "target")?;
+            let target = read_target(map, "target")?;
             let emoji = chat_string_value(map, "emoji")?;
             let action = chat_string_value(map, "action").unwrap_or_else(|| "add".to_string());
             if target.is_empty() || emoji.is_empty() {
@@ -322,14 +435,14 @@ pub fn decode_ratspeak_chat_extension(msg: &LxMessage) -> Option<RatspeakChatExt
             })
         }
         "reply" => {
-            let target = chat_string_value(map, "target")?;
+            let target = read_target(map, "target")?;
             if target.is_empty() {
                 return None;
             }
             Some(RatspeakChatExtension::Reply {
                 target,
                 preview: chat_string_value(map, "preview").unwrap_or_default(),
-                target_sender: chat_string_value(map, "target_sender"),
+                target_sender: read_target(map, "target_sender"),
             })
         }
         _ => None,
@@ -4569,13 +4682,22 @@ mod tests {
     fn ratspeak_chat_extension_round_trips_reaction_and_reply_fields() {
         let mut mgr = test_manager();
         let dest_hex = hex::encode([0x22; 16]);
+        let target_hash_hex = hex::encode([0xAA; 32]);
+        let sender_hash_hex = hex::encode([0xBB; 32]);
 
         let reaction_fields = ratspeak_chat_custom_fields(&RatspeakChatExtension::Reaction {
-            target: "message-a".to_string(),
+            target: target_hash_hex.clone(),
             emoji: "👍".to_string(),
             action: "add".to_string(),
         })
         .expect("reaction fields");
+        // v2 emit: namespace tag must be v2 and the target field must be the
+        // 32 raw bytes, not 64 hex chars.
+        let tag = reaction_fields
+            .iter()
+            .find(|(id, _)| *id == lxmf_core::constants::FIELD_CUSTOM_TYPE)
+            .map(|(_, v)| v.as_slice());
+        assert_eq!(tag, Some(RATSPEAK_CHAT_CUSTOM_TYPE_V2));
         let reaction_msg = mgr
             .create_message_with_custom_fields(
                 &dest_hex,
@@ -4588,16 +4710,16 @@ mod tests {
         assert_eq!(
             decode_ratspeak_chat_extension(&reaction_msg),
             Some(RatspeakChatExtension::Reaction {
-                target: "message-a".to_string(),
+                target: target_hash_hex.clone(),
                 emoji: "👍".to_string(),
                 action: "add".to_string(),
             })
         );
 
         let reply_fields = ratspeak_chat_custom_fields(&RatspeakChatExtension::Reply {
-            target: "message-b".to_string(),
+            target: target_hash_hex.clone(),
             preview: "original text".to_string(),
-            target_sender: None,
+            target_sender: Some(sender_hash_hex.clone()),
         })
         .expect("reply fields");
         let reply_msg = mgr
@@ -4612,9 +4734,159 @@ mod tests {
         assert_eq!(
             decode_ratspeak_chat_extension(&reply_msg),
             Some(RatspeakChatExtension::Reply {
-                target: "message-b".to_string(),
+                target: target_hash_hex,
                 preview: "original text".to_string(),
-                target_sender: None,
+                target_sender: Some(sender_hash_hex),
+            })
+        );
+    }
+
+    // UUID-style ids (~36 chars, not valid hex of 32 bytes) must still round-
+    // trip via the v1 string fallback — these come from outbound messages
+    // whose msg.hash was None at send time and got a uuid::Uuid as a stand-in
+    // id (see send_message_with_method path).
+    #[test]
+    fn ratspeak_chat_extension_falls_back_to_v1_for_uuid_targets() {
+        let uuid_target = "550e8400-e29b-41d4-a716-446655440000";
+        let fields = ratspeak_chat_custom_fields(&RatspeakChatExtension::Reaction {
+            target: uuid_target.to_string(),
+            emoji: "👍".to_string(),
+            action: "add".to_string(),
+        })
+        .expect("reaction fields");
+        let tag = fields
+            .iter()
+            .find(|(id, _)| *id == lxmf_core::constants::FIELD_CUSTOM_TYPE)
+            .map(|(_, v)| v.as_slice());
+        assert_eq!(tag, Some(RATSPEAK_CHAT_CUSTOM_TYPE_V1));
+    }
+
+    // A v2 message whose target field is shorter than 32 bytes must be
+    // rejected cleanly — never thread a reaction/reply against a garbage hash.
+    #[test]
+    fn ratspeak_chat_extension_rejects_v2_with_wrong_length_target() {
+        use rmpv::Value;
+        let mut mgr = test_manager();
+        let dest_hex = hex::encode([0x22; 16]);
+
+        let payload = {
+            let entries = vec![
+                (
+                    Value::String("kind".into()),
+                    Value::String("reaction".into()),
+                ),
+                (
+                    Value::String("target".into()),
+                    Value::Binary(vec![0xAA; 16]),
+                ),
+                (Value::String("emoji".into()), Value::String("👍".into())),
+                (Value::String("action".into()), Value::String("add".into())),
+            ];
+            let mut buf = Vec::new();
+            rmpv::encode::write_value(&mut buf, &Value::Map(entries)).unwrap();
+            buf
+        };
+        let fields = vec![
+            (
+                lxmf_core::constants::FIELD_CUSTOM_TYPE,
+                RATSPEAK_CHAT_CUSTOM_TYPE_V2.to_vec(),
+            ),
+            (lxmf_core::constants::FIELD_CUSTOM_DATA, payload),
+        ];
+        let msg = mgr
+            .create_message_with_custom_fields(&dest_hex, "fallback", "", DeliveryMethod::Direct, &fields)
+            .expect("msg");
+        assert_eq!(decode_ratspeak_chat_extension(&msg), None);
+    }
+
+    // Forward-compat probe — a v2 message with an unknown `kind` (e.g. a
+    // future "edit"/"delete" extension) must drop cleanly on this version.
+    #[test]
+    fn ratspeak_chat_extension_rejects_v2_with_unknown_kind() {
+        use rmpv::Value;
+        let mut mgr = test_manager();
+        let dest_hex = hex::encode([0x22; 16]);
+
+        let payload = {
+            let entries = vec![
+                (Value::String("kind".into()), Value::String("edit".into())),
+                (
+                    Value::String("target".into()),
+                    Value::Binary(vec![0xAA; 32]),
+                ),
+            ];
+            let mut buf = Vec::new();
+            rmpv::encode::write_value(&mut buf, &Value::Map(entries)).unwrap();
+            buf
+        };
+        let fields = vec![
+            (
+                lxmf_core::constants::FIELD_CUSTOM_TYPE,
+                RATSPEAK_CHAT_CUSTOM_TYPE_V2.to_vec(),
+            ),
+            (lxmf_core::constants::FIELD_CUSTOM_DATA, payload),
+        ];
+        let msg = mgr
+            .create_message_with_custom_fields(&dest_hex, "fallback", "", DeliveryMethod::Direct, &fields)
+            .expect("msg");
+        assert_eq!(decode_ratspeak_chat_extension(&msg), None);
+    }
+
+    // Legacy peers sent reactions/replies with `v` and `type` keys inside the
+    // 0xFC payload. We removed both from the encoder, but the decoder must
+    // still parse legacy messages — it always discriminated on `kind` and
+    // ignored those keys. This test pins that contract.
+    #[test]
+    fn ratspeak_chat_extension_decodes_legacy_v_and_type_fields() {
+        use rmpv::Value;
+        let mut mgr = test_manager();
+        let dest_hex = hex::encode([0x22; 16]);
+
+        let legacy_payload = {
+            let entries = vec![
+                (Value::String("v".into()), Value::Integer(1.into())),
+                (
+                    Value::String("type".into()),
+                    Value::String("ratspeak.chat.v1".into()),
+                ),
+                (
+                    Value::String("kind".into()),
+                    Value::String("reaction".into()),
+                ),
+                (
+                    Value::String("target".into()),
+                    Value::String("legacy-id".into()),
+                ),
+                (Value::String("emoji".into()), Value::String("👍".into())),
+                (Value::String("action".into()), Value::String("add".into())),
+            ];
+            let mut buf = Vec::new();
+            rmpv::encode::write_value(&mut buf, &Value::Map(entries)).unwrap();
+            buf
+        };
+
+        let legacy_fields = vec![
+            (
+                lxmf_core::constants::FIELD_CUSTOM_TYPE,
+                RATSPEAK_CHAT_CUSTOM_TYPE.to_vec(),
+            ),
+            (lxmf_core::constants::FIELD_CUSTOM_DATA, legacy_payload),
+        ];
+        let msg = mgr
+            .create_message_with_custom_fields(
+                &dest_hex,
+                "fallback",
+                "",
+                DeliveryMethod::Direct,
+                &legacy_fields,
+            )
+            .expect("legacy msg");
+        assert_eq!(
+            decode_ratspeak_chat_extension(&msg),
+            Some(RatspeakChatExtension::Reaction {
+                target: "legacy-id".to_string(),
+                emoji: "👍".to_string(),
+                action: "add".to_string(),
             })
         );
     }
