@@ -45,9 +45,9 @@ class RatspeakBleGatt(private val context: Context) {
         // minus the 3-byte ATT header). 20-byte default clogs the pipe.
         private const val MTU_FALLBACK_PAYLOAD = 244
         private const val GATT_TIMEOUT_SEC = 15L
-        // RNode firmware drops bonding at 35s — our timeout fires first so we can
-        // cleanly report back and let the user re-trigger pairing mode.
-        private const val BOND_TIMEOUT_SEC = 33L
+        // Cardputer RNode keeps first-pair/manual pairing windows open longer
+        // than this; time out first so the app can cleanly roll back.
+        private const val BOND_TIMEOUT_SEC = 60L
 
         // TCP read buffer. Large because one write from Rust can be up to 4KB;
         // the per-chunk BLE write uses negotiatedMtu separately.

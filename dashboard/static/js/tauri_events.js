@@ -978,13 +978,13 @@ RS.listen('ble_rnode_connect_native', function(data) {
         return;
     }
 
-    // Bonding can take 30+s; phase updates keep the dialog meaningful.
+    // Bonding can take a while; phase updates keep the dialog meaningful.
     var PHASE_MESSAGES = {
         starting: 'Starting BLE connection...',
         connecting: 'Connecting to RNode (GATT)...',
         mtu: 'Negotiating MTU...',
         discovering: 'Discovering services...',
-        bonding: 'Pairing with RNode...\nHold P or OK until the passkey screen appears, then enter that passkey.',
+        bonding: 'Pairing with RNode...\nFresh installs may already be ready; otherwise hold P or OK to allow pairing.',
         subscribing: 'Enabling notifications...',
         bridge: 'Opening TCP bridge...',
         ready: 'Connected — linking radio...',
@@ -1016,20 +1016,37 @@ RS.listen('ble_rnode_connect_native', function(data) {
             var errRaw = result.error || 'Unknown error';
             var pairingMode = errRaw.indexOf('ERR_PAIRING_MODE') === 0;
             var errMsg = pairingMode
-                ? 'Pairing failed. Hold P or OK on the RNode until its display shows a passkey, then retry.'
+                ? 'Pairing failed. Fresh installs are ready briefly after boot; otherwise hold P or OK on the RNode, then retry.'
                 : 'BLE connect failed: ' + errRaw;
+            if (typeof window.RatspeakAndroid !== 'undefined' &&
+                typeof window.RatspeakAndroid.disconnectBleDevice === 'function') {
+                try { window.RatspeakAndroid.disconnectBleDevice(); } catch (_) {}
+            }
             if (data.rollback_on_error && data.name) {
                 RS.invoke('cancel_ble_connect', { name: data.name }).catch(function() {});
             }
-            showToast(errMsg, 'toast-red', 5000);
-            if (window._activeProgressDialog && window._activeProgressDialog.isOpen()) {
-                window._activeProgressDialog.error(errMsg);
+            var pd = window._activeProgressDialog;
+            if (pd && pd.isOpen()) {
+                pd.error(errMsg);
+                if (pd.onClose) {
+                    pd.onClose(function() {
+                        if (window._activeProgressDialog === pd) window._activeProgressDialog = null;
+                        if (data.rollback_on_error && typeof openRnodeModal === 'function') {
+                            openRnodeModal('ble');
+                        }
+                    });
+                }
+            } else {
+                showToast(errMsg, 'toast-red', 5000);
+                if (data.rollback_on_error && typeof openRnodeModal === 'function') {
+                    openRnodeModal('ble');
+                }
             }
         }
     };
 
     if (window._activeProgressDialog && window._activeProgressDialog.isOpen()) {
-        window._activeProgressDialog.update('Connecting to RNode...\nFor first pairing, hold P or OK until the passkey screen appears.');
+        window._activeProgressDialog.update('Connecting to RNode...\nFresh installs may already be ready; otherwise hold P or OK to allow pairing.');
     }
 
     window.RatspeakAndroid.connectBleDevice(data.address, data.tcp_port);

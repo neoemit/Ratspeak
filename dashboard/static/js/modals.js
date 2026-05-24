@@ -1326,7 +1326,7 @@ function renderBleDeviceList(devices) {
             });
             btn.classList.add('selected');
             if (showBondBadge && !dev.bonded) {
-                showPreConditionToast('Before connecting, hold P or OK on the RNode until the passkey screen appears.');
+                showPreConditionToast('This RNode is not paired yet. Fresh installs are briefly ready after boot; otherwise hold P or OK to allow pairing.');
             }
             rnodeUpdateNextBtn();
         });
@@ -1368,16 +1368,21 @@ function submitRnodeInterface() {
         return;
     }
 
-    var chain = Promise.resolve(true);
-    if (_rnodeConnectionType === 'ble' &&
+    var needsBlePairingGate = _rnodeConnectionType === 'ble' &&
         _bleSelectedDevice &&
         _bondBadgeReliable() &&
-        _bleSelectedDevice.bonded === false &&
-        typeof rsConfirm === 'function') {
+        _bleSelectedDevice.bonded === false;
+
+    var chain = Promise.resolve(true);
+    if (needsBlePairingGate) {
+        if (typeof rsConfirm !== 'function') {
+            showPreConditionToast('Pair this RNode before connecting. Hold P or OK to allow pairing, then try again.');
+            return;
+        }
         chain = rsConfirm({
             title: 'Pair RNode',
-            message: 'This RNode is not paired yet. Hold P or OK on the RNode until the passkey screen appears, then tap Pair.',
-            confirmText: 'Pair',
+            message: 'This RNode is not paired yet. If it was freshly installed, it may already be ready. Otherwise hold P or OK until pairing mode is active. Continue when the RNode is ready to pair; the passkey will appear when your system asks for it.',
+            confirmText: 'Ready to Pair',
             cancelText: 'Not Yet'
         });
     }

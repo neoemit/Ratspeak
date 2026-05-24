@@ -1949,6 +1949,10 @@ class MainActivity : TauriActivity() {
                 gatt.attachWebView(webViewRef)
 
                 val error = gatt.connect(address, localPort)
+                if (error != null) {
+                    gatt.disconnect()
+                    if (bleGatt === gatt) bleGatt = null
+                }
                 val result = JSONObject().apply {
                     put("success", error == null)
                     put("port", localPort)
