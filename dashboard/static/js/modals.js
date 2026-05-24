@@ -1325,9 +1325,6 @@ function renderBleDeviceList(devices) {
                 b.classList.remove('selected');
             });
             btn.classList.add('selected');
-            if (showBondBadge && !dev.bonded) {
-                showPreConditionToast('This RNode is not paired yet. Fresh installs are briefly ready after boot; otherwise hold P or OK to allow pairing.');
-            }
             rnodeUpdateNextBtn();
         });
 
@@ -1368,100 +1365,77 @@ function submitRnodeInterface() {
         return;
     }
 
-    var needsBlePairingGate = _rnodeConnectionType === 'ble' &&
-        _bleSelectedDevice &&
-        _bondBadgeReliable() &&
-        _bleSelectedDevice.bonded === false;
-
-    var chain = Promise.resolve(true);
-    if (needsBlePairingGate) {
-        if (typeof rsConfirm !== 'function') {
-            showPreConditionToast('Pair this RNode before connecting. Hold P or OK to allow pairing, then try again.');
-            return;
+    // Prompt for USB permission before Rust opens the device.
+    var proceed = Promise.resolve(true);
+    if (_rnodeConnectionType === 'android-usb' && _androidUsbSelectedDevice && hasAndroidBridge()) {
+        var devName = _androidUsbSelectedDevice.device_name;
+        if (window.RatspeakAndroid.hasUsbPermission(devName)) {
+            proceed = Promise.resolve(true);
+        } else {
+            proceed = new Promise(function(resolve) {
+                window._onUsbPermissionResult = function(result) {
+                    window._onUsbPermissionResult = null;
+                    if (result && result.granted) { resolve(true); }
+                    else {
+                        var err = result && result.error ? result.error : 'USB permission denied';
+                        showToast(err, 'toast-red', 4000);
+                        resolve(false);
+                    }
+                };
+                try { window.RatspeakAndroid.requestUsbPermission(devName); }
+                catch (e) { window._onUsbPermissionResult = null; resolve(false); }
+            });
         }
-        chain = rsConfirm({
-            title: 'Pair RNode',
-            message: 'This RNode is not paired yet. If it was freshly installed, it may already be ready. Otherwise hold P or OK until pairing mode is active. Continue when the RNode is ready to pair; the passkey will appear when your system asks for it.',
-            confirmText: 'Ready to Pair',
-            cancelText: 'Not Yet'
-        });
     }
 
-    chain.then(function(ok) {
-        if (!ok) return;
+    proceed.then(function(permOk) {
+        if (!permOk) return;
+        var isEdit = !!_rnodeEditContext;
+        var loraCommand = isEdit ? 'update_lora_interface' : 'add_lora_interface';
+        var loraArgs = {
+            name: name,
+            port: port,
+            frequency: radioSettings.frequency,
+            bandwidth: radioSettings.bandwidth,
+            spreading_factor: radioSettings.spreadingFactor,
+            coding_rate: radioSettings.codingRate,
+            tx_power: radioSettings.txPower,
+        };
+        if (radioSettings.regionKey !== _RNODE_CUSTOM_REGION_KEY) loraArgs.region_key = radioSettings.regionKey;
+        if (radioSettings.presetKey !== _RNODE_CUSTOM_PRESET_KEY) loraArgs.preset_key = radioSettings.presetKey;
+        if (radioSettings.customParams) loraArgs.custom_params = true;
+        if (isEdit) loraArgs.old_name = _rnodeEditContext.oldName;
+        var loraRequest = RS.invoke(loraCommand, { args: loraArgs });
 
-        // Prompt for USB permission before Rust opens the device.
-        var proceed = Promise.resolve(true);
-        if (_rnodeConnectionType === 'android-usb' && _androidUsbSelectedDevice && hasAndroidBridge()) {
-            var devName = _androidUsbSelectedDevice.device_name;
-            if (window.RatspeakAndroid.hasUsbPermission(devName)) {
-                proceed = Promise.resolve(true);
-            } else {
-                proceed = new Promise(function(resolve) {
-                    window._onUsbPermissionResult = function(result) {
-                        window._onUsbPermissionResult = null;
-                        if (result && result.granted) { resolve(true); }
-                        else {
-                            var err = result && result.error ? result.error : 'USB permission denied';
-                            showToast(err, 'toast-red', 4000);
-                            resolve(false);
-                        }
-                    };
-                    try { window.RatspeakAndroid.requestUsbPermission(devName); }
-                    catch (e) { window._onUsbPermissionResult = null; resolve(false); }
-                });
-            }
-        }
-
-        proceed.then(function(permOk) {
-            if (!permOk) return;
-            var isEdit = !!_rnodeEditContext;
-            var loraCommand = isEdit ? 'update_lora_interface' : 'add_lora_interface';
-            var loraArgs = {
-                name: name,
-                port: port,
-                frequency: radioSettings.frequency,
-                bandwidth: radioSettings.bandwidth,
-                spreading_factor: radioSettings.spreadingFactor,
-                coding_rate: radioSettings.codingRate,
-                tx_power: radioSettings.txPower,
-            };
-            if (radioSettings.regionKey !== _RNODE_CUSTOM_REGION_KEY) loraArgs.region_key = radioSettings.regionKey;
-            if (radioSettings.presetKey !== _RNODE_CUSTOM_PRESET_KEY) loraArgs.preset_key = radioSettings.presetKey;
-            if (radioSettings.customParams) loraArgs.custom_params = true;
-            if (isEdit) loraArgs.old_name = _rnodeEditContext.oldName;
-            var loraRequest = RS.invoke(loraCommand, { args: loraArgs });
-
-            closeRnodeModal();
-            if (_rnodeConnectionType === 'ble' && typeof rsProgress === 'function') {
-                var bleName = name;
-                window._activeProgressDialog = rsProgress({
-                    message: isEdit ? 'Restarting BLE LoRa radio...' : 'Connecting BLE LoRa radio...',
-                    operation: isEdit ? 'update_lora' : 'add_lora',
-                    onCancel: function() {
-                        // Drop half-written config so the list has no orphan.
-                        if (!isEdit) RS.invoke('cancel_ble_connect', { name: bleName }).catch(function() {});
-                        window._activeProgressDialog = null;
-                    },
-                });
-            } else if (_rnodeConnectionType === 'android-usb' && typeof rsProgress === 'function') {
-                window._activeProgressDialog = rsProgress({
-                    message: isEdit ? 'Restarting USB LoRa radio...' : 'Connecting USB LoRa radio...',
-                    operation: isEdit ? 'update_lora' : 'add_lora',
-                });
-            } else if (_rnodeConnectionType === 'tcp' && typeof rsProgress === 'function') {
-                window._activeProgressDialog = rsProgress({
-                    message: isEdit ? 'Restarting TCP LoRa radio...' : 'Connecting TCP LoRa radio...',
-                    operation: isEdit ? 'update_lora' : 'add_lora',
-                });
-            }
-            loraRequest.catch(function(err) {
-                if (window._activeProgressDialog && window._activeProgressDialog.error) {
-                    window._activeProgressDialog.error((err && err.message) || 'Failed to configure LoRa interface');
-                } else {
-                    showToast((err && err.message) || 'Failed to configure LoRa interface', 'toast-red', 8000);
-                }
+        closeRnodeModal();
+        if (_rnodeConnectionType === 'ble' && typeof rsProgress === 'function') {
+            var bleName = name;
+            window._activeProgressDialog = rsProgress({
+                message: isEdit ? 'Restarting BLE LoRa radio...' : 'Connecting BLE LoRa radio...',
+                operation: isEdit ? 'update_lora' : 'add_lora',
+                onCancel: function() {
+                    // Drop half-written config so the list has no orphan.
+                    if (!isEdit) RS.invoke('cancel_ble_connect', { name: bleName }).catch(function() {});
+                    window._activeProgressDialog = null;
+                },
             });
+        } else if (_rnodeConnectionType === 'android-usb' && typeof rsProgress === 'function') {
+            window._activeProgressDialog = rsProgress({
+                message: isEdit ? 'Restarting USB LoRa radio...' : 'Connecting USB LoRa radio...',
+                operation: isEdit ? 'update_lora' : 'add_lora',
+            });
+        } else if (_rnodeConnectionType === 'tcp' && typeof rsProgress === 'function') {
+            window._activeProgressDialog = rsProgress({
+                message: isEdit ? 'Restarting TCP LoRa radio...' : 'Connecting TCP LoRa radio...',
+                operation: isEdit ? 'update_lora' : 'add_lora',
+            });
+        }
+        loraRequest.catch(function(err) {
+            if (window._activeProgressDialog && window._activeProgressDialog.error) {
+                window._activeProgressDialog.error((err && err.message) || 'Failed to configure LoRa interface');
+            } else {
+                showToast((err && err.message) || 'Failed to configure LoRa interface', 'toast-red', 8000);
+            }
         });
     });
 }

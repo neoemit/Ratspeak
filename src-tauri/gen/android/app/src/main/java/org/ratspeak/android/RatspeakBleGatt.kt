@@ -29,10 +29,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * RNode requires MITM-encrypted BLE connections (NUS over bonded link).
  * Connection sequence:
- *   1. connectGatt() — establishes BLE link, triggers SMP security exchange
+ *   1. createBond() first when Android reports the device is unpaired
  *   2. Wait for bonding — Android shows pairing dialog, user confirms
- *   3. After BOND_BONDED — connection is now encrypted
- *   4. If GATT dropped during bonding — reconnect (now bonded, encryption automatic)
+ *   3. After BOND_BONDED, let the RNode finish its intentional post-pair disconnect
+ *   4. connectGatt() over the bonded link, where encryption is automatic
  *   5. Service discovery → NUS characteristics → TCP bridge
  */
 class RatspeakBleGatt(private val context: Context) {
@@ -48,6 +48,8 @@ class RatspeakBleGatt(private val context: Context) {
         // Cardputer RNode keeps first-pair/manual pairing windows open longer
         // than this; time out first so the app can cleanly roll back.
         private const val BOND_TIMEOUT_SEC = 60L
+        private const val BOND_POLL_INTERVAL_MS = 250L
+        private const val POST_BOND_RECONNECT_DELAY_MS = 2600L
 
         // TCP read buffer. Large because one write from Rust can be up to 4KB;
         // the per-chunk BLE write uses negotiatedMtu separately.
@@ -123,6 +125,7 @@ class RatspeakBleGatt(private val context: Context) {
             // RNode pairing mode (bt_allow_pairing=true) must already be active —
             // the modal's pre-bond step makes that the user's job before they
             // even open this code path.
+            var bondedDuringThisConnect = false
             if (device.bondState != BluetoothDevice.BOND_BONDED) {
                 emitProgress("bonding")
                 bondLatch = CountDownLatch(1)
@@ -135,19 +138,27 @@ class RatspeakBleGatt(private val context: Context) {
                     unregisterBondReceiver()
                     return err("$ERR_PAIRING_MODE createBond() rejected — Bluetooth state may be unstable")
                 }
-                if (!bondLatch!!.await(BOND_TIMEOUT_SEC, TimeUnit.SECONDS)) {
-                    if (device.bondState != BluetoothDevice.BOND_BONDED) {
-                        unregisterBondReceiver()
-                        return err("$ERR_PAIRING_MODE Bonding timed out (${bondStr(device.bondState)})")
-                    }
+                if (!waitForBondState(device) && device.bondState != BluetoothDevice.BOND_BONDED) {
+                    unregisterBondReceiver()
+                    return err("$ERR_PAIRING_MODE Bonding timed out (${bondStr(device.bondState)})")
                 }
                 if (device.bondState != BluetoothDevice.BOND_BONDED) {
                     unregisterBondReceiver()
                     return err("$ERR_PAIRING_MODE Bonding failed (${bondStr(device.bondState)})")
                 }
                 Log.i(TAG, "Phase 0 COMPLETE: Bonded")
+                bondedDuringThisConnect = true
             }
             unregisterBondReceiver()
+            if (bondedDuringThisConnect) {
+                // rsCardputer/RNode intentionally disconnects shortly after
+                // pairing succeeds so the host reconnects over the stored bond.
+                // Starting GATT during that window makes the first detect/init
+                // attempt race a deliberate peripheral-side disconnect.
+                emitProgress("pairing_settle")
+                Log.i(TAG, "Phase 0b: waiting ${POST_BOND_RECONNECT_DELAY_MS}ms for RNode post-pair disconnect")
+                Thread.sleep(POST_BOND_RECONNECT_DELAY_MS)
+            }
 
             // ── Phase 1: GATT connect over the bonded (encrypted) link ──
             connectLatch = CountDownLatch(1)
@@ -335,6 +346,22 @@ class RatspeakBleGatt(private val context: Context) {
             gatt = null
         }
         rxChar = null; txChar = null; clientSocket = null; serverSocket = null; tcpOut = null
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun waitForBondState(device: BluetoothDevice): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(BOND_TIMEOUT_SEC)
+        while (System.nanoTime() < deadline) {
+            val state = device.bondState
+            if (state == BluetoothDevice.BOND_BONDED || state == BluetoothDevice.BOND_NONE) return true
+            val remainingMs = TimeUnit.NANOSECONDS
+                .toMillis(deadline - System.nanoTime())
+                .coerceAtLeast(1L)
+            if (bondLatch?.await(minOf(BOND_POLL_INTERVAL_MS, remainingMs), TimeUnit.MILLISECONDS) == true) {
+                return true
+            }
+        }
+        return false
     }
 
     private fun registerBondReceiver(address: String) {
