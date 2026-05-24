@@ -4794,7 +4794,13 @@ mod tests {
             (lxmf_core::constants::FIELD_CUSTOM_DATA, payload),
         ];
         let msg = mgr
-            .create_message_with_custom_fields(&dest_hex, "fallback", "", DeliveryMethod::Direct, &fields)
+            .create_message_with_custom_fields(
+                &dest_hex,
+                "fallback",
+                "",
+                DeliveryMethod::Direct,
+                &fields,
+            )
             .expect("msg");
         assert_eq!(decode_ratspeak_chat_extension(&msg), None);
     }
@@ -4827,7 +4833,13 @@ mod tests {
             (lxmf_core::constants::FIELD_CUSTOM_DATA, payload),
         ];
         let msg = mgr
-            .create_message_with_custom_fields(&dest_hex, "fallback", "", DeliveryMethod::Direct, &fields)
+            .create_message_with_custom_fields(
+                &dest_hex,
+                "fallback",
+                "",
+                DeliveryMethod::Direct,
+                &fields,
+            )
             .expect("msg");
         assert_eq!(decode_ratspeak_chat_extension(&msg), None);
     }
