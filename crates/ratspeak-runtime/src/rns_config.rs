@@ -377,7 +377,7 @@ fn unquote_ini_scalar(value: &str) -> &str {
     value
 }
 
-fn replace_key_line(line: &str, key: &str, value: u16) -> String {
+fn replace_key_line(line: &str, key: &str, value: impl std::fmt::Display) -> String {
     let indent = line
         .chars()
         .take_while(|ch| ch.is_whitespace())
@@ -1079,30 +1079,60 @@ pub fn update_backbone_server(
 
 pub fn set_transport_mode(config_dir: &Path, enable: bool) -> bool {
     let content = read_config(config_dir).unwrap_or_else(ratspeak_default_config);
+    write_config(config_dir, &transport_mode_update(&content, enable))
+}
 
+fn transport_mode_update(content: &str, enable: bool) -> String {
     let val = if enable { "True" } else { "False" };
-    let mut found = false;
-    let result: String = content
-        .lines()
-        .map(|line| {
-            let trimmed = line.trim().to_lowercase();
-            if trimmed.starts_with("enable_transport") {
-                found = true;
-                format!("  enable_transport = {val}")
+    let mut lines = content.lines().map(str::to_string).collect::<Vec<_>>();
+    let Some((section_start, section_end)) = reticulum_section_bounds(&lines) else {
+        let mut new_lines = vec![
+            "[reticulum]".to_string(),
+            format!("enable_transport = {val}"),
+            String::new(),
+        ];
+        new_lines.extend(lines);
+        return join_config_lines(new_lines);
+    };
+
+    for idx in (section_start + 1)..section_end {
+        if parse_ini_key_value(&lines[idx]).is_some_and(|(key, _)| key == "enable_transport") {
+            lines[idx] = replace_key_line(&lines[idx], "enable_transport", val);
+            return join_config_lines(lines);
+        }
+    }
+
+    lines.splice(
+        section_end..section_end,
+        [format!("enable_transport = {val}")],
+    );
+    join_config_lines(lines)
+}
+
+pub fn transport_mode_enabled(config_dir: &Path) -> bool {
+    read_config(config_dir)
+        .and_then(|content| transport_enabled_from_config(&content))
+        .unwrap_or(false)
+}
+
+fn transport_enabled_from_config(content: &str) -> Option<bool> {
+    let lines = content.lines().map(str::to_string).collect::<Vec<_>>();
+    let (section_start, section_end) = reticulum_section_bounds(&lines)?;
+    lines
+        .iter()
+        .take(section_end)
+        .skip(section_start + 1)
+        .find_map(|line| {
+            let (key, value) = parse_ini_key_value(line)?;
+            if key == "enable_transport" {
+                Some(matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "true" | "yes" | "1" | "on"
+                ))
             } else {
-                line.to_string()
+                None
             }
         })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    if found {
-        write_config(config_dir, &result)
-    } else {
-        let mut content = content;
-        content.push_str(&format!("\n  enable_transport = {val}\n"));
-        write_config(config_dir, &content)
-    }
 }
 
 #[cfg(test)]
@@ -1158,6 +1188,40 @@ mod tests {
         let content = read_config(&dir).unwrap();
         assert!(content.contains("enable_transport = True"));
         assert!(content.contains("[interfaces]"));
+    }
+
+    #[test]
+    fn set_transport_mode_inserts_missing_key_in_reticulum_section() {
+        let dir = temp_config_dir();
+        write_config(
+            &dir,
+            "[reticulum]\nshare_instance = Yes\n\n[interfaces]\n  [[Keep]]\n    type = TCPClientInterface\n",
+        );
+
+        assert!(set_transport_mode(&dir, true));
+
+        let content = read_config(&dir).unwrap();
+        let reticulum = content.split("[interfaces]").next().unwrap();
+        assert!(reticulum.contains("enable_transport = True"));
+        assert!(
+            !content
+                .split("[interfaces]")
+                .nth(1)
+                .unwrap()
+                .contains("enable_transport")
+        );
+        assert!(transport_mode_enabled(&dir));
+    }
+
+    #[test]
+    fn transport_mode_enabled_ignores_non_reticulum_key() {
+        let dir = temp_config_dir();
+        write_config(
+            &dir,
+            "[reticulum]\nshare_instance = Yes\n\n[interfaces]\nenable_transport = True\n",
+        );
+
+        assert!(!transport_mode_enabled(&dir));
     }
 
     #[test]

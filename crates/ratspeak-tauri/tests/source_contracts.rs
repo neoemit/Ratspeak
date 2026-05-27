@@ -49,7 +49,7 @@ fn privacy_announce_usage_setting_is_wired() {
     assert!(interfaces_rs.contains("pub async fn api_app_settings"));
     assert!(interfaces_rs.contains("\"auto_announce_interval\""));
     assert!(interfaces_rs.contains("\"announce_ratspeak_usage\""));
-    assert!(interfaces_rs.contains("db::set_setting(&p, \"announce_ratspeak_usage\""));
+    assert!(interfaces_rs.contains("db::try_set_setting(&p, \"announce_ratspeak_usage\""));
 
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
     assert!(tauri_lib.contains("api_app_settings"));
@@ -89,7 +89,7 @@ fn peers_sort_preference_defaults_to_last_seen_and_persists() {
     assert!(interfaces_rs.contains("const DEFAULT_PEERS_SORT: &str = \"last_seen\";"));
     assert!(interfaces_rs.contains("pub async fn set_peers_sort"));
     assert!(interfaces_rs.contains("\"peers_sort\": persisted_peers_sort(&state)"));
-    assert!(interfaces_rs.contains("db::set_setting(&p, \"peers_sort\", &persisted);"));
+    assert!(interfaces_rs.contains("db::try_set_setting(&p, \"peers_sort\", &persisted)"));
 
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
     assert!(tauri_lib.contains("set_peers_sort"));
@@ -2492,6 +2492,8 @@ fn transport_mode_defaults_and_auto_policy_are_explicit() {
     assert!(interfaces_rs.contains("has_enabled_non_lora_transport_interface"));
     assert!(interfaces_rs.contains("reconcile_auto_transport_after_interface_change"));
     assert!(interfaces_rs.contains("transport_network_type"));
+    assert!(interfaces_rs.contains("db::try_set_setting(&p, \"transport_mode\", &mode_for_db)?;"));
+    assert!(interfaces_rs.contains("set_transport_mode db task panicked"));
     assert!(interfaces_rs.contains("configured_enabled"));
     assert!(interfaces_rs.contains("suppressed"));
     assert!(interfaces_rs.contains("InstanceMode::Client"));
@@ -2501,6 +2503,8 @@ fn transport_mode_defaults_and_auto_policy_are_explicit() {
     let network_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/network.rs"))
         .expect("network source");
     assert!(shared_rs.contains("hub_interfaces_payload"));
+    assert!(shared_rs.contains("persisted_transport_mode"));
+    assert!(shared_rs.contains("config_transport_enabled(state)"));
     assert!(shared_rs.contains("\"transport\".to_string()"));
     assert!(shared_rs.contains("reconcile_auto_transport_after_interface_change"));
     assert!(network_rs.contains("hub_interfaces_payload"));

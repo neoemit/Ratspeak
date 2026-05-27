@@ -2176,15 +2176,17 @@ pub fn get_setting(pool: &DbPool, key: &str) -> Option<String> {
 }
 
 pub fn set_setting(pool: &DbPool, key: &str, value: &str) {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+    let _ = try_set_setting(pool, key, value);
+}
+
+pub fn try_set_setting(pool: &DbPool, key: &str, value: &str) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
         params![key, value],
     )
-    .ok();
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Overridable via `known_identities_prune_days` (0 disables).

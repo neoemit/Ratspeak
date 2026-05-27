@@ -183,27 +183,34 @@ pub(crate) async fn broadcast_blackhole_update(state: &AppState) {
     state.emit_to_all("blackhole_update", json!({ "entries": entries }));
 }
 
-fn config_transport_enabled(state: &AppState) -> bool {
+pub(crate) fn normalize_transport_mode(mode: &str) -> Option<&'static str> {
+    match mode.trim() {
+        "on" => Some("on"),
+        "off" => Some("off"),
+        "auto" => Some("auto"),
+        _ => None,
+    }
+}
+
+pub(crate) fn config_transport_enabled(state: &AppState) -> bool {
     let config_dir = active_rns_config_dir(state);
-    crate::rns_config::read_config(&config_dir)
-        .and_then(|content| {
-            content.lines().find_map(|line| {
-                let (key, value) = line.split_once('=')?;
-                if key.trim().eq_ignore_ascii_case("enable_transport") {
-                    Some(matches!(
-                        value.trim().to_ascii_lowercase().as_str(),
-                        "true" | "yes" | "1" | "on"
-                    ))
-                } else {
-                    None
-                }
-            })
+    crate::rns_config::transport_mode_enabled(&config_dir)
+}
+
+pub(crate) fn persisted_transport_mode(state: &AppState) -> String {
+    db::get_setting(&state.db, "transport_mode")
+        .and_then(|mode| normalize_transport_mode(&mode).map(str::to_string))
+        .unwrap_or_else(|| {
+            if config_transport_enabled(state) {
+                "on".to_string()
+            } else {
+                "off".to_string()
+            }
         })
-        .unwrap_or(false)
 }
 
 pub(crate) fn hub_interfaces_payload(state: &AppState, mut ifaces: Value) -> Value {
-    let mode = db::get_setting(&state.db, "transport_mode").unwrap_or_else(|| "off".to_string());
+    let mode = persisted_transport_mode(state);
     let configured_enabled = config_transport_enabled(state);
     let suppressed = configured_enabled
         && state
@@ -679,6 +686,40 @@ mod tests {
         ratspeak_db::set_active_identity(&state.db, identity_hash).unwrap();
 
         assert_eq!(active_rns_config_dir(&state), override_dir);
+    }
+
+    #[test]
+    fn transport_payload_falls_back_to_enabled_config_when_db_setting_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = DashboardConfig::from_env_and_defaults(temp.path().to_path_buf());
+        let state = state_for_config(config);
+        let identity_hash = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        ratspeak_db::save_identity(
+            &state.db,
+            identity_hash,
+            "ffffffffffffffffffffffffffffffff",
+            "Default",
+            "Default",
+        );
+        ratspeak_db::set_active_identity(&state.db, identity_hash).unwrap();
+
+        let config_dir = active_rns_config_dir(&state);
+        crate::rns_config::write_config(
+            &config_dir,
+            "[reticulum]\nenable_transport = True\n\n[interfaces]\n",
+        );
+
+        let payload = hub_interfaces_payload(&state, json!({}));
+        let transport = payload.get("transport").expect("transport payload");
+        assert_eq!(transport.get("mode").and_then(Value::as_str), Some("on"));
+        assert_eq!(
+            transport.get("configured_enabled").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            transport.get("enabled").and_then(Value::as_bool),
+            Some(true)
+        );
     }
 
     #[test]

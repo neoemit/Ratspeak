@@ -9,7 +9,8 @@ use serde_json::{Value, json};
 use tauri::State;
 
 use crate::commands::shared::{
-    active_rns_config_dir, emit_hub_interfaces, emit_op_status_broadcast, with_rns_config_lock,
+    active_rns_config_dir, emit_hub_interfaces, emit_op_status_broadcast, normalize_transport_mode,
+    persisted_transport_mode, with_rns_config_lock,
 };
 use crate::db;
 use crate::error::{AppError, AppResult};
@@ -557,10 +558,7 @@ fn local_transport_runtime_allowed(state: &AppState) -> bool {
 }
 
 fn configured_transport_enabled_for_interfaces(state: &AppState, ifaces: &Value) -> bool {
-    match db::get_setting(&state.db, "transport_mode")
-        .unwrap_or_else(default_mode)
-        .as_str()
-    {
+    match persisted_transport_mode(state).as_str() {
         "on" => true,
         "auto" => {
             let network_type = persisted_transport_network_type(state);
@@ -626,7 +624,7 @@ fn apply_transport_runtime_update(
 }
 
 pub(crate) fn reconcile_auto_transport_after_interface_change(state: &AppState, ifaces: &Value) {
-    let mode = db::get_setting(&state.db, "transport_mode").unwrap_or_else(default_mode);
+    let mode = persisted_transport_mode(state);
     if mode != "auto" {
         return;
     }
@@ -646,10 +644,12 @@ pub async fn set_transport_mode(
     state: State<'_, Arc<AppState>>,
     args: TransportModeArgs,
 ) -> AppResult<Value> {
+    let mode = normalize_transport_mode(&args.mode)
+        .ok_or_else(|| AppError::bad_request("transport mode must be off | auto | on"))?;
     let config_dir = active_rns_config_dir(&state);
     let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
 
-    let would_enable_transport = match args.mode.as_str() {
+    let would_enable_transport = match mode {
         "on" => true,
         "off" => false,
         "auto" => auto_transport_base_enabled_for_interfaces(&ifaces, &args.network_type),
@@ -660,7 +660,7 @@ pub async fn set_transport_mode(
             PUBLIC_TCP_TRANSPORT_ENABLE_LIMIT_MESSAGE,
         ));
     }
-    let configured_enable = match args.mode.as_str() {
+    let configured_enable = match mode {
         "on" => true,
         "off" => false,
         "auto" => auto_transport_enabled_for_interfaces(&ifaces, &args.network_type),
@@ -669,22 +669,23 @@ pub async fn set_transport_mode(
     let runtime_allowed = local_transport_runtime_allowed(&state);
     let enable = configured_enable && runtime_allowed;
 
-    let mode_for_db = args.mode.clone();
+    let mode_for_db = mode.to_string();
     let network_type_for_db = args.network_type.clone();
-    let _ = db::spawn_db(state.db.clone(), move |p| {
-        db::set_setting(&p, "transport_mode", &mode_for_db);
-        db::set_setting(&p, "transport_network_type", &network_type_for_db);
+    db::spawn_db(state.db.clone(), move |p| {
+        db::try_set_setting(&p, "transport_mode", &mode_for_db)?;
+        db::try_set_setting(&p, "transport_network_type", &network_type_for_db)
     })
-    .await;
+    .await
+    .map_err(|_| AppError::internal("set_transport_mode db task panicked"))?
+    .map_err(|e| AppError::database_unavailable(format!("Failed to save transport mode: {e}")))?;
 
-    let config_enable = if args.mode == "on" {
+    let config_enable = if mode == "on" {
         configured_enable
     } else {
         enable
     };
-    let payload =
-        apply_transport_runtime_update(&state, &args.mode, configured_enable, config_enable)
-            .map_err(AppError::internal)?;
+    let payload = apply_transport_runtime_update(&state, mode, configured_enable, config_enable)
+        .map_err(AppError::internal)?;
     state.emit_to_all("transport_mode_updated", payload.clone());
     Ok(payload)
 }
@@ -711,12 +712,13 @@ pub async fn network_type_changed(
     }
 
     let network_type_for_db = args.network_type.clone();
-    let mode = db::spawn_db(state.db.clone(), move |p| {
-        db::set_setting(&p, "transport_network_type", &network_type_for_db);
-        db::get_setting(&p, "transport_mode").unwrap_or_else(|| "off".to_string())
+    db::spawn_db(state.db.clone(), move |p| {
+        db::try_set_setting(&p, "transport_network_type", &network_type_for_db)
     })
     .await
-    .map_err(|_| AppError::internal("network_type_changed db task panicked"))?;
+    .map_err(|_| AppError::internal("network_type_changed db task panicked"))?
+    .map_err(|e| AppError::database_unavailable(format!("Failed to save network type: {e}")))?;
+    let mode = persisted_transport_mode(&state);
     if mode != "auto" {
         return Ok(json!({ "mode": mode, "updated": false }));
     }
@@ -824,10 +826,14 @@ pub async fn set_auto_announce(state: State<'_, Arc<AppState>>, interval: u64) -
         interval.clamp(900, 172800)
     };
 
-    let _ = db::spawn_db(state.db.clone(), move |p| {
-        db::set_setting(&p, "auto_announce_interval", &interval.to_string());
+    db::spawn_db(state.db.clone(), move |p| {
+        db::try_set_setting(&p, "auto_announce_interval", &interval.to_string())
     })
-    .await;
+    .await
+    .map_err(|_| AppError::internal("set_auto_announce db task panicked"))?
+    .map_err(|e| {
+        AppError::database_unavailable(format!("Failed to save announce interval: {e}"))
+    })?;
 
     let _ = state.announce_interval_tx.send(interval);
 
@@ -852,10 +858,11 @@ pub async fn set_peers_sort(state: State<'_, Arc<AppState>>, sort: String) -> Ap
     let persisted = normalized.to_string();
 
     db::spawn_db(state.db.clone(), move |p| {
-        db::set_setting(&p, "peers_sort", &persisted);
+        db::try_set_setting(&p, "peers_sort", &persisted)
     })
     .await
-    .map_err(|_| AppError::internal("set_peers_sort db task panicked"))?;
+    .map_err(|_| AppError::internal("set_peers_sort db task panicked"))?
+    .map_err(|e| AppError::database_unavailable(format!("Failed to save peers sort: {e}")))?;
 
     state.emit_to_all(
         "app_settings_updated",
@@ -874,10 +881,12 @@ pub async fn set_announce_ratspeak_usage(
     enabled: bool,
 ) -> AppResult<Value> {
     let persisted = if enabled { "1" } else { "0" };
-    let _ = db::spawn_db(state.db.clone(), move |p| {
-        db::set_setting(&p, "announce_ratspeak_usage", persisted);
+    db::spawn_db(state.db.clone(), move |p| {
+        db::try_set_setting(&p, "announce_ratspeak_usage", persisted)
     })
-    .await;
+    .await
+    .map_err(|_| AppError::internal("set_announce_ratspeak_usage db task panicked"))?
+    .map_err(|e| AppError::database_unavailable(format!("Failed to save privacy setting: {e}")))?;
 
     state.set_announce_ratspeak_usage_enabled(enabled);
     if let Ok(mut lxmf) = state.lxmf.lock()
@@ -911,11 +920,15 @@ pub async fn set_desktop_notifications(
     enabled: bool,
 ) -> AppResult<Value> {
     let persisted = if enabled { "1" } else { "0" };
-    let _ = db::spawn_db(state.db.clone(), move |p| {
-        db::set_setting(&p, "native_notifications_enabled", persisted);
-        db::set_setting(&p, "desktop_notifications_enabled", persisted);
+    db::spawn_db(state.db.clone(), move |p| {
+        db::try_set_setting(&p, "native_notifications_enabled", persisted)?;
+        db::try_set_setting(&p, "desktop_notifications_enabled", persisted)
     })
-    .await;
+    .await
+    .map_err(|_| AppError::internal("set_desktop_notifications db task panicked"))?
+    .map_err(|e| {
+        AppError::database_unavailable(format!("Failed to save notification setting: {e}"))
+    })?;
     state.set_native_notifications_enabled(enabled);
 
     state.emit_to_all(
