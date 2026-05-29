@@ -6,6 +6,8 @@ pub mod ble;
 pub mod contact_card;
 pub mod contacts;
 pub mod games;
+#[cfg(feature = "hardware")]
+pub mod hardware;
 pub mod identity;
 pub mod interfaces;
 pub mod messaging;

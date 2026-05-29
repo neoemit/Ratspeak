@@ -597,6 +597,19 @@ pub fn run() {
             ratspeak_tauri::commands::voice::voice_set_microphone_muted,
             #[cfg(feature = "lxst-voice")]
             ratspeak_tauri::commands::voice::voice_restart_speaker,
+            // Hardware (PIV) identity commands — desktop only (pcsc).
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            ratspeak_tauri::commands::hardware::hw_detect,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            ratspeak_tauri::commands::hardware::hw_provision_recoverable,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            ratspeak_tauri::commands::hardware::hw_provision_hardware_only,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            ratspeak_tauri::commands::hardware::hw_import_existing,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            ratspeak_tauri::commands::hardware::hw_restore,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            ratspeak_tauri::commands::hardware::hw_remove,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

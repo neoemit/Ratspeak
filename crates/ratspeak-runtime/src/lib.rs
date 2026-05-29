@@ -8,6 +8,8 @@
 
 pub mod announce_handlers;
 pub mod blackhole;
+#[cfg(feature = "hardware")]
+pub mod hardware;
 pub mod helpers;
 pub mod identity_prune;
 pub mod lxmf;
