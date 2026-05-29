@@ -483,7 +483,7 @@ function renderActiveIdentityCard() {
                 '<div class="identity-card-nickname">' + nickname + '</div>' +
                 '<div class="identity-status-row">' +
                     '<span class="identity-active-badge">' + activeLabel + '</span>' +
-                    (isHardware ? '<span class="identity-hardware-badge">' + HW_BADGE_ICON + 'Hardware Key</span>' : '<span class="identity-private-badge">Private Key</span>') +
+                    (isHardware ? '<span class="identity-hardware-badge" title="' + (identity.hw_serial ? 'YubiKey serial ' + escapeHtml(String(identity.hw_serial)) : 'Hardware key identity') + '">' + HW_BADGE_ICON + 'Hardware Key' + (identity.hw_serial ? ' · ' + escapeHtml(String(identity.hw_serial)) : '') + '</span>' : '<span class="identity-private-badge">Private Key</span>') +
                     (isOriginal ? '<span class="identity-private-badge">Original</span>' : '') +
                 '</div>' +
             '</div>' +
@@ -615,7 +615,8 @@ function renderIdentityList() {
             badgeHtml += '<span class="identity-private-badge identity-private-badge--list">Original</span>';
         }
         if (ident.is_hardware) {
-            badgeHtml += '<span class="identity-hardware-badge identity-hardware-badge--list" title="Hardware key identity">' + HW_BADGE_ICON + 'HW</span>';
+            var hwTitle = ident.hw_serial ? ('Hardware key · YubiKey serial ' + ident.hw_serial) : 'Hardware key identity';
+            badgeHtml += '<span class="identity-hardware-badge identity-hardware-badge--list" title="' + escapeHtml(hwTitle) + '">' + HW_BADGE_ICON + 'HW</span>';
         }
         if (ident.is_active) {
             badgeHtml += '<span class="identity-active-badge">Active</span>';
@@ -1362,7 +1363,7 @@ function closeHardwareWizard() {
 // Entry point. opts.fromSetup routes completion through the setup restart flow.
 function openHardwareWizard(opts) {
     opts = opts || {};
-    _hwCtx = { fromSetup: !!opts.fromSetup, device: null, mode: null, pin: null, nickname: '', mnemonic: null };
+    _hwCtx = { fromSetup: !!opts.fromSetup, device: null, mode: null, pin: null, nickname: '', mnemonic: null, existing: null, force: false };
 
     rsChoice({
         title: 'Hardware Key',
@@ -1406,6 +1407,7 @@ function _hwRunDetect() {
             return;
         }
         _hwCtx.device = data;
+        _hwCtx.existing = data.existing || null;
         if (_hwCtx.afterDetect === 'import') _hwShowImportStep();
         else _hwShowModeStep();
     }).catch(function(err) {
@@ -1494,6 +1496,29 @@ function _hwPinContinue() {
     if (err) err.style.display = 'none';
     _hwCtx.pin = pin;
     _hwCtx.nickname = document.getElementById('hw-pin-nickname').value.trim();
+    _hwConfirmOverwriteThenProvision();
+}
+
+// Guard against silently overwriting a key that already backs an app identity.
+function _hwConfirmOverwriteThenProvision() {
+    if (_hwCtx.existing && !_hwCtx.force) {
+        var name = _hwCtx.existing.nickname || 'an existing identity';
+        rsConfirm({
+            title: 'Overwrite this key?',
+            message: 'This YubiKey already holds "' + name + '". Setting up a new identity permanently erases its keys — this cannot be undone unless you saved its 24-word backup phrase.',
+            confirmText: 'Overwrite',
+            danger: true
+        }).then(function(ok) {
+            if (!ok) { _hwShowModeStep(); return; }
+            _hwCtx.force = true;
+            _hwDispatchProvision();
+        });
+        return;
+    }
+    _hwDispatchProvision();
+}
+
+function _hwDispatchProvision() {
     if (_hwCtx.mode === 'recoverable') _hwProvisionRecoverable();
     else _hwProvisionHardwareOnly();
 }
@@ -1513,7 +1538,7 @@ function _hwProvisionFailure(err) {
 
 function _hwProvisionRecoverable() {
     _hwShowWorking('Provisioning your security key…');
-    RS.invoke('hw_provision_recoverable', { pin: _hwCtx.pin, nickname: _hwCtx.nickname })
+    RS.invoke('hw_provision_recoverable', { pin: _hwCtx.pin, nickname: _hwCtx.nickname, force: !!_hwCtx.force })
         .then(function(res) {
             res = res || {};
             _hwCtx.result = res;
@@ -1525,7 +1550,7 @@ function _hwProvisionRecoverable() {
 
 function _hwProvisionHardwareOnly() {
     _hwShowWorking('Provisioning your security key…');
-    RS.invoke('hw_provision_hardware_only', { pin: _hwCtx.pin, nickname: _hwCtx.nickname })
+    RS.invoke('hw_provision_hardware_only', { pin: _hwCtx.pin, nickname: _hwCtx.nickname, force: !!_hwCtx.force })
         .then(function(res) {
             res = res || {};
             _hwCtx.pin = null;
@@ -1672,7 +1697,7 @@ function _hwDoRestore() {
     if (err) err.style.display = 'none';
 
     _hwShowWorking('Restoring identity onto your security key…');
-    RS.invoke('hw_restore', { phrase: phrase, pin: pin, nickname: nickname })
+    RS.invoke('hw_restore', { phrase: phrase, pin: pin, nickname: nickname, force: false })
         .then(function(res) {
             _hwClearSecrets();
             _hwFinish(res || {});

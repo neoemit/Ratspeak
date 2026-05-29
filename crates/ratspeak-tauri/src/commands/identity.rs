@@ -252,18 +252,23 @@ pub async fn api_list_identities(state: State<'_, Arc<AppState>>) -> AppResult<V
             tracing::error!(error = %e, "list_identities db task panicked");
             Default::default()
         });
-    // Tag each row hardware-backed if its on-disk artifact is a `.hwid`.
+    // Tag each row hardware-backed if its on-disk artifact is a `.hwid`, and
+    // expose its PIV serial so the UI can badge it / detect an absent key.
     let dir = state.config.data_dir.join("identities");
     let mut value = json!(identities);
     if let Some(rows) = value.as_array_mut() {
         for row in rows.iter_mut() {
-            let is_hw = row
+            let hwid_path = row
                 .get("hash")
                 .and_then(|v| v.as_str())
-                .map(|h| dir.join(h).join("identity.hwid").exists())
-                .unwrap_or(false);
+                .map(|h| dir.join(h).join("identity.hwid"));
+            let is_hw = hwid_path.as_ref().map(|p| p.exists()).unwrap_or(false);
+            let serial = is_hw.then(|| hwid_path.and_then(|p| read_hwid_serial(&p))).flatten();
             if let Some(obj) = row.as_object_mut() {
                 obj.insert("is_hardware".to_string(), json!(is_hw));
+                if let Some(serial) = serial {
+                    obj.insert("hw_serial".to_string(), json!(serial));
+                }
             }
         }
     }
@@ -466,6 +471,21 @@ pub async fn api_export_identity_base64(
         Some(bytes) => Ok(json!({ "key": B64.encode(&bytes) })),
         None => Err(AppError::not_found("Identity file not found")),
     }
+}
+
+/// Pull the PIV `serial` out of a `.hwid` (TOML) without a ratkey dependency,
+/// so the always-compiled list path works in non-`hardware` builds too.
+fn read_hwid_serial(path: &std::path::Path) -> Option<u64> {
+    let content = std::fs::read_to_string(path).ok()?;
+    for line in content.lines() {
+        if let Some(rest) = line.trim().strip_prefix("serial") {
+            let rest = rest.trim_start_matches([' ', '=']).trim();
+            if let Ok(n) = rest.parse::<u64>() {
+                return Some(n);
+            }
+        }
+    }
+    None
 }
 
 /// A hardware-backed identity stores a `.hwid` instead of a private-key file.
@@ -803,10 +823,30 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
             requested = %hash_hex,
             loaded = %loaded_identity,
             generation,
-            "identity session switch loaded the wrong identity"
+            "identity switch failed to load target; rolling back"
         );
-        return Err(AppError::internal(
-            "Identity switch did not activate requested identity",
+        // Target failed to load (e.g. a hardware key that was re-provisioned or
+        // unplugged). Restore the previous identity + its runtime so the session
+        // is not left with a dead active row and no LXMF.
+        crate::shutdown_rns_lxmf(&state).await;
+        state.clear_identity_scoped_runtime_state();
+        if let Some(old_hash) = previous_active.clone() {
+            let old_for_db = old_hash.clone();
+            let _ = db::spawn_db(state.db.clone(), move |p| {
+                db::set_active_identity(&p, &old_for_db)
+            })
+            .await;
+            if let Ok(mut sig) = state.session_shutdown.write() {
+                *sig = rns_runtime::lifecycle::ShutdownSignal::new();
+            }
+            state.set_startup_stage("checking");
+            crate::init_rns_lxmf(Arc::clone(&state), state.config.data_root.clone()).await;
+        } else {
+            state.set_startup_stage("ready");
+        }
+        return Err(AppError::bad_request(
+            "Couldn't load this identity's key. If it's a hardware (YubiKey) identity, \
+             the key may be unplugged or was re-provisioned.",
         ));
     }
 

@@ -28,6 +28,15 @@ pub struct HwDetect {
     pub firmware: Option<String>,
     pub firmware_ok: bool,
     pub error: Option<String>,
+    /// An app identity already backed by this physical key (matched by serial).
+    /// Present means provisioning would overwrite it.
+    pub existing: Option<HwExisting>,
+}
+
+#[derive(serde::Serialize)]
+pub struct HwExisting {
+    pub hash: String,
+    pub nickname: String,
 }
 
 #[derive(serde::Serialize)]
@@ -48,13 +57,14 @@ fn firmware_ok(fw: Option<&str>) -> bool {
     maj > 5 || (maj == 5 && min >= 7)
 }
 
-pub fn detect() -> HwDetect {
+pub fn detect(data_dir: &Path) -> HwDetect {
     let device = rns_ratkey::detect::detect_devices()
         .ok()
         .and_then(|d| d.into_iter().next());
     match device {
         Some(d) => {
             let ok = firmware_ok(d.firmware.as_deref());
+            let existing = d.serial.and_then(|s| find_identity_by_serial(data_dir, s));
             HwDetect {
                 detected: true,
                 device_type: d.device_type,
@@ -62,6 +72,7 @@ pub fn detect() -> HwDetect {
                 firmware: d.firmware,
                 firmware_ok: ok,
                 error: (!ok).then(|| NOT_DETECTED.to_string()),
+                existing,
             }
         }
         None => HwDetect {
@@ -71,8 +82,47 @@ pub fn detect() -> HwDetect {
             firmware: None,
             firmware_ok: false,
             error: Some(NOT_DETECTED.to_string()),
+            existing: None,
         },
     }
+}
+
+/// Find an app identity already backed by this physical key (matched by PIV
+/// serial). Used to warn before a provision would overwrite the on-card keys.
+fn find_identity_by_serial(data_dir: &Path, serial: u32) -> Option<HwExisting> {
+    let dir = data_dir.join("identities");
+    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+        let hwid_path = entry.path().join("identity.hwid");
+        if !hwid_path.exists() {
+            continue;
+        }
+        if let Ok(cfg) = rns_ratkey::HwidConfig::from_file(&hwid_path)
+            && cfg.device.serial == serial
+        {
+            return Some(HwExisting {
+                hash: cfg.identity.hash,
+                nickname: cfg.identity.nickname,
+            });
+        }
+    }
+    None
+}
+
+/// Refuse to overwrite a key that already backs an app identity unless forced.
+fn guard_overwrite(data_dir: &Path, session: &PcscPivSession) -> Result<(), String> {
+    if let Some(serial) = session.serial()
+        && let Some(existing) = find_identity_by_serial(data_dir, serial)
+    {
+        let who = if existing.nickname.is_empty() {
+            "an existing identity".to_string()
+        } else {
+            format!("identity '{}'", existing.nickname)
+        };
+        return Err(format!(
+            "This YubiKey already holds {who}. Provisioning permanently erases it — confirm to overwrite."
+        ));
+    }
+    Ok(())
 }
 
 pub fn provision_recoverable(
@@ -80,8 +130,12 @@ pub fn provision_recoverable(
     db: &DbPool,
     pin: &str,
     nickname: &str,
+    force: bool,
 ) -> Result<HwProvisioned, String> {
     let mut session = connect()?;
+    if !force {
+        guard_overwrite(data_dir, &session)?;
+    }
     let cfg = base_config(data_dir, nickname);
     let (result, mnemonic) =
         provision::provision_recoverable(&mut session, &DEFAULT_MGMT_KEY, &cfg)
@@ -100,8 +154,12 @@ pub fn provision_hardware_only(
     db: &DbPool,
     pin: &str,
     nickname: &str,
+    force: bool,
 ) -> Result<HwProvisioned, String> {
     let mut session = connect()?;
+    if !force {
+        guard_overwrite(data_dir, &session)?;
+    }
     let cfg = base_config(data_dir, nickname);
     let result = provision::provision_hardware_only(&mut session, &DEFAULT_MGMT_KEY, &cfg)
         .map_err(|e| e.to_string())?;
@@ -133,8 +191,12 @@ pub fn restore(
     phrase: &str,
     pin: &str,
     nickname: &str,
+    force: bool,
 ) -> Result<HwProvisioned, String> {
     let mut session = connect()?;
+    if !force {
+        guard_overwrite(data_dir, &session)?;
+    }
     let cfg = base_config(data_dir, nickname);
     let result = provision::restore(&mut session, &DEFAULT_MGMT_KEY, &cfg, phrase)
         .map_err(|e| e.to_string())?;

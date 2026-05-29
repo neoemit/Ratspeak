@@ -27,8 +27,9 @@ fn clean_nickname(nickname: &str) -> AppResult<String> {
 }
 
 #[tauri::command]
-pub async fn hw_detect() -> AppResult<Value> {
-    let d = tokio::task::spawn_blocking(ratspeak_runtime::hardware::detect)
+pub async fn hw_detect(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    let data_dir = state.config.data_dir.clone();
+    let d = tokio::task::spawn_blocking(move || ratspeak_runtime::hardware::detect(&data_dir))
         .await
         .map_err(|_| AppError::internal("hw detect task panicked"))?;
     to_value(d)
@@ -39,13 +40,14 @@ pub async fn hw_provision_recoverable(
     state: State<'_, Arc<AppState>>,
     pin: String,
     nickname: String,
+    force: bool,
 ) -> AppResult<Value> {
     check_pin(&pin)?;
     let nickname = clean_nickname(&nickname)?;
     let data_dir = state.config.data_dir.clone();
     let db = state.db.clone();
     let res = tokio::task::spawn_blocking(move || {
-        ratspeak_runtime::hardware::provision_recoverable(&data_dir, &db, &pin, &nickname)
+        ratspeak_runtime::hardware::provision_recoverable(&data_dir, &db, &pin, &nickname, force)
     })
     .await
     .map_err(|_| AppError::internal("provision task panicked"))?
@@ -58,13 +60,14 @@ pub async fn hw_provision_hardware_only(
     state: State<'_, Arc<AppState>>,
     pin: String,
     nickname: String,
+    force: bool,
 ) -> AppResult<Value> {
     check_pin(&pin)?;
     let nickname = clean_nickname(&nickname)?;
     let data_dir = state.config.data_dir.clone();
     let db = state.db.clone();
     let res = tokio::task::spawn_blocking(move || {
-        ratspeak_runtime::hardware::provision_hardware_only(&data_dir, &db, &pin, &nickname)
+        ratspeak_runtime::hardware::provision_hardware_only(&data_dir, &db, &pin, &nickname, force)
     })
     .await
     .map_err(|_| AppError::internal("provision task panicked"))?
@@ -95,13 +98,14 @@ pub async fn hw_restore(
     phrase: String,
     pin: String,
     nickname: String,
+    force: bool,
 ) -> AppResult<Value> {
     check_pin(&pin)?;
     let nickname = clean_nickname(&nickname)?;
     let data_dir = state.config.data_dir.clone();
     let db = state.db.clone();
     let res = tokio::task::spawn_blocking(move || {
-        ratspeak_runtime::hardware::restore(&data_dir, &db, &phrase, &pin, &nickname)
+        ratspeak_runtime::hardware::restore(&data_dir, &db, &phrase, &pin, &nickname, force)
     })
     .await
     .map_err(|_| AppError::internal("restore task panicked"))?
