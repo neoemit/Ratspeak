@@ -338,6 +338,29 @@ pub async fn api_import_identity_base64(
     import_identity_shared(state, key_bytes, args.nickname).await
 }
 
+#[cfg(feature = "seed")]
+#[derive(Deserialize)]
+pub struct RestoreSeedArgs {
+    pub phrase: String,
+    #[serde(default)]
+    pub nickname: Option<String>,
+}
+
+/// Restore a *recoverable* identity's 24-word phrase as a SOFTWARE identity (no
+/// hardware). Same derivation as the recoverable YubiKey scheme, so the restored
+/// Reticulum identity/address matches. Cross-platform (the one hardware-related
+/// path that works on mobile).
+#[cfg(feature = "seed")]
+#[tauri::command]
+pub async fn restore_seed_identity(
+    state: State<'_, Arc<AppState>>,
+    args: RestoreSeedArgs,
+) -> AppResult<Value> {
+    let key = ratspeak_runtime::derive_identity_key_from_phrase(args.phrase.trim())
+        .map_err(AppError::bad_request)?;
+    import_identity_shared(state, key.to_vec(), args.nickname).await
+}
+
 async fn import_identity_shared(
     state: State<'_, Arc<AppState>>,
     key_bytes: Vec<u8>,

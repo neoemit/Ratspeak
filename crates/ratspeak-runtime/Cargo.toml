@@ -14,8 +14,10 @@ ble = ["dep:btleplug", "rns-interface/ble", "rns-runtime/ble"]
 mobile-throttle = ["rns-transport/mobile-throttle", "rns-interface/mobile-throttle"]
 # Native LXST call signalling and Opus audio bridge.
 lxst-voice = ["dep:cpal", "dep:lxst-core", "dep:lxst-rns", "dep:lxst-telephony"]
-# Hardware-backed (YubiKey/Nitrokey PIV) identities via rns-ratkey.
-hardware = ["dep:rns-ratkey", "rns-ratkey/hardware"]
+# BIP-39 seed derivation for software seed-restore (no pcsc). Enabled on all platforms.
+seed = ["dep:rns-ratkey"]
+# Hardware-backed (YubiKey/Nitrokey PIV) identities via rns-ratkey. Implies `seed`.
+hardware = ["seed", "rns-ratkey/hardware"]
 
 [dependencies]
 ratspeak-core = { workspace = true }

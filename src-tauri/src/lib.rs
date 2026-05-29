@@ -537,6 +537,8 @@ pub fn run() {
             ratspeak_tauri::commands::identity::api_create_identity,
             ratspeak_tauri::commands::identity::api_import_identity,
             ratspeak_tauri::commands::identity::api_import_identity_base64,
+            // `seed` is enabled on every target (desktop via `hardware`, mobile explicitly).
+            ratspeak_tauri::commands::identity::restore_seed_identity,
             ratspeak_tauri::commands::identity::api_preview_identity_import_base64,
             ratspeak_tauri::commands::identity::api_activate_identity,
             ratspeak_tauri::commands::identity::api_export_identity,

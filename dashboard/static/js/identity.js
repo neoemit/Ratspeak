@@ -117,6 +117,11 @@ function identityImportFormatChoices() {
             label: 'Reticulum Identity Key',
             value: 'reticulum',
             hint: 'Import a raw, base32, base64, or hex Reticulum private identity key.'
+        },
+        {
+            label: 'Recovery Phrase',
+            value: 'phrase',
+            hint: 'Restore from a 24-word recovery phrase (creates a software identity).'
         }
     ];
 }
@@ -733,6 +738,68 @@ function createNewIdentity() {
     );
 }
 
+// Restore a recoverable identity from its 24-word BIP-39 phrase as a SOFTWARE
+// identity. Distinct from the hardware wizard's restore (desktop-only, writes to
+// a token); this works on every platform via the `restore_seed_identity` command.
+function openRestorePhraseModal(fromSetup) {
+    showIdentityModal('Restore from Recovery Phrase',
+        '<div class="modal-field">' +
+            '<label>Recovery Phrase</label>' +
+            '<textarea id="restore-phrase-input" class="modal-input restore-phrase-textarea" rows="3" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Enter your 24-word recovery phrase, separated by spaces"></textarea>' +
+            '<span class="restore-phrase-count" id="restore-phrase-count">0 / 24 words</span>' +
+        '</div>' +
+        '<div class="modal-field">' +
+            '<label>Display Name <span class="text-xs">(optional)</span></label>' +
+            '<input type="text" id="restore-phrase-nickname" class="modal-input" placeholder="e.g. Rat King" maxlength="32">' +
+        '</div>' +
+        '<div class="modal-error" id="restore-phrase-error" style="display:none;"></div>',
+        function() {
+            var ta = document.getElementById('restore-phrase-input');
+            var phrase = (ta ? ta.value : '').trim().replace(/\s+/g, ' ');
+            var nickname = document.getElementById('restore-phrase-nickname').value.trim();
+            var errEl = document.getElementById('restore-phrase-error');
+            var count = phrase ? phrase.split(' ').length : 0;
+            if (count !== 24) {
+                if (errEl) { errEl.textContent = 'Recovery phrase must be exactly 24 words.'; errEl.style.display = ''; }
+                return;
+            }
+            if (errEl) errEl.style.display = 'none';
+            return RS.invoke('restore_seed_identity', {
+                args: { phrase: phrase, nickname: nickname }
+            }).then(function(data) {
+                closeIdentityModal();
+                if (fromSetup) {
+                    // Restore mirrors the import completion path: the restored
+                    // identity is active when setup has no identity, so restart
+                    // the core and transition to the connecting screen.
+                    if (typeof completeSetupAfterIdentityImport === 'function') {
+                        completeSetupAfterIdentityImport(data);
+                    } else {
+                        window.location.href = '/#dashboard';
+                        window.location.reload();
+                    }
+                    return;
+                }
+                showToast('Identity restored', 'toast-green', 3000);
+                loadIdentities();
+            }).catch(function(err) {
+                var msg = (err && err.message) ? err.message : 'Failed to restore identity';
+                if (errEl) { errEl.textContent = msg; errEl.style.display = ''; }
+                else showToast(msg, 'toast-red', 4000);
+            });
+        }
+    );
+
+    var ta = document.getElementById('restore-phrase-input');
+    var countEl = document.getElementById('restore-phrase-count');
+    if (ta && countEl) {
+        ta.addEventListener('input', function() {
+            var words = ta.value.trim().split(/\s+/).filter(Boolean);
+            countEl.textContent = words.length + ' / 24 words';
+        });
+    }
+}
+
 function importIdentity() {
     chooseIdentityImportFormat().then(function(format) {
         if (!format) {
@@ -740,6 +807,11 @@ function importIdentity() {
             return;
         }
         window._identityImportFormat = format;
+        if (format === 'phrase') {
+            // Recovery-phrase restore is text input, not a file — open its modal.
+            openRestorePhraseModal(!!window._identityImportFromSetup);
+            return;
+        }
         if (hasAndroidIdentityImportBridge()) {
             openIdentityBackupWithAndroid().then(function(result) {
                 return handleImportBackupPayload(
@@ -1084,7 +1156,7 @@ function showIdentityModal(title, bodyHtml, onConfirm, confirmClass) {
     var confirmBtn = document.getElementById('identity-modal-confirm');
     confirmBtn.className = confirmClass || 'nr-btn';
     confirmBtn.disabled = false;
-    var baseLabel = title.indexOf('Delete') !== -1 ? 'Delete' : (title.indexOf('Remove') !== -1 ? 'Remove' : (title.indexOf('Import') !== -1 ? 'Import' : 'Create'));
+    var baseLabel = title.indexOf('Delete') !== -1 ? 'Delete' : (title.indexOf('Remove') !== -1 ? 'Remove' : (title.indexOf('Import') !== -1 ? 'Import' : (title.indexOf('Restore') !== -1 ? 'Restore' : 'Create')));
     confirmBtn.textContent = baseLabel;
     confirmBtn.dataset.baseLabel = baseLabel;
     confirmBtn.onclick = function() {
