@@ -5,7 +5,11 @@
     display: none;
 }
 
-@media (min-width: 769px) {
+/* Must track isMobile() (state.js: innerWidth <= 1024). These sheets are only
+   opened on the mobile path, so hiding them below that cutoff stranded touch
+   tablets in 769-1024px (e.g. Tab S10+ portrait): JS opened the sheet, CSS kept
+   it hidden, tap appeared dead. The desktop path uses a popover, not a sheet. */
+@media (min-width: 1025px) {
     .bottom-sheet--mobile-only,
     .bottom-sheet-overlay--mobile-only {
         display: none !important;
