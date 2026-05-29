@@ -198,5 +198,8 @@ fn register(
         nickname.to_string()
     };
     ratspeak_db::save_identity(db, hash_hex, &lxmf_hex, nickname, &display_name);
+    // Activate it so a first-setup restart loads the new hardware identity
+    // (otherwise no active identity exists and a software one is generated).
+    ratspeak_db::set_active_identity(db, hash_hex).map_err(|e| format!("activate: {e}"))?;
     Ok(lxmf_hex)
 }

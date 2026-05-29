@@ -1019,24 +1019,27 @@ impl LxmfManager {
         &mut self,
         hash_hex: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let id_file = self
-            .data_dir
-            .join("identities")
-            .join(hash_hex)
-            .join("identity");
-        if !id_file.exists() {
+        let switch_dir = self.data_dir.join("identities").join(hash_hex);
+        let id_file = switch_dir.join("identity");
+        let hwid_file = switch_dir.join("identity.hwid");
+
+        let (identity, is_hardware) = if hwid_file.exists() {
+            (load_hwid_identity(&hwid_file, hash_hex)?, true)
+        } else if id_file.exists() {
+            (Identity::from_file(&id_file)?, false)
+        } else {
             return Err(format!("Identity file not found: {}", id_file.display()).into());
-        }
+        };
 
         self.save_crypto_state();
 
-        let identity = Identity::from_file(&id_file)?;
         let lxmf_dest_hash =
             Destination::hash_from_name_and_identity(LXMF_APP_NAME, Some(&identity.hash));
 
         let old_dest_hash = self.lxmf_dest_hash;
 
         self.identity = identity;
+        self.is_hardware = is_hardware;
         self.identity_hash = hash_hex.to_string();
         self.lxmf_hash = hex::encode(lxmf_dest_hash);
         self.lxmf_dest_hash = lxmf_dest_hash;

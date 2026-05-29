@@ -399,9 +399,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
         || (ratspeak_dir.join("identities").is_dir() && {
             std::fs::read_dir(ratspeak_dir.join("identities"))
                 .map(|entries| {
-                    entries
-                        .flatten()
-                        .any(|e| e.path().join("identity").exists())
+                    entries.flatten().any(|e| {
+                        e.path().join("identity").exists()
+                            || e.path().join("identity.hwid").exists()
+                    })
                 })
                 .unwrap_or(false)
         });
