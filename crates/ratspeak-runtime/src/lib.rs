@@ -18,6 +18,7 @@ pub mod propagation;
 pub mod rns;
 pub mod rns_config;
 pub mod state;
+pub mod vault;
 #[cfg(feature = "lxst-voice")]
 pub mod voice;
 
@@ -515,25 +516,28 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
     // is hardware and no PIN is staged, enter the locked state and wait for
     // `hw_unlock` rather than coming up with no identity.
     let hw_pin = state.take_pending_hw_pin();
-    let active_is_hardware = preferred_identity_hash
-        .as_deref()
-        .map(|h| {
-            data_dir
-                .join(".ratspeak")
-                .join("identities")
-                .join(h)
-                .join("identity.hwid")
-                .exists()
-        })
-        .unwrap_or(false);
-    if active_is_hardware && hw_pin.is_none() {
+    // Detect whether the active identity is protected (needs a secret to unlock):
+    // hardware (.hwid → YubiKey PIN) or passcode-encrypted (.enc → passcode).
+    let lock_kind = preferred_identity_hash.as_deref().and_then(|h| {
+        let dir = data_dir.join(".ratspeak").join("identities").join(h);
+        if dir.join("identity.hwid").exists() {
+            Some("hardware")
+        } else if dir.join("identity.enc").exists() {
+            Some("passcode")
+        } else {
+            None
+        }
+    });
+    let active_is_protected = lock_kind.is_some();
+    if active_is_protected && hw_pin.is_none() {
         let hash = preferred_identity_hash.clone().unwrap_or_default();
-        tracing::info!(%hash, "hardware identity locked — awaiting PIN");
+        let kind = lock_kind.unwrap_or("hardware");
+        tracing::info!(%hash, kind, "identity locked — awaiting unlock secret");
         state.set_hw_locked(Some(hash.clone()));
         state.set_startup_stage("hw_locked");
         state.emit_to_all(
             "hardware_locked",
-            serde_json::json!({ "hash": hash, "reason": "pin_required" }),
+            serde_json::json!({ "hash": hash, "kind": kind, "reason": "secret_required" }),
         );
         return;
     }
@@ -666,7 +670,6 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 state.emit_to_all("contacts_update", serde_json::json!(contacts_list));
             }
 
-            let is_hw = mgr.is_hardware;
             state.set_lxmf(mgr);
 
             // Pre-warm conversations cache so first paint doesn't await DB.
@@ -676,8 +679,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 tracing::warn!("conversations pre-warm failed; tab will fetch on demand");
             }
             tracing::info!("LXMF manager initialized");
-            // Hardware identities can auto-lock after an idle timeout (off by default).
-            if is_hw {
+            // Protected identities (hardware PIN or software passcode) can auto-lock
+            // after an idle timeout (off by default).
+            if active_is_protected {
                 arm_hw_lock_timer(&state);
             }
             state.request_poll_now();
@@ -685,14 +689,15 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
         Err(e) => {
             let msg = e.to_string();
             tracing::error!("Failed to initialize LXMF: {msg}");
-            if active_is_hardware {
+            if active_is_protected {
                 let hash = preferred_identity_hash.clone().unwrap_or_default();
+                let kind = lock_kind.unwrap_or("hardware");
                 state.set_hw_last_error(Some(msg.clone()));
                 state.set_hw_locked(Some(hash.clone()));
                 state.set_startup_stage("hw_locked");
                 state.emit_to_all(
                     "hardware_locked",
-                    serde_json::json!({ "hash": hash, "error": msg }),
+                    serde_json::json!({ "hash": hash, "kind": kind, "error": msg }),
                 );
                 return;
             }

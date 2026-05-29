@@ -34,9 +34,19 @@ pub async fn api_version() -> AppResult<Value> {
 
 #[tauri::command]
 pub async fn api_startup_progress(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    let locked = state.hw_locked_hash();
+    let kind = locked.as_deref().map(|h| {
+        let dir = state.config.data_dir.join("identities").join(h);
+        if dir.join("identity.hwid").exists() {
+            "hardware"
+        } else {
+            "passcode"
+        }
+    });
     Ok(json!({
         "stage": state.get_startup_stage(),
-        "hw_locked": state.hw_locked_hash(),
+        "hw_locked": locked,
+        "hw_locked_kind": kind,
     }))
 }
 

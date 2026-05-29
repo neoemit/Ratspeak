@@ -15,7 +15,7 @@ function _rsBootstrapOnLoad() {
     // event can fire before this listener attaches).
     RS.invoke('api_startup_progress').then(function(data) {
         if (data && data.stage === 'hw_locked' && typeof showHwUnlock === 'function') {
-            showHwUnlock(data.hw_locked);
+            showHwUnlock(data.hw_locked, data.hw_locked_kind);
         }
     }).catch(function() {});
     if (window.RS && RS.audioPlayback && typeof RS.audioPlayback.ensure === 'function') {

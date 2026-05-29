@@ -1085,6 +1085,12 @@ function openIdentityActions(hash) {
     }
     if (!target.is_hardware) {
         choices.push({ label: 'Export Identity', value: 'export', hint: 'Ratspeak or Reticulum format.' });
+        if (target.passcode_protected) {
+            choices.push({ label: 'Change Passcode', value: 'passcode-change' });
+            choices.push({ label: 'Remove Passcode', value: 'passcode-remove', danger: true });
+        } else {
+            choices.push({ label: 'Set Passcode', value: 'passcode-set', hint: 'Encrypt this identity at rest; required when you open Ratspeak.' });
+        }
     }
     choices.push({ label: 'Share Contact Card', value: 'share' });
     if (!isOriginalIdentity(target.hash) && (!target.is_active || identityList.length > 1)) {
@@ -1098,12 +1104,79 @@ function openIdentityActions(hash) {
     }).then(function(choice) {
         if (choice === 'switch') switchToIdentity(target.hash);
         if (choice === 'export') exportIdentityBackup(target.hash);
+        if (choice === 'passcode-set') openSetPasscodeModal(target, false);
+        if (choice === 'passcode-change') openSetPasscodeModal(target, true);
+        if (choice === 'passcode-remove') openRemovePasscodeModal(target);
         if (choice === 'share') {
             if (typeof openIdentityShareScreen === 'function') openIdentityShareScreen(target.hash);
             else shareAddress(target.lxmf_hash || target.hash || '', identityDisplayName(target));
         }
         if (choice === 'delete') deleteIdentityByHash(target.hash);
     });
+}
+
+// Add or change a passcode (at-rest encryption) on a software identity.
+function openSetPasscodeModal(target, isChange) {
+    var body =
+        (isChange
+            ? '<div class="modal-field"><label>Current Passcode</label>' +
+              '<input type="password" id="passcode-current" class="modal-input" maxlength="128" autocomplete="off"></div>'
+            : '') +
+        '<div class="modal-field"><label>' + (isChange ? 'New Passcode' : 'Passcode') + '</label>' +
+            '<input type="password" id="passcode-new" class="modal-input" maxlength="128" autocomplete="off" placeholder="At least 6 characters"></div>' +
+        '<div class="modal-field"><label>Confirm Passcode</label>' +
+            '<input type="password" id="passcode-confirm" class="modal-input" maxlength="128" autocomplete="off"></div>' +
+        '<p class="recovery-warn">This identity will be encrypted on this device and require the passcode each time you open Ratspeak. There is <strong>no recovery</strong> if you forget it — keep your 24-word phrase as a backup.</p>' +
+        '<div class="modal-error" id="passcode-error" style="display:none"></div>';
+    showIdentityModal(isChange ? 'Change Passcode' : 'Set Passcode', body, function() {
+        var cur = isChange ? document.getElementById('passcode-current').value : '';
+        var pw = document.getElementById('passcode-new').value;
+        var confirm = document.getElementById('passcode-confirm').value;
+        var errEl = document.getElementById('passcode-error');
+        if (pw.length < 6) {
+            if (errEl) { errEl.textContent = 'Passcode must be at least 6 characters.'; errEl.style.display = ''; }
+            return;
+        }
+        if (pw !== confirm) {
+            if (errEl) { errEl.textContent = "Passcodes don't match."; errEl.style.display = ''; }
+            return;
+        }
+        var args = { hash: target.hash, passcode: pw };
+        if (isChange) args.current = cur;
+        return RS.invoke('set_identity_passcode', { args: args }).then(function() {
+            closeIdentityModal();
+            showToast('Passcode set', 'toast-green', 3000);
+            loadIdentities();
+        }).catch(function(err) {
+            if (errEl) { errEl.textContent = (err && err.message) || 'Could not set passcode'; errEl.style.display = ''; }
+        });
+    });
+    var btn = document.getElementById('identity-modal-confirm');
+    if (btn) { var l = isChange ? 'Change' : 'Set'; btn.textContent = l; btn.dataset.baseLabel = l; }
+}
+
+function openRemovePasscodeModal(target) {
+    showIdentityModal('Remove Passcode',
+        '<div class="modal-field"><label>Passcode</label>' +
+            '<input type="password" id="passcode-remove-input" class="modal-input" maxlength="128" autocomplete="off"></div>' +
+        '<p class="recovery-warn">This decrypts the identity on this device — it will no longer require a passcode when you open Ratspeak.</p>' +
+        '<div class="modal-error" id="passcode-error" style="display:none"></div>',
+        function() {
+            var pw = document.getElementById('passcode-remove-input').value;
+            var errEl = document.getElementById('passcode-error');
+            if (!pw) {
+                if (errEl) { errEl.textContent = 'Enter your passcode.'; errEl.style.display = ''; }
+                return;
+            }
+            return RS.invoke('remove_identity_passcode', { args: { hash: target.hash, passcode: pw } }).then(function() {
+                closeIdentityModal();
+                showToast('Passcode removed', 'toast-green', 3000);
+                loadIdentities();
+            }).catch(function(err) {
+                if (errEl) { errEl.textContent = (err && err.message) || 'Could not remove passcode'; errEl.style.display = ''; }
+            });
+        }
+    );
 }
 
 function removeSelectedIdentity() {
@@ -2011,44 +2084,48 @@ function removeHardwareIdentity(target) {
 // (on boot, or after the auto-lock timeout). Unlocking re-inits the runtime.
 
 var _hwLockedHash = null;
+var _hwLockedKind = 'hardware'; // 'hardware' (YubiKey PIN) | 'passcode' (software)
 
-function showHwUnlock(hash) {
+// Launch/timeout unlock prompt. Handles both a hardware-key PIN and a software
+// passcode (kind) — same flow, same `hw_unlock` command (the secret rides in `pin`).
+function showHwUnlock(hash, kind) {
     if (typeof hash === 'string' && hash) _hwLockedHash = hash;
-    var overlay = document.getElementById('hw-unlock-overlay');
-    if (!overlay) {
-        overlay = document.createElement('div');
-        overlay.id = 'hw-unlock-overlay';
-        overlay.className = 'hw-unlock-overlay';
-        overlay.innerHTML =
-            '<div class="hw-unlock-card">' +
-                '<div class="hw-unlock-icon">' + HW_BADGE_ICON + '</div>' +
-                '<div class="hw-unlock-title">Unlock your hardware key</div>' +
-                '<div class="hw-unlock-sub">Enter your YubiKey PIN to continue. Keep the key plugged in.</div>' +
-                '<input id="hw-unlock-pin" class="hw-unlock-input" type="password" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="PIN">' +
-                '<div id="hw-unlock-error" class="hw-unlock-error" style="display:none"></div>' +
-                '<button id="hw-unlock-btn" class="hw-unlock-btn" disabled>Unlock</button>' +
-                '<button id="hw-unlock-cancel" class="hw-unlock-cancel">Use a different identity</button>' +
-            '</div>';
-        document.body.appendChild(overlay);
-        var input = overlay.querySelector('#hw-unlock-pin');
-        var btn = overlay.querySelector('#hw-unlock-btn');
-        input.addEventListener('input', function() {
-            btn.disabled = !(input.value.length >= 6 && input.value.length <= 8);
-        });
-        input.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' && !btn.disabled) _hwDoUnlock();
-        });
-        btn.addEventListener('click', _hwDoUnlock);
-        overlay.querySelector('#hw-unlock-cancel').addEventListener('click', _hwUnlockCancel);
-    }
+    if (kind === 'passcode' || kind === 'hardware') _hwLockedKind = kind;
+    var isPass = _hwLockedKind === 'passcode';
+    var existing = document.getElementById('hw-unlock-overlay');
+    if (existing) existing.remove();
+    var overlay = document.createElement('div');
+    overlay.id = 'hw-unlock-overlay';
+    overlay.className = 'hw-unlock-overlay';
     overlay.style.display = 'flex';
-    var err = document.getElementById('hw-unlock-error');
-    if (err) err.style.display = 'none';
-    var pin = document.getElementById('hw-unlock-pin');
-    if (pin) { pin.value = ''; }
-    var b = document.getElementById('hw-unlock-btn');
-    if (b) { b.disabled = true; b.textContent = 'Unlock'; }
-    setTimeout(function() { if (pin && !isMobile()) pin.focus(); }, 120);
+    var title = isPass ? 'Unlock your identity' : 'Unlock your hardware key';
+    var sub = isPass
+        ? 'Enter your passcode to continue.'
+        : 'Enter your YubiKey PIN to continue. Keep the key plugged in.';
+    var inputAttrs = isPass
+        ? 'type="password" autocomplete="off" maxlength="128" placeholder="Passcode"'
+        : 'type="password" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="PIN"';
+    overlay.innerHTML =
+        '<div class="hw-unlock-card">' +
+            '<div class="hw-unlock-icon">' + HW_BADGE_ICON + '</div>' +
+            '<div class="hw-unlock-title">' + title + '</div>' +
+            '<div class="hw-unlock-sub">' + sub + '</div>' +
+            '<input id="hw-unlock-pin" class="hw-unlock-input" ' + inputAttrs + '>' +
+            '<div id="hw-unlock-error" class="hw-unlock-error" style="display:none"></div>' +
+            '<button id="hw-unlock-btn" class="hw-unlock-btn" disabled>Unlock</button>' +
+            '<button id="hw-unlock-cancel" class="hw-unlock-cancel">Use a different identity</button>' +
+        '</div>';
+    document.body.appendChild(overlay);
+    var input = overlay.querySelector('#hw-unlock-pin');
+    var btn = overlay.querySelector('#hw-unlock-btn');
+    var validLen = function(v) { return isPass ? v.length >= 6 : (v.length >= 6 && v.length <= 8); };
+    input.addEventListener('input', function() { btn.disabled = !validLen(input.value); });
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && !btn.disabled) _hwDoUnlock();
+    });
+    btn.addEventListener('click', _hwDoUnlock);
+    overlay.querySelector('#hw-unlock-cancel').addEventListener('click', _hwUnlockCancel);
+    setTimeout(function() { if (!isMobile()) input.focus(); }, 120);
 }
 window.showHwUnlock = showHwUnlock;
 
@@ -2056,12 +2133,13 @@ function _hwDoUnlock() {
     var input = document.getElementById('hw-unlock-pin');
     var btn = document.getElementById('hw-unlock-btn');
     var err = document.getElementById('hw-unlock-error');
-    var pin = input ? input.value : '';
-    if (pin.length < 6 || pin.length > 8) return;
+    var secret = input ? input.value : '';
+    var isPass = _hwLockedKind === 'passcode';
+    if (secret.length < 6 || (!isPass && secret.length > 8)) return;
     btn.disabled = true;
     btn.textContent = 'Unlocking…';
     if (err) err.style.display = 'none';
-    RS.invoke('hw_unlock', { pin: pin }).then(function(res) {
+    RS.invoke('hw_unlock', { pin: secret }).then(function(res) {
         res = res || {};
         if (res.ok) {
             // Re-bootstrap the whole app on the now-unlocked identity.
@@ -2072,7 +2150,9 @@ function _hwDoUnlock() {
         btn.textContent = 'Unlock';
         if (input) input.value = '';
         var msg;
-        if (res.locked) {
+        if (isPass) {
+            msg = 'Incorrect passcode.';
+        } else if (res.locked) {
             msg = 'This key is locked after too many wrong PINs. It needs a PUK reset.';
             btn.disabled = true;
         } else if (typeof res.remaining === 'number') {
@@ -2112,5 +2192,5 @@ function _hwUnlockCancel() {
 }
 
 if (typeof RS !== 'undefined' && RS.listen) {
-    RS.listen('hardware_locked', function(data) { showHwUnlock(data && data.hash); });
+    RS.listen('hardware_locked', function(data) { showHwUnlock(data && data.hash, data && data.kind); });
 }

@@ -791,6 +791,23 @@ fn load_hwid_identity(
     Err(format!("identity {hash} is hardware-backed but this build lacks the `hardware` feature").into())
 }
 
+/// Load a passcode-protected software identity from its `identity.enc` vault.
+/// `passcode` is the user's passcode (None when still locked).
+fn load_encrypted_identity(
+    enc_file: &Path,
+    hash: &str,
+    passcode: Option<&str>,
+) -> Result<Identity, Box<dyn std::error::Error + Send + Sync>> {
+    let vault = crate::vault::read_vault(enc_file)
+        .map_err(|e| format!("invalid identity.enc for {hash}: {e}"))?;
+    let passcode =
+        passcode.ok_or_else(|| "identity is locked (no passcode provided)".to_string())?;
+    let key = crate::vault::decrypt_key(passcode, &vault)
+        .map_err(|e| format!("passcode unlock failed: {e}"))?;
+    tracing::info!(%hash, "loading passcode-protected identity");
+    Ok(Identity::from_private_key(key.as_ref())?)
+}
+
 impl LxmfManager {
     pub fn load_or_create(
         data_dir: &Path,
@@ -808,9 +825,13 @@ impl LxmfManager {
         let identity = if let Some(hash) = preferred_identity_hash.filter(|h| !h.is_empty()) {
             let id_file = identities_dir.join(hash).join("identity");
             let hwid_file = identities_dir.join(hash).join("identity.hwid");
+            let enc_file = identities_dir.join(hash).join("identity.enc");
             if hwid_file.exists() {
                 is_hardware = true;
                 load_hwid_identity(&hwid_file, hash, hw_pin.as_deref())?
+            } else if enc_file.exists() {
+                // Passcode-protected software identity; `hw_pin` carries the passcode.
+                load_encrypted_identity(&enc_file, hash, hw_pin.as_deref())?
             } else if id_file.exists() {
                 tracing::info!(
                     "Loading active identity from profile: {}",
@@ -1026,9 +1047,12 @@ impl LxmfManager {
         let switch_dir = self.data_dir.join("identities").join(hash_hex);
         let id_file = switch_dir.join("identity");
         let hwid_file = switch_dir.join("identity.hwid");
+        let enc_file = switch_dir.join("identity.enc");
 
         let (identity, is_hardware) = if hwid_file.exists() {
             (load_hwid_identity(&hwid_file, hash_hex, hw_pin)?, true)
+        } else if enc_file.exists() {
+            (load_encrypted_identity(&enc_file, hash_hex, hw_pin)?, false)
         } else if id_file.exists() {
             (Identity::from_file(&id_file)?, false)
         } else {

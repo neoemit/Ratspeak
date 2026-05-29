@@ -67,6 +67,9 @@ base64 = "0.22"
 glob = "0.3"
 futures = "0.3"
 dirs = "6"
+# Passcode at-rest encryption of software identities (P3).
+argon2 = "0.5"
+zeroize = "1"
 
 # Optional interface backends
 serialport = { workspace = true, optional = true }

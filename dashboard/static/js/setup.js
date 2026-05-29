@@ -149,7 +149,7 @@ function runConnectingProgress() {
             if (data.stage === 'hw_locked') {
                 // Active identity is a locked hardware key — prompt for the PIN.
                 // Unlock re-inits the runtime and reloads the app.
-                if (typeof showHwUnlock === 'function') showHwUnlock(data.hw_locked);
+                if (typeof showHwUnlock === 'function') showHwUnlock(data.hw_locked, data.hw_locked_kind);
                 return;
             }
             if (data.stage === 'ready') {

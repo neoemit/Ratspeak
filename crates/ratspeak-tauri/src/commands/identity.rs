@@ -258,14 +258,21 @@ pub async fn api_list_identities(state: State<'_, Arc<AppState>>) -> AppResult<V
     let mut value = json!(identities);
     if let Some(rows) = value.as_array_mut() {
         for row in rows.iter_mut() {
-            let hwid_path = row
+            let id_dir = row
                 .get("hash")
                 .and_then(|v| v.as_str())
-                .map(|h| dir.join(h).join("identity.hwid"));
+                .map(|h| dir.join(h));
+            let hwid_path = id_dir.as_ref().map(|d| d.join("identity.hwid"));
             let is_hw = hwid_path.as_ref().map(|p| p.exists()).unwrap_or(false);
             let serial = is_hw.then(|| hwid_path.and_then(|p| read_hwid_serial(&p))).flatten();
+            // Software identity sealed with a passcode (at-rest encrypted)?
+            let passcode_protected = id_dir
+                .as_ref()
+                .map(|d| d.join("identity.enc").exists())
+                .unwrap_or(false);
             if let Some(obj) = row.as_object_mut() {
                 obj.insert("is_hardware".to_string(), json!(is_hw));
+                obj.insert("passcode_protected".to_string(), json!(passcode_protected));
                 if let Some(serial) = serial {
                     obj.insert("hw_serial".to_string(), json!(serial));
                 }
@@ -350,6 +357,66 @@ pub async fn restore_seed_identity(
     let key = ratspeak_runtime::derive_identity_key_from_phrase(args.phrase.trim())
         .map_err(AppError::bad_request)?;
     import_identity_shared(state, key.to_vec(), args.nickname).await
+}
+
+#[derive(Deserialize)]
+pub struct SetPasscodeArgs {
+    pub hash: String,
+    pub passcode: String,
+    /// Required only when changing an existing passcode.
+    #[serde(default)]
+    pub current: Option<String>,
+}
+
+/// Add or change a passcode on a software identity (at-rest encryption). The
+/// identity is sealed on disk; the next launch will prompt for the passcode.
+#[tauri::command]
+pub async fn set_identity_passcode(
+    state: State<'_, Arc<AppState>>,
+    args: SetPasscodeArgs,
+) -> AppResult<Value> {
+    if !validate_hex(&args.hash, 16, 128) {
+        return Err(AppError::bad_request("Invalid hash"));
+    }
+    if args.passcode.len() < 6 || args.passcode.len() > 128 {
+        return Err(AppError::bad_request("Passcode must be at least 6 characters"));
+    }
+    let id_dir = state.config.data_dir.join("identities").join(&args.hash);
+    let (passcode, current) = (args.passcode, args.current);
+    tokio::task::spawn_blocking(move || {
+        ratspeak_runtime::vault::protect_identity(&id_dir, &passcode, current.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| AppError::internal("set_passcode task panicked"))?
+    .map_err(AppError::bad_request)?;
+    Ok(json!({ "ok": true }))
+}
+
+#[derive(Deserialize)]
+pub struct RemovePasscodeArgs {
+    pub hash: String,
+    pub passcode: String,
+}
+
+/// Remove a passcode (decrypt the identity back to a plaintext key file).
+#[tauri::command]
+pub async fn remove_identity_passcode(
+    state: State<'_, Arc<AppState>>,
+    args: RemovePasscodeArgs,
+) -> AppResult<Value> {
+    if !validate_hex(&args.hash, 16, 128) {
+        return Err(AppError::bad_request("Invalid hash"));
+    }
+    let id_dir = state.config.data_dir.join("identities").join(&args.hash);
+    let passcode = args.passcode;
+    tokio::task::spawn_blocking(move || {
+        ratspeak_runtime::vault::unprotect_identity(&id_dir, &passcode).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| AppError::internal("remove_passcode task panicked"))?
+    .map_err(AppError::bad_request)?;
+    Ok(json!({ "ok": true }))
 }
 
 async fn import_identity_shared(
