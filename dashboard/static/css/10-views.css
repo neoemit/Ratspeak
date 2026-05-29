@@ -4245,13 +4245,23 @@ body.setup-active .bottom-bar {
     inset: 0;
     z-index: 9999;
     display: none;
-    align-items: center;
+    /* flex-start + margin:auto on the card centers it when it fits and lets it
+       scroll from the top when taller than the viewport (center would clip). */
+    align-items: flex-start;
     justify-content: center;
+    overflow-y: auto;
     padding: var(--space-16);
+    padding-top: calc(var(--space-16) + var(--sat, env(safe-area-inset-top, 0px)));
+    padding-bottom: calc(var(--space-16) + var(--sab, env(safe-area-inset-bottom, 0px)));
+    padding-left: calc(var(--space-16) + var(--sal, env(safe-area-inset-left, 0px)));
+    padding-right: calc(var(--space-16) + var(--sar, env(safe-area-inset-right, 0px)));
     background: rgba(0, 0, 0, 0.55);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
 }
+/* Card taller than the viewport stays fully scrollable instead of clipping
+   its top under flex centering (margin:auto keeps it centered when it fits). */
+.hw-unlock-overlay .hw-unlock-card { margin: auto; }
 .hw-unlock-card {
     display: flex;
     flex-direction: column;
@@ -4316,7 +4326,15 @@ body.setup-active .bottom-bar {
 
 /* One-time recovery-phrase backup reveal (reuses the unlock overlay shell). */
 .recovery-backup-card { max-width: 460px; }
-.recovery-backup-card .hw-mnemonic-grid { width: 100%; }
+/* Shown directly (no .hw-mnemonic-shell.revealed wrapper), so override the
+   base grid's reveal-gated blur — the words must be readable and selectable. */
+.recovery-backup-card .hw-mnemonic-grid {
+    width: 100%;
+    filter: none;
+    pointer-events: auto;
+    user-select: text;
+    -webkit-user-select: text;
+}
 .recovery-warn {
     font-size: var(--text-sm);
     color: var(--text-muted);
