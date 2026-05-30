@@ -2254,6 +2254,18 @@ fn identity_management_is_first_class_tab() {
     assert!(index.contains("title=\"Import or restore identity\""));
     assert!(index.contains(r#"<path d="M7 10l5 5 5-5"/>"#));
     assert!(index.contains("M2.6 17.4A2 2 0 0 0 2 18.8V21"));
+    let identity_nav_start = index
+        .find(r#"<a class="nav-item" data-view="identity""#)
+        .expect("identity nav item");
+    let identity_nav_rest = &index[identity_nav_start + 1..];
+    let identity_nav_end = identity_nav_rest
+        .find(r#"<a class="nav-item""#)
+        .map(|offset| identity_nav_start + 1 + offset)
+        .unwrap_or(index.len());
+    let identity_nav = &index[identity_nav_start..identity_nav_end];
+    assert!(identity_nav.contains("M2.6 17.4A2 2 0 0 0 2 18.8V21"));
+    assert!(!identity_nav.contains(r#"<circle cx="7.5" cy="15.5" r="5.5""#));
+    assert!(!index.contains(r#"<circle cx="7.5" cy="15.5" r="5.5""#));
     assert!(!index.contains("Import identity backup"));
     assert!(!index.contains(r#"<path d="M7 8l5-5 5 5"/>"#));
 
