@@ -111,6 +111,11 @@ pub async fn api_setup_complete(
         };
         let ih = hash.clone();
         let _ = db::spawn_db(state.db.clone(), move |p| db::set_active_identity(&p, &ih)).await;
+        // Persist the phrase so the first identity can re-display it later too.
+        let seed_dir = state.config.data_dir.join("identities").join(&hash);
+        if let Err(e) = ratspeak_runtime::vault::store_plaintext_seed(&seed_dir, &m) {
+            tracing::warn!(error = %e, "could not store recovery-phrase sidecar at setup");
+        }
         (hash, Some(m))
     };
 

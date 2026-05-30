@@ -1320,9 +1320,13 @@ impl LxmfManager {
                 std::fs::remove_dir_all(path)?;
             }
         }
-        let identity_file = id_dir.join("identity");
-        if identity_file.exists() {
-            std::fs::remove_file(identity_file)?;
+        // All forms of private material: plaintext key, passcode vault, and the
+        // recovery-phrase sidecar (the phrase is key-equivalent).
+        for file in ["identity", "identity.enc", "identity.seed"] {
+            let path = id_dir.join(file);
+            if path.exists() {
+                std::fs::remove_file(path)?;
+            }
         }
         Ok(())
     }

@@ -517,6 +517,11 @@ function renderActiveIdentityCard() {
                 '<span class="identity-action-icon"><svg viewBox="0 0 24 24"><path d="M12 21V9"/><path d="M7 14l5-5 5 5"/><path d="M5 21h14"/></svg></span>' +
                 '<span>Export Identity</span>' +
             '</button>') +
+            (isHardware || !identity.has_mnemonic ? '' :
+            '<button class="identity-action-row" id="identity-view-phrase-btn">' +
+                '<span class="identity-action-icon"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></span>' +
+                '<span>View Recovery Phrase</span>' +
+            '</button>') +
             '<button class="identity-action-row" id="identity-share-address-btn">' +
                 '<span class="identity-action-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/></svg></span>' +
                 '<span>Share Contact Card</span>' +
@@ -539,6 +544,9 @@ function renderActiveIdentityCard() {
 
     var exportBtn = document.getElementById('identity-export-detail-btn');
     if (exportBtn) exportBtn.addEventListener('click', function() { exportIdentityBackup(identityHash); });
+
+    var viewPhraseBtn = document.getElementById('identity-view-phrase-btn');
+    if (viewPhraseBtn) viewPhraseBtn.addEventListener('click', function() { viewRecoveryPhrase(identity); });
 
     var shareBtn = document.getElementById('identity-share-address-btn');
     if (shareBtn) shareBtn.addEventListener('click', function() {
@@ -745,14 +753,13 @@ function createNewIdentity() {
     );
 }
 
-// Restore a recoverable identity from its 24-word BIP-39 phrase as a SOFTWARE
-// identity. Distinct from the hardware wizard's restore (desktop-only, writes to
-// a token); this works on every platform via the `restore_seed_identity` command.
-// One-time recovery-phrase backup reveal (wallet-style). Standalone full-screen
-// overlay (reuses .hw-unlock-* styling) so it can't race the identity-modal button.
-// The phrase is shown once and never stored. TODO(P3): optionally re-display
-// behind the passcode once at-rest encryption lands.
-function showRecoveryPhraseBackup(mnemonic, onDone) {
+// Recovery-phrase reveal (wallet-style), as a standalone full-screen overlay
+// (reuses .hw-unlock-* styling) so it can't race the identity-modal button. Used
+// both at creation (first backup) and later via "View Recovery Phrase" — `opts`
+// swaps the copy. The phrase is captured at create/import time; re-display reads
+// the plaintext sidecar or decrypts it from the passcode vault (see vault.rs).
+function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
+    opts = opts || {};
     var words = String(mnemonic || '').trim().split(/\s+/).filter(Boolean);
     if (words.length !== 24) {
         if (typeof onDone === 'function') onDone();
@@ -762,6 +769,10 @@ function showRecoveryPhraseBackup(mnemonic, onDone) {
         return '<div class="hw-mnemonic-word"><span class="hw-mnemonic-index">' + (i + 1) +
             '</span><span class="hw-mnemonic-text">' + escapeHtml(w) + '</span></div>';
     }).join('');
+    var defaultWarn = 'Write these 24 words down and keep them somewhere safe. ' +
+        'They are the <strong>only</strong> way to recover this identity if you lose your device — ' +
+        'anyone with them controls your identity. You can view this phrase again later from the ' +
+        'identity’s menu; set a passcode to encrypt it (and this identity) on this device.';
     var existing = document.getElementById('recovery-backup-overlay');
     if (existing) existing.remove();
     var overlay = document.createElement('div');
@@ -770,12 +781,10 @@ function showRecoveryPhraseBackup(mnemonic, onDone) {
     overlay.style.display = 'flex';
     overlay.innerHTML =
         '<div class="hw-unlock-card recovery-backup-card">' +
-            '<div class="hw-unlock-title">Your Recovery Phrase</div>' +
-            '<p class="recovery-warn">Write these 24 words down and keep them somewhere safe. ' +
-            'They are the <strong>only</strong> way to recover this identity if you lose your device — ' +
-            'shown once, never stored. Anyone with them controls your identity.</p>' +
+            '<div class="hw-unlock-title">' + escapeHtml(opts.title || 'Your Recovery Phrase') + '</div>' +
+            '<p class="recovery-warn">' + (opts.warn || defaultWarn) + '</p>' +
             '<div class="hw-mnemonic-grid">' + grid + '</div>' +
-            '<button class="hw-unlock-btn" id="recovery-backup-done">I’ve saved it</button>' +
+            '<button class="hw-unlock-btn" id="recovery-backup-done">' + escapeHtml(opts.button || 'I’ve saved it') + '</button>' +
         '</div>';
     document.body.appendChild(overlay);
     document.getElementById('recovery-backup-done').addEventListener('click', function() {
@@ -784,6 +793,47 @@ function showRecoveryPhraseBackup(mnemonic, onDone) {
     });
 }
 window.showRecoveryPhraseBackup = showRecoveryPhraseBackup;
+
+// Re-display a software identity's recovery phrase. Passcode-protected identities
+// prompt for the passcode (decrypts from the vault); otherwise the plaintext
+// sidecar is read directly. Hardware identities never reach here (no stored phrase).
+function viewRecoveryPhrase(target) {
+    if (!target || target.is_hardware) return;
+    var viewOpts = {
+        title: 'Recovery Phrase',
+        warn: 'These 24 words restore this identity on any device. Keep them secret and ' +
+            'offline — anyone with them controls your identity. Make sure no one can see your screen.',
+        button: 'Done'
+    };
+    if (target.passcode_protected) {
+        showIdentityModal('View Recovery Phrase',
+            '<div class="modal-field"><label>Passcode</label>' +
+                '<input type="password" id="reveal-passcode-input" class="modal-input" maxlength="128" autocomplete="off"></div>' +
+            '<p class="recovery-warn">Enter your passcode to reveal the 24-word recovery phrase for this identity.</p>' +
+            '<div class="modal-error" id="reveal-error" style="display:none"></div>',
+            function() {
+                var pw = document.getElementById('reveal-passcode-input').value;
+                var errEl = document.getElementById('reveal-error');
+                if (!pw) { if (errEl) { errEl.textContent = 'Enter your passcode.'; errEl.style.display = ''; } return; }
+                return RS.invoke('reveal_identity_mnemonic', { args: { hash: target.hash, passcode: pw } }).then(function(data) {
+                    closeIdentityModal();
+                    showRecoveryPhraseBackup(data && data.mnemonic, null, viewOpts);
+                }).catch(function(err) {
+                    if (errEl) { errEl.textContent = (err && err.message) || 'Could not reveal phrase'; errEl.style.display = ''; }
+                });
+            }
+        );
+        var btn = document.getElementById('identity-modal-confirm');
+        if (btn) { btn.textContent = 'Reveal'; btn.dataset.baseLabel = 'Reveal'; }
+    } else {
+        RS.invoke('reveal_identity_mnemonic', { args: { hash: target.hash } }).then(function(data) {
+            showRecoveryPhraseBackup(data && data.mnemonic, null, viewOpts);
+        }).catch(function(err) {
+            showToast((err && err.message) || 'Could not reveal phrase', 'toast-red', 3000);
+        });
+    }
+}
+window.viewRecoveryPhrase = viewRecoveryPhrase;
 
 function openRestorePhraseModal(fromSetup) {
     showIdentityModal('Restore from Recovery Phrase',
@@ -1085,6 +1135,9 @@ function openIdentityActions(hash) {
     }
     if (!target.is_hardware) {
         choices.push({ label: 'Export Identity', value: 'export', hint: 'Ratspeak or Reticulum format.' });
+        if (target.has_mnemonic) {
+            choices.push({ label: 'View Recovery Phrase', value: 'view-phrase', hint: 'Show this identity’s 24-word phrase.' });
+        }
         if (target.passcode_protected) {
             choices.push({ label: 'Change Passcode', value: 'passcode-change' });
             choices.push({ label: 'Remove Passcode', value: 'passcode-remove', danger: true });
@@ -1104,6 +1157,7 @@ function openIdentityActions(hash) {
     }).then(function(choice) {
         if (choice === 'switch') switchToIdentity(target.hash);
         if (choice === 'export') exportIdentityBackup(target.hash);
+        if (choice === 'view-phrase') viewRecoveryPhrase(target);
         if (choice === 'passcode-set') openSetPasscodeModal(target, false);
         if (choice === 'passcode-change') openSetPasscodeModal(target, true);
         if (choice === 'passcode-remove') openRemovePasscodeModal(target);

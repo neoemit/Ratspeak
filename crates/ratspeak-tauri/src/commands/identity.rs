@@ -270,9 +270,15 @@ pub async fn api_list_identities(state: State<'_, Arc<AppState>>) -> AppResult<V
                 .as_ref()
                 .map(|d| d.join("identity.enc").exists())
                 .unwrap_or(false);
+            // Does it have a recovery phrase we can re-display (sidecar or sealed)?
+            let has_mnemonic = id_dir
+                .as_ref()
+                .map(|d| ratspeak_runtime::vault::has_stored_mnemonic(d))
+                .unwrap_or(false);
             if let Some(obj) = row.as_object_mut() {
                 obj.insert("is_hardware".to_string(), json!(is_hw));
                 obj.insert("passcode_protected".to_string(), json!(passcode_protected));
+                obj.insert("has_mnemonic".to_string(), json!(has_mnemonic));
                 if let Some(serial) = serial {
                     obj.insert("hw_serial".to_string(), json!(serial));
                 }
@@ -297,11 +303,20 @@ pub async fn api_create_identity(
         .map_err(AppError::bad_request)?;
 
     // New identities are recoverable: derived from a fresh BIP-39 mnemonic, which
-    // we return once for the user to back up (never stored). Reuses the import
-    // path for the duplicate-check, on-disk write, and activation.
+    // we return once for the user to back up. Reuses the import path for the
+    // duplicate-check, on-disk write, and activation.
+    let identities_dir = state.config.data_dir.join("identities");
     let (mnemonic, key) =
         ratspeak_runtime::generate_recoverable_key().map_err(AppError::internal)?;
     let mut resp = import_identity_shared(state, key.to_vec(), Some(nickname)).await?;
+    // Persist the phrase (software identity) so it can be re-displayed later.
+    if let Some(hash) = resp.get("hash").and_then(|v| v.as_str()) {
+        if let Err(e) =
+            ratspeak_runtime::vault::store_plaintext_seed(&identities_dir.join(hash), &mnemonic)
+        {
+            tracing::warn!(error = %e, "could not store recovery-phrase sidecar");
+        }
+    }
     if let Some(obj) = resp.as_object_mut() {
         obj.insert("mnemonic".to_string(), json!(mnemonic));
     }
@@ -354,9 +369,20 @@ pub async fn restore_seed_identity(
     state: State<'_, Arc<AppState>>,
     args: RestoreSeedArgs,
 ) -> AppResult<Value> {
-    let key = ratspeak_runtime::derive_identity_key_from_phrase(args.phrase.trim())
-        .map_err(AppError::bad_request)?;
-    import_identity_shared(state, key.to_vec(), args.nickname).await
+    let phrase = args.phrase.trim().to_string();
+    let identities_dir = state.config.data_dir.join("identities");
+    let key =
+        ratspeak_runtime::derive_identity_key_from_phrase(&phrase).map_err(AppError::bad_request)?;
+    let resp = import_identity_shared(state, key.to_vec(), args.nickname).await?;
+    // Persist the phrase so a restored identity can re-display it later too.
+    if let Some(hash) = resp.get("hash").and_then(|v| v.as_str()) {
+        if let Err(e) =
+            ratspeak_runtime::vault::store_plaintext_seed(&identities_dir.join(hash), &phrase)
+        {
+            tracing::warn!(error = %e, "could not store recovery-phrase sidecar");
+        }
+    }
+    Ok(resp)
 }
 
 #[derive(Deserialize)]
@@ -417,6 +443,38 @@ pub async fn remove_identity_passcode(
     .map_err(|_| AppError::internal("remove_passcode task panicked"))?
     .map_err(AppError::bad_request)?;
     Ok(json!({ "ok": true }))
+}
+
+#[derive(Deserialize)]
+pub struct RevealMnemonicArgs {
+    pub hash: String,
+    /// Required only when the identity is passcode-protected (phrase in the vault).
+    #[serde(default)]
+    pub passcode: Option<String>,
+}
+
+/// Re-display a software identity's 24-word recovery phrase. Reads the plaintext
+/// sidecar, or decrypts it from the vault (Argon2 → spawn_blocking) when the
+/// identity is passcode-protected. Hardware identities have no stored phrase.
+#[tauri::command]
+pub async fn reveal_identity_mnemonic(
+    state: State<'_, Arc<AppState>>,
+    args: RevealMnemonicArgs,
+) -> AppResult<Value> {
+    if !validate_hex(&args.hash, 16, 128) {
+        return Err(AppError::bad_request("Invalid hash"));
+    }
+    let id_dir = state.config.data_dir.join("identities").join(&args.hash);
+    let passcode = args.passcode;
+    let phrase = tokio::task::spawn_blocking(move || {
+        ratspeak_runtime::vault::reveal_mnemonic(&id_dir, passcode.as_deref())
+            .map(|z| z.as_str().to_string())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| AppError::internal("reveal_mnemonic task panicked"))?
+    .map_err(AppError::bad_request)?;
+    Ok(json!({ "mnemonic": phrase }))
 }
 
 async fn import_identity_shared(
