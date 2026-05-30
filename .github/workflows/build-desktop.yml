@@ -86,6 +86,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libudev-dev \
+            libpcsclite-dev \
             pkg-config \
             patchelf \
             libfuse2 \
