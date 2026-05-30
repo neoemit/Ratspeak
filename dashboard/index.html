@@ -774,7 +774,7 @@
         <input type="file" id="identity-file-input" accept=".rsi,.rniid,.key,.identity,.bin,application/json,application/octet-stream,text/plain" style="display:none;">
 
         <div class="bottom-sheet-overlay" id="hw-modal-overlay"></div>
-        <div class="bottom-sheet" id="hw-modal" role="dialog" aria-labelledby="hw-modal-title">
+        <div class="bottom-sheet" id="hw-modal" role="dialog" aria-modal="true" aria-labelledby="hw-modal-title">
             <div class="bottom-sheet-handle"></div>
             <div class="bottom-sheet-header">
                 <div class="bottom-sheet-title" id="hw-modal-title">Hardware Key</div>
@@ -787,6 +787,7 @@
                         <div class="hw-detect-spinner"><span class="loading-spinner"></span></div>
                         <div class="hw-detect-text" id="hw-detect-text">Looking for a security key…</div>
                     </div>
+                    <button class="nr-btn nr-btn-ghost w-full mt-3" id="hw-detect-back-btn">Back</button>
                     <button class="nr-btn w-full mt-4" id="hw-detect-retry-btn" style="display:none;">Retry</button>
                 </div>
 
@@ -795,7 +796,7 @@
                     <div class="hw-device-summary" id="hw-mode-device"></div>
                     <p class="hw-step-lead">How should this identity be backed up?</p>
                     <button type="button" class="hw-mode-card" id="hw-mode-recoverable">
-                        <span class="hw-mode-card-title">Recoverable</span>
+                        <span class="hw-mode-card-title">Recoverable <span class="hw-recommended-note">(Recommended)</span></span>
                         <span class="hw-mode-card-sub">24-word backup phrase</span>
                         <span class="hw-mode-card-desc">A 24-word phrase lets you restore this identity if the key is lost. The phrase is a second secret — it is <strong>not</strong> protected by your PIN, and the keys briefly exist in this device's memory during setup.</span>
                     </button>
@@ -804,6 +805,7 @@
                         <span class="hw-mode-card-sub">No backup</span>
                         <span class="hw-mode-card-desc">Keys are generated on the device and never leave it. There is no phrase to lose — but if the key is lost or reset, this identity is gone forever.</span>
                     </button>
+                    <button class="nr-btn nr-btn-ghost w-full mt-3" id="hw-mode-back-btn">Back</button>
                 </div>
 
                 <!-- Step: PIN -->
@@ -823,6 +825,7 @@
                     </div>
                     <div class="hw-error" id="hw-pin-error" style="display:none;"></div>
                     <button class="nr-btn w-full mt-4" id="hw-pin-continue-btn" disabled>Continue</button>
+                    <button class="nr-btn nr-btn-ghost w-full mt-3" id="hw-pin-back-btn">Back</button>
                 </div>
 
                 <!-- Step: provisioning spinner -->
@@ -886,18 +889,24 @@
                     </div>
                     <div class="hw-error" id="hw-restore-error" style="display:none;"></div>
                     <button class="nr-btn w-full mt-4" id="hw-restore-btn" disabled>Restore Identity</button>
+                    <button class="nr-btn nr-btn-ghost w-full mt-3" id="hw-restore-back-btn">Back</button>
                 </div>
 
-                <!-- Step: import existing (nickname only) -->
+                <!-- Step: import existing -->
                 <div class="hw-step" id="hw-step-import" style="display:none;">
                     <div class="hw-device-summary" id="hw-import-device"></div>
-                    <p class="hw-step-lead">This security key is already provisioned. Register it on this device.</p>
+                    <p class="hw-step-lead" id="hw-import-lead">This security key is already provisioned. Register it on this device.</p>
                     <div class="modal-field">
                         <label>Display name</label>
                         <input type="text" id="hw-import-nickname" class="modal-input" maxlength="32" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="e.g. Rat King">
                     </div>
+                    <div class="modal-field" id="hw-import-pin-field" style="margin-top:10px;display:none;">
+                        <label>Current YubiKey PIN <span class="hw-inline-hint">6–8 characters</span></label>
+                        <input type="password" id="hw-import-pin" class="modal-input" inputmode="numeric" maxlength="8" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="Current PIN">
+                    </div>
                     <div class="hw-error" id="hw-import-error" style="display:none;"></div>
                     <button class="nr-btn w-full mt-4" id="hw-import-btn">Add Hardware Identity</button>
+                    <button class="nr-btn nr-btn-ghost w-full mt-3" id="hw-import-back-btn">Back</button>
                 </div>
             </div>
         </div>

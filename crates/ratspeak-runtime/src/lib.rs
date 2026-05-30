@@ -498,6 +498,17 @@ fn profile_has_identity_material(dir: &std::path::Path) -> bool {
         || dir.join("identity.hwid").exists()
 }
 
+fn has_plain_identity_material(ratspeak_dir: &std::path::Path) -> bool {
+    ratspeak_dir.join("identity").exists()
+        || std::fs::read_dir(ratspeak_dir.join("identities"))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .any(|entry| entry.path().join("identity").exists())
+            })
+            .unwrap_or(false)
+}
+
 pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
     propagation::seed_static_nodes(&state);
 
@@ -520,6 +531,13 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
         });
+    if preferred_identity_hash.is_none() && !has_plain_identity_material(&ratspeak_dir) {
+        tracing::warn!(
+            "Identity material exists without an active identity row; returning to setup"
+        );
+        state.set_startup_stage("ready");
+        return;
+    }
 
     // Hardware identities need a PIN to unlock the token. If the active identity
     // is hardware and no PIN is staged, enter the locked state and wait for
@@ -4351,6 +4369,19 @@ mod identity_material_tests {
         std::fs::create_dir_all(&profile_dir).unwrap();
         std::fs::write(profile_dir.join("identity.enc"), b"{}").unwrap();
         assert!(has_identity_material(&dir));
+        std::fs::remove_dir_all(dir.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn hardware_profile_identity_counts_as_identity_material() {
+        let dir = temp_ratspeak_dir("profile-hwid");
+        let profile_dir = dir
+            .join("identities")
+            .join("df3b53016f50e4ce7c2c90c97486977c");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        std::fs::write(profile_dir.join("identity.hwid"), b"{}").unwrap();
+        assert!(has_identity_material(&dir));
+        assert!(!has_plain_identity_material(&dir));
         std::fs::remove_dir_all(dir.parent().unwrap()).ok();
     }
 }

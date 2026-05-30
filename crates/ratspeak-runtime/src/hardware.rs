@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use rns_identity::destination::Destination;
-use rns_ratkey::PcscPivSession;
+use rns_ratkey::{PcscPivSession, RatkeyError};
 use rns_ratkey::mock::TouchPolicy;
 use rns_ratkey::provision::{self, ProvisionConfig};
 
@@ -35,7 +35,7 @@ pub struct HwDetect {
     pub firmware_ok: bool,
     pub error: Option<String>,
     /// An app identity already backed by this physical key (matched by serial).
-    /// Present means provisioning would overwrite it.
+    /// Present means provisioning would overwrite registered or on-card keys.
     pub existing: Option<HwExisting>,
 }
 
@@ -43,6 +43,9 @@ pub struct HwDetect {
 pub struct HwExisting {
     pub hash: String,
     pub nickname: String,
+    /// True when slots are occupied but no local app identity matches them.
+    #[serde(default)]
+    pub on_card_only: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -70,7 +73,16 @@ pub fn detect(data_dir: &Path) -> HwDetect {
     match device {
         Some(d) => {
             let ok = firmware_ok(d.firmware.as_deref());
-            let existing = d.serial.and_then(|s| find_identity_by_serial(data_dir, s));
+            let existing = d
+                .serial
+                .and_then(|s| find_identity_by_serial(data_dir, s))
+                .or_else(|| {
+                    (d.has_signing_key || d.has_encryption_key).then(|| HwExisting {
+                        hash: String::new(),
+                        nickname: String::new(),
+                        on_card_only: true,
+                    })
+                });
             HwDetect {
                 detected: true,
                 device_type: d.device_type,
@@ -108,14 +120,19 @@ fn find_identity_by_serial(data_dir: &Path, serial: u32) -> Option<HwExisting> {
             return Some(HwExisting {
                 hash: cfg.identity.hash,
                 nickname: cfg.identity.nickname,
+                on_card_only: false,
             });
         }
     }
     None
 }
 
+fn slot_occupied(session: &mut PcscPivSession, slot: u8) -> bool {
+    session.read_metadata(slot).is_ok()
+}
+
 /// Refuse to overwrite a key that already backs an app identity unless forced.
-fn guard_overwrite(data_dir: &Path, session: &PcscPivSession) -> Result<(), String> {
+fn guard_overwrite(data_dir: &Path, session: &mut PcscPivSession) -> Result<(), String> {
     if let Some(serial) = session.serial()
         && let Some(existing) = find_identity_by_serial(data_dir, serial)
     {
@@ -127,6 +144,16 @@ fn guard_overwrite(data_dir: &Path, session: &PcscPivSession) -> Result<(), Stri
         return Err(format!(
             "This YubiKey already holds {who}. Provisioning permanently erases it — confirm to overwrite."
         ));
+    }
+
+    let signing_occupied = slot_occupied(session, rns_ratkey::apdu::SLOT_AUTHENTICATION);
+    let encryption_occupied = slot_occupied(session, rns_ratkey::apdu::SLOT_KEY_MANAGEMENT);
+    if signing_occupied || encryption_occupied {
+        return Err(
+            "This YubiKey already contains keys in the Ratspeak PIV identity slots. \
+             Provisioning permanently erases those keys — confirm to overwrite."
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -140,14 +167,20 @@ pub fn provision_recoverable(
 ) -> Result<HwProvisioned, String> {
     let mut session = connect()?;
     if !force {
-        guard_overwrite(data_dir, &session)?;
+        guard_overwrite(data_dir, &mut session)?;
     }
+    prepare_for_provisioning(&mut session, pin)?;
     let cfg = base_config(data_dir, nickname);
     let (result, mnemonic) =
         provision::provision_recoverable(&mut session, &DEFAULT_MGMT_KEY, &cfg)
             .map_err(|e| e.to_string())?;
-    set_pin(&mut session, pin)?;
-    let lxmf_hash = register(data_dir, db, &result.identity_hash_hex, &result.identity_hash, nickname)?;
+    let lxmf_hash = register(
+        data_dir,
+        db,
+        &result.identity_hash_hex,
+        &result.identity_hash,
+        nickname,
+    )?;
     Ok(HwProvisioned {
         hash: result.identity_hash_hex,
         lxmf_hash,
@@ -164,13 +197,19 @@ pub fn provision_hardware_only(
 ) -> Result<HwProvisioned, String> {
     let mut session = connect()?;
     if !force {
-        guard_overwrite(data_dir, &session)?;
+        guard_overwrite(data_dir, &mut session)?;
     }
+    prepare_for_provisioning(&mut session, pin)?;
     let cfg = base_config(data_dir, nickname);
     let result = provision::provision_hardware_only(&mut session, &DEFAULT_MGMT_KEY, &cfg)
         .map_err(|e| e.to_string())?;
-    set_pin(&mut session, pin)?;
-    let lxmf_hash = register(data_dir, db, &result.identity_hash_hex, &result.identity_hash, nickname)?;
+    let lxmf_hash = register(
+        data_dir,
+        db,
+        &result.identity_hash_hex,
+        &result.identity_hash,
+        nickname,
+    )?;
     Ok(HwProvisioned {
         hash: result.identity_hash_hex,
         lxmf_hash,
@@ -179,11 +218,21 @@ pub fn provision_hardware_only(
 }
 
 /// Register a YubiKey that is already provisioned (no key creation, no PIN change).
-pub fn import_existing(data_dir: &Path, db: &DbPool, nickname: &str) -> Result<HwProvisioned, String> {
+pub fn import_existing(
+    data_dir: &Path,
+    db: &DbPool,
+    nickname: &str,
+) -> Result<HwProvisioned, String> {
     let mut session = connect()?;
     let cfg = base_config(data_dir, nickname);
     let result = provision::read_existing(&mut session, &cfg).map_err(|e| e.to_string())?;
-    let lxmf_hash = register(data_dir, db, &result.identity_hash_hex, &result.identity_hash, nickname)?;
+    let lxmf_hash = register(
+        data_dir,
+        db,
+        &result.identity_hash_hex,
+        &result.identity_hash,
+        nickname,
+    )?;
     Ok(HwProvisioned {
         hash: result.identity_hash_hex,
         lxmf_hash,
@@ -201,13 +250,19 @@ pub fn restore(
 ) -> Result<HwProvisioned, String> {
     let mut session = connect()?;
     if !force {
-        guard_overwrite(data_dir, &session)?;
+        guard_overwrite(data_dir, &mut session)?;
     }
+    prepare_for_provisioning(&mut session, pin)?;
     let cfg = base_config(data_dir, nickname);
     let result = provision::restore(&mut session, &DEFAULT_MGMT_KEY, &cfg, phrase)
         .map_err(|e| e.to_string())?;
-    set_pin(&mut session, pin)?;
-    let lxmf_hash = register(data_dir, db, &result.identity_hash_hex, &result.identity_hash, nickname)?;
+    let lxmf_hash = register(
+        data_dir,
+        db,
+        &result.identity_hash_hex,
+        &result.identity_hash,
+        nickname,
+    )?;
     Ok(HwProvisioned {
         hash: result.identity_hash_hex,
         lxmf_hash,
@@ -238,13 +293,36 @@ fn base_config(data_dir: &Path, nickname: &str) -> ProvisionConfig {
     }
 }
 
+fn prepare_for_provisioning(session: &mut PcscPivSession, pin: &str) -> Result<(), String> {
+    session
+        .authenticate_management_key(&DEFAULT_MGMT_KEY)
+        .map_err(|e| format!("could not authenticate YubiKey management key: {e}"))?;
+    set_pin(session, pin)
+}
+
 fn set_pin(session: &mut PcscPivSession, pin: &str) -> Result<(), String> {
     if pin == DEFAULT_PIN {
-        return Ok(());
+        return session
+            .verify_pin(DEFAULT_PIN)
+            .map_err(format_pin_setup_error);
     }
     session
         .change_pin(DEFAULT_PIN, pin)
-        .map_err(|e| format!("could not set PIN (use a factory-reset YubiKey): {e}"))
+        .map_err(format_pin_setup_error)
+}
+
+fn format_pin_setup_error(e: RatkeyError) -> String {
+    match e {
+        RatkeyError::PinLocked => {
+            "YubiKey PIV PIN is locked. Unblock it with the PUK or reset the PIV application before provisioning. Resetting PIV erases the Ratspeak keys on that YubiKey.".to_string()
+        }
+        RatkeyError::PinFailed { remaining } => format!(
+            "YubiKey PIV PIN is not at the factory default ({} attempt{} remaining). Use a factory-reset YubiKey, or add it as an existing key with its current PIN.",
+            remaining,
+            if remaining == 1 { "" } else { "s" }
+        ),
+        other => format!("could not prepare YubiKey PIN: {other}"),
+    }
 }
 
 /// Compute the LXMF destination hash + insert the `identities` DB row. The `.hwid`
@@ -269,5 +347,18 @@ fn register(
     // Activate it so a first-setup restart loads the new hardware identity
     // (otherwise no active identity exists and a software one is generated).
     ratspeak_db::set_active_identity(db, hash_hex).map_err(|e| format!("activate: {e}"))?;
+    let active_hash = ratspeak_db::get_active_identity(db)
+        .and_then(|identity| {
+            identity
+                .get("hash")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .ok_or_else(|| "activate: active identity did not persist".to_string())?;
+    if active_hash != hash_hex {
+        return Err(format!(
+            "activate: active identity did not persist (expected {hash_hex}, got {active_hash})"
+        ));
+    }
     Ok(lxmf_hex)
 }

@@ -1557,6 +1557,7 @@ function _hwSetTitle(text) {
 }
 
 function _hwShowStep(stepId) {
+    if (_hwCtx) _hwCtx.step = stepId;
     HW_STEP_IDS.forEach(function(id) {
         var el = document.getElementById(id);
         if (el) el.style.display = (id === stepId) ? '' : 'none';
@@ -1565,6 +1566,7 @@ function _hwShowStep(stepId) {
 
 function _hwClearSecrets() {
     if (_hwCtx) {
+        _hwCtx.pin = null;
         _hwCtx.mnemonic = null;
         _hwCtx.mnemonicWords = null;
         _hwCtx.verify = null;
@@ -1603,6 +1605,14 @@ function closeHardwareWizard() {
     _hwCtx = null;
 }
 
+function _hwReturnToChoice() {
+    var fromSetup = !!(_hwCtx && _hwCtx.fromSetup);
+    closeHardwareWizard();
+    setTimeout(function() {
+        openHardwareWizard({ fromSetup: fromSetup });
+    }, 0);
+}
+
 // Entry point. opts.fromSetup routes completion through the setup restart flow.
 function openHardwareWizard(opts) {
     opts = opts || {};
@@ -1613,14 +1623,12 @@ function openHardwareWizard(opts) {
         message: 'Use a YubiKey 5+ security key as your identity. The private key is generated on the device and never leaves it.',
         choices: [
             { label: 'Set up a new key', value: 'new', hint: 'Provision a factory-fresh or reset security key.' },
-            { label: 'Use an existing key', value: 'import', hint: 'Register a key that is already provisioned.' },
-            { label: 'Restore from seed phrase', value: 'restore', hint: 'Write a 24-word phrase onto a fresh key.' }
+            { label: 'Use an existing key', value: 'import', hint: 'Register a key that is already provisioned.' }
         ]
     }).then(function(choice) {
         if (!choice) { _hwCtx = null; return; }
         if (choice === 'new') _hwBeginDetect('provision');
         else if (choice === 'import') _hwBeginDetect('import');
-        else if (choice === 'restore') _hwBeginRestore();
     });
 }
 window.openHardwareWizard = openHardwareWizard;
@@ -1636,6 +1644,7 @@ function _hwBeginDetect(next) {
 }
 
 function _hwRunDetect() {
+    var ctx = _hwCtx;
     var textEl = document.getElementById('hw-detect-text');
     var retryBtn = document.getElementById('hw-detect-retry-btn');
     var panel = document.getElementById('hw-detect-panel');
@@ -1644,6 +1653,7 @@ function _hwRunDetect() {
     if (retryBtn) retryBtn.style.display = 'none';
 
     RS.invoke('hw_detect').then(function(data) {
+        if (_hwCtx !== ctx) return;
         data = data || {};
         if (!data.detected || !data.firmware_ok) {
             _hwDetectFailed(data.error || HW_DETECT_ERROR_COPY);
@@ -1654,6 +1664,7 @@ function _hwRunDetect() {
         if (_hwCtx.afterDetect === 'import') _hwShowImportStep();
         else _hwShowModeStep();
     }).catch(function(err) {
+        if (_hwCtx !== ctx) return;
         _hwDetectFailed((err && err.message) || HW_DETECT_ERROR_COPY);
     });
 }
@@ -1697,6 +1708,19 @@ function _hwShowImportStep() {
     if (err) err.style.display = 'none';
     var nick = document.getElementById('hw-import-nickname');
     if (nick) nick.value = '';
+    var pinField = document.getElementById('hw-import-pin-field');
+    var pinInput = document.getElementById('hw-import-pin');
+    var importBtn = document.getElementById('hw-import-btn');
+    var needsPin = !!(_hwCtx && _hwCtx.fromSetup);
+    var lead = document.getElementById('hw-import-lead');
+    if (lead) {
+        lead.textContent = needsPin
+            ? 'This security key is already provisioned. Enter its current YubiKey PIN to register and unlock it on this device. This does not change the key PIN.'
+            : 'This security key is already provisioned. Register it on this device.';
+    }
+    if (pinField) pinField.style.display = needsPin ? '' : 'none';
+    if (pinInput) pinInput.value = '';
+    if (importBtn) importBtn.disabled = needsPin;
     _hwShowStep('hw-step-import');
     setTimeout(function() { if (nick && !isMobile()) nick.focus(); }, 120);
 }
@@ -1724,6 +1748,41 @@ function _hwUpdatePinContinue() {
     if (btn) btn.disabled = !(_hwPinValid(pin) && pin === confirm);
 }
 
+function _hwOverwriteMessage() {
+    var existing = _hwCtx && _hwCtx.existing;
+    if (existing && existing.on_card_only) {
+        return 'This YubiKey already contains keys in the Ratspeak PIV identity slots. Setting up a new identity permanently erases those keys. Only continue if you have a backup or are certain they are not needed.';
+    }
+    var name = (existing && existing.nickname) ? existing.nickname : 'an existing identity';
+    return 'This YubiKey already holds "' + name + '". Setting up a new identity permanently erases its keys — this cannot be undone unless you saved its 24-word backup phrase.';
+}
+
+function _hwConfirmOverwriteIfNeeded(onConfirm, onCancel) {
+    if (!_hwCtx || !_hwCtx.existing || _hwCtx.force) {
+        if (onConfirm) onConfirm();
+        return;
+    }
+    rsConfirm({
+        title: 'Overwrite this key?',
+        message: _hwOverwriteMessage(),
+        confirmText: 'Overwrite',
+        danger: true
+    }).then(function(ok) {
+        if (!ok || !_hwCtx) {
+            if (onCancel) onCancel();
+            return;
+        }
+        _hwCtx.force = true;
+        if (onConfirm) onConfirm();
+    });
+}
+
+function _hwChooseProvisionMode(mode) {
+    if (!_hwCtx) return;
+    _hwCtx.mode = mode;
+    _hwConfirmOverwriteIfNeeded(_hwShowPinStep);
+}
+
 function _hwPinContinue() {
     var pin = document.getElementById('hw-pin').value;
     var confirm = document.getElementById('hw-pin-confirm').value;
@@ -1742,23 +1801,10 @@ function _hwPinContinue() {
     _hwConfirmOverwriteThenProvision();
 }
 
-// Guard against silently overwriting a key that already backs an app identity.
+// Guard against silently overwriting a key that already backs an app identity
+// or already has Ratspeak's PIV identity slots occupied.
 function _hwConfirmOverwriteThenProvision() {
-    if (_hwCtx.existing && !_hwCtx.force) {
-        var name = _hwCtx.existing.nickname || 'an existing identity';
-        rsConfirm({
-            title: 'Overwrite this key?',
-            message: 'This YubiKey already holds "' + name + '". Setting up a new identity permanently erases its keys — this cannot be undone unless you saved its 24-word backup phrase.',
-            confirmText: 'Overwrite',
-            danger: true
-        }).then(function(ok) {
-            if (!ok) { _hwShowModeStep(); return; }
-            _hwCtx.force = true;
-            _hwDispatchProvision();
-        });
-        return;
-    }
-    _hwDispatchProvision();
+    _hwConfirmOverwriteIfNeeded(_hwDispatchProvision, _hwShowModeStep);
 }
 
 function _hwDispatchProvision() {
@@ -1773,10 +1819,32 @@ function _hwShowWorking(text) {
     _hwShowStep('hw-step-working');
 }
 
+function _hwIsPinLockedError(message) {
+    message = String(message || '').toLowerCase();
+    return message.indexOf('pin is locked') >= 0 ||
+        message.indexOf('pin locked') >= 0 ||
+        message.indexOf('requires puk') >= 0;
+}
+
 function _hwProvisionFailure(err) {
-    showToast((err && err.message) ? err.message : 'Provisioning failed', 'toast-red', 5000);
-    // Drop the held PIN back to the PIN step so the user can retry.
+    var msg = (err && err.message) ? err.message : 'Provisioning failed';
+    if (_hwIsPinLockedError(msg) && typeof rsAlert === 'function') {
+        rsAlert({
+            title: 'YubiKey PIN locked',
+            message: 'The YubiKey PIV PIN is locked after too many incorrect attempts. Provisioning cannot continue until you unblock the PIV PIN with the PUK or reset the PIV application in YubiKey Manager. Resetting PIV erases the Ratspeak keys on that YubiKey.',
+            closeText: 'Back to setup'
+        }).then(function() {
+            closeHardwareWizard();
+        });
+    } else {
+        showToast(msg, 'toast-red', 5000);
+    }
     _hwShowPinStep();
+    var errEl = document.getElementById('hw-pin-error');
+    if (errEl) {
+        errEl.textContent = msg;
+        errEl.style.display = '';
+    }
 }
 
 function _hwProvisionRecoverable() {
@@ -1785,7 +1853,6 @@ function _hwProvisionRecoverable() {
         .then(function(res) {
             res = res || {};
             _hwCtx.result = res;
-            _hwCtx.pin = null;
             _hwShowMnemonic(res.mnemonic || '');
         })
         .catch(_hwProvisionFailure);
@@ -1796,7 +1863,6 @@ function _hwProvisionHardwareOnly() {
     RS.invoke('hw_provision_hardware_only', { pin: _hwCtx.pin, nickname: _hwCtx.nickname, force: !!_hwCtx.force })
         .then(function(res) {
             res = res || {};
-            _hwCtx.pin = null;
             _hwFinish(res);
         })
         .catch(_hwProvisionFailure);
@@ -1880,7 +1946,6 @@ function _hwVerifyAndFinish() {
     }
     if (err) err.style.display = 'none';
     var result = _hwCtx.result || {};
-    _hwClearSecrets();
     _hwFinish(result);
 }
 
@@ -1938,17 +2003,25 @@ function _hwDoRestore() {
         return;
     }
     if (err) err.style.display = 'none';
+    if (_hwCtx) _hwCtx.pin = pin;
 
     _hwShowWorking('Restoring identity onto your security key…');
     RS.invoke('hw_restore', { phrase: phrase, pin: pin, nickname: nickname, force: false })
         .then(function(res) {
-            _hwClearSecrets();
             _hwFinish(res || {});
         })
         .catch(function(e) {
             // Keep the typed phrase/name so the user can fix the PIN and retry.
             var msg = (e && e.message) ? e.message : 'Restore failed';
-            showToast(msg, 'toast-red', 5000);
+            if (_hwIsPinLockedError(msg) && typeof rsAlert === 'function') {
+                rsAlert({
+                    title: 'YubiKey PIN locked',
+                    message: 'The YubiKey PIV PIN is locked after too many incorrect attempts. Restore cannot continue until you unblock the PIV PIN with the PUK or reset the PIV application in YubiKey Manager. Resetting PIV erases the Ratspeak keys on that YubiKey.',
+                    closeText: 'Back'
+                });
+            } else {
+                showToast(msg, 'toast-red', 5000);
+            }
             _hwShowStep('hw-step-restore');
             var errEl = document.getElementById('hw-restore-error');
             if (errEl) { errEl.textContent = msg; errEl.style.display = ''; }
@@ -1959,7 +2032,14 @@ function _hwDoRestore() {
 
 function _hwDoImport() {
     var nickname = document.getElementById('hw-import-nickname').value.trim();
+    var pinInput = document.getElementById('hw-import-pin');
+    var pin = pinInput ? pinInput.value : '';
     var err = document.getElementById('hw-import-error');
+    if (_hwCtx && _hwCtx.fromSetup && !_hwPinValid(pin)) {
+        if (err) { err.textContent = 'Enter the current YubiKey PIN to finish setup.'; err.style.display = ''; }
+        return;
+    }
+    if (_hwCtx && _hwCtx.fromSetup) _hwCtx.pin = pin;
     if (err) err.style.display = 'none';
     _hwShowWorking('Registering your security key…');
     RS.invoke('hw_import_existing', { nickname: nickname })
@@ -1975,14 +2055,30 @@ function _hwDoImport() {
 function _hwFinish(result) {
     // Read context before closing — closeHardwareWizard() nulls _hwCtx.
     var fromSetup = _hwCtx && _hwCtx.fromSetup;
+    var pinForSetup = fromSetup && _hwCtx ? _hwCtx.pin : null;
     var newHash = result && result.hash;
     closeHardwareWizard();
     if (fromSetup) {
-        if (typeof completeSetupAfterIdentityImport === 'function') {
-            completeSetupAfterIdentityImport(result);
+        if (pinForSetup && newHash && typeof completeSetupAfterHardwareIdentity === 'function') {
+            completeSetupAfterHardwareIdentity(result, pinForSetup);
+            return;
+        }
+        var finishSetup = function() {
+            if (typeof completeSetupAfterIdentityImport === 'function') {
+                completeSetupAfterIdentityImport(result);
+            } else {
+                window.location.href = '/#dashboard';
+                window.location.reload();
+            }
+        };
+        if (pinForSetup) {
+            RS.invoke('hw_stage_unlock', { pin: pinForSetup })
+                .catch(function(err) {
+                    window.RS.diag('warn', '[hardware] could not stage first-run unlock PIN:', err && err.message ? err.message : String(err));
+                })
+                .finally(finishSetup);
         } else {
-            window.location.href = '/#dashboard';
-            window.location.reload();
+            finishSetup();
         }
         return;
     }
@@ -2023,13 +2119,29 @@ document.addEventListener('DOMContentLoaded', function() {
 
     var modeRecoverable = document.getElementById('hw-mode-recoverable');
     if (modeRecoverable) modeRecoverable.addEventListener('click', function() {
-        _hwCtx.mode = 'recoverable';
-        _hwShowPinStep();
+        _hwChooseProvisionMode('recoverable');
     });
     var modeHardwareOnly = document.getElementById('hw-mode-hardware-only');
     if (modeHardwareOnly) modeHardwareOnly.addEventListener('click', function() {
-        _hwCtx.mode = 'hardware-only';
-        _hwShowPinStep();
+        rsConfirm({
+            title: 'Are you sure?',
+            message: 'If you do not back up this identity, you will be unable to recover or use it without your YubiKey.',
+            confirmText: 'Continue without backup',
+            danger: true
+        }).then(function(ok) {
+            if (!ok || !_hwCtx) return;
+            _hwChooseProvisionMode('hardware-only');
+        });
+    });
+
+    ['hw-detect-back-btn', 'hw-mode-back-btn', 'hw-import-back-btn', 'hw-restore-back-btn'].forEach(function(id) {
+        var btn = document.getElementById(id);
+        if (btn) btn.addEventListener('click', _hwReturnToChoice);
+    });
+    var pinBack = document.getElementById('hw-pin-back-btn');
+    if (pinBack) pinBack.addEventListener('click', function() {
+        if (_hwCtx && _hwCtx.afterDetect === 'provision') _hwShowModeStep();
+        else _hwReturnToChoice();
     });
 
     var pin = document.getElementById('hw-pin');
@@ -2066,6 +2178,13 @@ document.addEventListener('DOMContentLoaded', function() {
 
     var verifyBtn = document.getElementById('hw-verify-btn');
     if (verifyBtn) verifyBtn.addEventListener('click', _hwVerifyAndFinish);
+    var verifyFields = document.getElementById('hw-verify-fields');
+    if (verifyFields) verifyFields.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            _hwVerifyAndFinish();
+        }
+    });
     var verifyBack = document.getElementById('hw-verify-back-btn');
     if (verifyBack) verifyBack.addEventListener('click', function() {
         if (_hwCtx && _hwCtx.mnemonic) _hwShowMnemonic(_hwCtx.mnemonic);
@@ -2082,6 +2201,27 @@ document.addEventListener('DOMContentLoaded', function() {
 
     var importBtn = document.getElementById('hw-import-btn');
     if (importBtn) importBtn.addEventListener('click', _hwDoImport);
+    var importNick = document.getElementById('hw-import-nickname');
+    if (importNick) importNick.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            _hwDoImport();
+        }
+    });
+    var importPin = document.getElementById('hw-import-pin');
+    if (importPin) {
+        importPin.addEventListener('input', function() {
+            var b = document.getElementById('hw-import-btn');
+            if (b && _hwCtx && _hwCtx.fromSetup) b.disabled = !_hwPinValid(importPin.value);
+        });
+        importPin.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                var b = document.getElementById('hw-import-btn');
+                if (!b || !b.disabled) _hwDoImport();
+            }
+        });
+    }
 
     if (typeof initSheetSwipeDismiss === 'function') {
         initSheetSwipeDismiss('hw-modal', 'hw-modal-overlay', closeHardwareWizard);
@@ -2168,6 +2308,7 @@ function showHwUnlock(hash, kind) {
             '<div id="hw-unlock-error" class="hw-unlock-error" style="display:none"></div>' +
             '<button id="hw-unlock-btn" class="hw-unlock-btn" disabled>Unlock</button>' +
             '<button id="hw-unlock-cancel" class="hw-unlock-cancel">Use a different identity</button>' +
+            '<button id="hw-unlock-forget" class="hw-unlock-cancel hw-unlock-forget" style="display:none;">Remove this identity from this device</button>' +
         '</div>';
     document.body.appendChild(overlay);
     var input = overlay.querySelector('#hw-unlock-pin');
@@ -2179,6 +2320,7 @@ function showHwUnlock(hash, kind) {
     });
     btn.addEventListener('click', _hwDoUnlock);
     overlay.querySelector('#hw-unlock-cancel').addEventListener('click', _hwUnlockCancel);
+    overlay.querySelector('#hw-unlock-forget').addEventListener('click', _hwForgetLockedIdentity);
     setTimeout(function() { if (!isMobile()) input.focus(); }, 120);
 }
 window.showHwUnlock = showHwUnlock;
@@ -2234,15 +2376,52 @@ function _hwUnlockCancel() {
         }
         if (!other) {
             if (err) {
-                err.textContent = 'This is your only identity. Plug in the correct key, or remove it from Identity settings.';
+                err.textContent = 'This is your only identity on this device. You can remove the local registration and return to setup; the YubiKey itself will not be erased.';
                 err.style.display = '';
             }
+            var forget = document.getElementById('hw-unlock-forget');
+            if (forget && _hwLockedKind === 'hardware' && _hwLockedHash) forget.style.display = '';
             return;
         }
         RS.invoke('switch_identity', { hash: other.hash }).finally(function() {
             window.location.reload();
         });
     }).catch(function() { window.location.reload(); });
+}
+
+function _hwForgetLockedIdentity() {
+    if (!_hwLockedHash || _hwLockedKind !== 'hardware') return;
+    var err = document.getElementById('hw-unlock-error');
+    rsConfirm({
+        title: 'Remove hardware identity?',
+        message: 'This removes the locked hardware identity from this device and returns to setup. It does not erase or reset the YubiKey; you can add it again later with the key\'s current PIN.',
+        confirmText: 'Remove from this device',
+        danger: true
+    }).then(function(ok) {
+        if (!ok) return;
+        var btn = document.getElementById('hw-unlock-forget');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Removing...';
+        }
+        RS.invoke('hw_remove', { hash: _hwLockedHash }).then(function() {
+            try {
+                localStorage.removeItem('ratspeak_identity_hash');
+                localStorage.removeItem('ratspeak_identity_name');
+            } catch (_) {}
+            window.location.href = '/';
+            window.location.reload();
+        }).catch(function(e) {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'Remove this identity from this device';
+            }
+            if (err) {
+                err.textContent = (e && e.message) ? e.message : 'Failed to remove the local hardware identity.';
+                err.style.display = '';
+            }
+        });
+    });
 }
 
 if (typeof RS !== 'undefined' && RS.listen) {

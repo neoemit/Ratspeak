@@ -34,17 +34,30 @@ pub async fn api_version() -> AppResult<Value> {
 
 #[tauri::command]
 pub async fn api_startup_progress(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
-    let locked = state.hw_locked_hash();
-    let kind = locked.as_deref().map(|h| {
+    let mut stage = state.get_startup_stage();
+    let mut locked = state.hw_locked_hash();
+    let mut kind = None;
+    if let Some(h) = locked.as_deref() {
         let dir = state.config.data_dir.join("identities").join(h);
         if dir.join("identity.hwid").exists() {
-            "hardware"
+            kind = Some("hardware");
+        } else if dir.join("identity.enc").exists() {
+            kind = Some("passcode");
         } else {
-            "passcode"
+            // The locked identity was removed locally while the backend was
+            // still alive. Do not surface a passcode prompt for an orphaned
+            // hardware lock; clear it and let setup/status drive the UI.
+            state.set_hw_locked(None);
+            state.set_hw_last_error(None);
+            locked = None;
+            if stage == "hw_locked" {
+                state.set_startup_stage("ready");
+                stage = "ready".to_string();
+            }
         }
-    });
+    }
     Ok(json!({
-        "stage": state.get_startup_stage(),
+        "stage": stage,
         "hw_locked": locked,
         "hw_locked_kind": kind,
     }))

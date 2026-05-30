@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 31;
+const SCHEMA_VERSION: i64 = 32;
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = "lxmf.delivery";
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
@@ -1098,6 +1098,32 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         }
         conn.execute_batch("UPDATE schema_version SET version = 31;")?;
         tracing::info!("Migrated to schema version 31 (announce status metadata)");
+    }
+
+    if from_version < 32 {
+        // Repair databases that were marked v31 before both status columns were
+        // actually present. Without identities.status, identity reads fail and
+        // first-run setup incorrectly treats a populated profile as empty.
+        if table_exists(conn, "identities")? {
+            let cols = get_column_names(conn, "identities").unwrap_or_default();
+            if !cols.iter().any(|c| c == "status") {
+                conn.execute_batch(
+                    "ALTER TABLE identities
+                        ADD COLUMN status TEXT NOT NULL DEFAULT '';",
+                )?;
+            }
+        }
+        if table_exists(conn, "identity_activity")? {
+            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+            if !cols.iter().any(|c| c == "status") {
+                conn.execute_batch(
+                    "ALTER TABLE identity_activity
+                        ADD COLUMN status TEXT NOT NULL DEFAULT '';",
+                )?;
+            }
+        }
+        conn.execute_batch("UPDATE schema_version SET version = 32;")?;
+        tracing::info!("Migrated to schema version 32 (repair identity status columns)");
     }
 
     Ok(())
@@ -4892,5 +4918,78 @@ mod pending_blackhole_tests {
             })
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn migration_from_v31_repairs_missing_identity_status_columns() {
+        let mgr = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(1).build(mgr).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE schema_version (version INTEGER NOT NULL);
+                INSERT INTO schema_version (version) VALUES (31);
+
+                CREATE TABLE identities (
+                    hash TEXT PRIMARY KEY,
+                    lxmf_hash TEXT,
+                    nickname TEXT DEFAULT '',
+                    display_name TEXT DEFAULT '',
+                    created_at REAL NOT NULL,
+                    last_used REAL,
+                    is_active INTEGER DEFAULT 0,
+                    propagation_node TEXT DEFAULT '',
+                    propagation_enabled INTEGER DEFAULT 0,
+                    propagation_mode TEXT NOT NULL DEFAULT 'auto',
+                    propagation_auto_favor_static INTEGER NOT NULL DEFAULT 1
+                );
+                INSERT INTO identities
+                    (hash, lxmf_hash, nickname, display_name, created_at, last_used, is_active)
+                VALUES
+                    ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                     'Default',
+                     'Default',
+                     1.0,
+                     2.0,
+                     1);
+
+                CREATE TABLE identity_activity (
+                    dest_hash TEXT PRIMARY KEY,
+                    identity_hash TEXT NOT NULL DEFAULT '',
+                    last_seen REAL NOT NULL,
+                    first_seen REAL NOT NULL,
+                    announce_count INTEGER NOT NULL DEFAULT 1,
+                    display_name TEXT NOT NULL DEFAULT '',
+                    last_interface TEXT NOT NULL DEFAULT '',
+                    services TEXT NOT NULL DEFAULT ''
+                );
+                "#,
+            )
+            .unwrap();
+        }
+
+        init_schema(&pool).unwrap();
+
+        let conn = pool.get().unwrap();
+        let identity_cols = get_column_names(&conn, "identities").unwrap();
+        assert!(identity_cols.iter().any(|c| c == "status"));
+        let activity_cols = get_column_names(&conn, "identity_activity").unwrap();
+        assert!(activity_cols.iter().any(|c| c == "status"));
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        drop(conn);
+
+        let active = get_active_identity(&pool).expect("active identity remains readable");
+        assert_eq!(
+            active.get("hash").and_then(|v| v.as_str()),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(active.get("status").and_then(|v| v.as_str()), Some(""));
     }
 }

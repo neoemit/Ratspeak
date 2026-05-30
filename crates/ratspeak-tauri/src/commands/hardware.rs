@@ -7,6 +7,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use tauri::State;
 
+use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::helpers::{sanitize_announced_display_name, validate_hex};
 use crate::state::AppState;
@@ -113,18 +114,58 @@ pub async fn hw_restore(
     to_value(res)
 }
 
+/// Stage the PIN the user already entered during first-run hardware setup so
+/// the setup restart can load the just-provisioned identity once. The runtime
+/// consumes and clears this value via `take_pending_hw_pin`.
+#[tauri::command]
+pub async fn hw_stage_unlock(state: State<'_, Arc<AppState>>, pin: String) -> AppResult<Value> {
+    check_pin(&pin)?;
+    state.set_pending_hw_pin(Some(pin));
+    to_value(serde_json::json!({ "ok": true }))
+}
+
 #[tauri::command]
 pub async fn hw_remove(state: State<'_, Arc<AppState>>, hash: String) -> AppResult<Value> {
     if !validate_hex(&hash, 16, 128) {
         return Err(AppError::bad_request("Invalid hash"));
     }
+    let state = Arc::clone(&state);
+    let was_locked = state.hw_locked_hash().as_deref() == Some(hash.as_str());
+    let was_loaded = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|lxmf| lxmf.as_ref().map(|mgr| mgr.identity_hash.clone()))
+        .as_deref()
+        == Some(hash.as_str());
+    if was_loaded {
+        crate::shutdown_rns_lxmf(&state).await;
+        state.clear_identity_scoped_runtime_state();
+    }
     let data_dir = state.config.data_dir.clone();
     let db = state.db.clone();
-    tokio::task::spawn_blocking(move || ratspeak_runtime::hardware::remove(&data_dir, &db, &hash))
+    let hash_for_remove = hash.clone();
+    tokio::task::spawn_blocking(move || {
+        ratspeak_runtime::hardware::remove(&data_dir, &db, &hash_for_remove)
+    })
+    .await
+    .map_err(|_| AppError::internal("remove task panicked"))?
+    .map_err(AppError::bad_request)?;
+    let remaining = db::spawn_db(state.db.clone(), |p| db::get_all_identities(&p).len())
         .await
-        .map_err(|_| AppError::internal("remove task panicked"))?
-        .map_err(AppError::bad_request)?;
-    to_value(serde_json::json!({ "removed": true }))
+        .map_err(|_| AppError::internal("identity count db task panicked"))?;
+    if was_locked || was_loaded {
+        state.set_hw_locked(None);
+        state.set_hw_last_error(None);
+        state.set_pending_hw_pin(None);
+        if remaining == 0 {
+            state.set_startup_stage("ready");
+        }
+    }
+    to_value(serde_json::json!({
+        "removed": true,
+        "needs_setup": remaining == 0,
+    }))
 }
 
 /// Unlock the active hardware identity with the user's PIN. Uniformly tears down
@@ -136,6 +177,7 @@ pub async fn hw_unlock(state: State<'_, Arc<AppState>>, pin: String) -> AppResul
     check_pin(&pin)?;
     let state = Arc::clone(&state);
     let _guard = state.identity_switch_lock.lock().await;
+    let expected_hash = state.hw_locked_hash();
 
     crate::shutdown_rns_lxmf(&state).await;
     state.clear_identity_scoped_runtime_state();
@@ -147,7 +189,15 @@ pub async fn hw_unlock(state: State<'_, Arc<AppState>>, pin: String) -> AppResul
     state.set_startup_stage("checking");
     crate::init_rns_lxmf(Arc::clone(&state), state.config.data_root.clone()).await;
 
-    let unlocked = state.lxmf.lock().ok().map(|l| l.is_some()).unwrap_or(false);
+    let loaded_identity = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|lxmf| lxmf.as_ref().map(|mgr| mgr.identity_hash.clone()));
+    let unlocked = loaded_identity.is_some()
+        && expected_hash
+            .as_deref()
+            .is_none_or(|expected| loaded_identity.as_deref() == Some(expected));
     if unlocked {
         state.set_hw_locked(None);
         return to_value(serde_json::json!({ "ok": true }));
@@ -155,9 +205,96 @@ pub async fn hw_unlock(state: State<'_, Arc<AppState>>, pin: String) -> AppResul
     let msg = state
         .take_hw_last_error()
         .unwrap_or_else(|| "Could not unlock the hardware identity.".to_string());
+    if let Some(expected) = expected_hash {
+        state.set_hw_locked(Some(expected));
+        state.set_startup_stage("hw_locked");
+    }
     let locked = msg.contains("PIN locked");
     to_value(serde_json::json!({
         "ok": false,
+        "error": msg,
+        "locked": locked,
+        "remaining": parse_remaining(&msg),
+    }))
+}
+
+/// First-run hardware setup completion needs a stronger guarantee than
+/// `hw_stage_unlock` + async restart: activate this exact hardware identity,
+/// unlock it with the provided PIN, and only report success if that identity is
+/// what the runtime loaded.
+#[tauri::command]
+pub async fn hw_activate_and_unlock(
+    state: State<'_, Arc<AppState>>,
+    hash: String,
+    pin: String,
+) -> AppResult<Value> {
+    if !validate_hex(&hash, 16, 128) {
+        return Err(AppError::bad_request("Invalid hash"));
+    }
+    check_pin(&pin)?;
+    let state = Arc::clone(&state);
+    let _guard = state.identity_switch_lock.lock().await;
+
+    let hash_for_lookup = hash.clone();
+    let exists = db::spawn_db(state.db.clone(), move |p| {
+        db::get_identity(&p, &hash_for_lookup).is_some()
+    })
+    .await
+    .map_err(|_| AppError::internal("identity lookup db task panicked"))?;
+    if !exists {
+        return Err(AppError::not_found("Identity not found"));
+    }
+
+    let id_dir = state.config.data_dir.join("identities").join(&hash);
+    if !id_dir.join("identity.hwid").exists() {
+        return Err(AppError::bad_request("Identity is not a hardware key identity"));
+    }
+
+    let hash_for_active = hash.clone();
+    db::spawn_db(state.db.clone(), move |p| {
+        db::set_active_identity(&p, &hash_for_active)
+    })
+    .await
+    .map_err(|_| AppError::internal("activate identity db task panicked"))?
+    .map_err(|e| AppError::internal(format!("Failed to activate hardware identity: {e}")))?;
+
+    crate::shutdown_rns_lxmf(&state).await;
+    state.clear_identity_scoped_runtime_state();
+    state.set_hw_last_error(None);
+    state.set_hw_locked(None);
+    state.set_pending_hw_pin(Some(pin));
+    if let Ok(mut sig) = state.session_shutdown.write() {
+        *sig = rns_runtime::lifecycle::ShutdownSignal::new();
+    }
+    state.set_startup_stage("checking");
+    crate::init_rns_lxmf(Arc::clone(&state), state.config.data_root.clone()).await;
+
+    let loaded_identity = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|lxmf| lxmf.as_ref().map(|mgr| mgr.identity_hash.clone()));
+    if loaded_identity.as_deref() == Some(hash.as_str()) {
+        state.set_hw_locked(None);
+        state.set_hw_last_error(None);
+        return to_value(serde_json::json!({
+            "ok": true,
+            "hash": hash,
+        }));
+    }
+
+    let msg = state.take_hw_last_error().unwrap_or_else(|| {
+        match loaded_identity {
+            Some(other) => format!("Hardware unlock loaded a different identity ({other})."),
+            None => "Could not unlock the hardware identity.".to_string(),
+        }
+    });
+    state.set_hw_locked(Some(hash.clone()));
+    state.set_startup_stage("hw_locked");
+    let locked = msg.contains("PIN locked");
+    to_value(serde_json::json!({
+        "ok": false,
+        "hash": hash,
         "error": msg,
         "locked": locked,
         "remaining": parse_remaining(&msg),

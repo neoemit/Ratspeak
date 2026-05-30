@@ -4146,6 +4146,11 @@ body.setup-active .bottom-bar {
     background: var(--surface-control-hover);
 }
 .hw-mode-card-title { font-size: var(--text-base); font-weight: 700; color: var(--text-primary); }
+.hw-recommended-note {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--text-muted);
+}
 .hw-mode-card-sub {
     font-size: var(--text-xs);
     font-weight: 600;
@@ -4323,6 +4328,8 @@ body.setup-active .bottom-bar {
     text-decoration: underline;
 }
 .hw-unlock-cancel:hover { color: var(--text-primary); }
+.hw-unlock-forget { color: var(--status-error); }
+.hw-unlock-forget:hover { color: var(--status-error); }
 
 /* One-time recovery-phrase backup reveal (reuses the unlock overlay shell). */
 .recovery-backup-card { max-width: 460px; }

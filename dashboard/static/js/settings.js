@@ -1395,7 +1395,7 @@ function confirmDangerAction(action, onClose) {
 
     if (action === 'factory-reset') {
         rsConfirm({
-            message: 'Factory reset?\n\nThis will:\n\u2022 Delete ALL cryptographic identities\n\u2022 Delete all contacts and messages\n\u2022 Delete all settings and history\n\u2022 Reset the app to first-run state\n\nThis cannot be undone.',
+            message: 'Factory reset?\n\nThis will:\n\u2022 Delete ALL local identities\n\u2022 Delete all contacts and messages\n\u2022 Delete all settings and history\n\u2022 Reset the app to first-run state\n\nHardware identities stored on a YubiKey are not erased. This cannot be undone.',
             danger: true,
             confirmText: 'Delete Everything'
         }).then(function(ok) {

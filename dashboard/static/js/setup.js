@@ -171,7 +171,7 @@ function runConnectingProgress() {
     pollAlive();
 }
 
-function completeSetupAfterIdentityImport() {
+function showSetupConnectingStep() {
     needsSetup = false;
     setSetupStep(3);
 
@@ -190,7 +190,33 @@ function completeSetupAfterIdentityImport() {
         document.getElementById('setup-step-connecting'),
         headerExtras
     );
+}
 
+function resetSetupToStart() {
+    needsSetup = true;
+    document.body.classList.add('setup-active');
+    setSetupStep(0);
+    [
+        document.querySelector('.setup-icon'),
+        document.querySelector('.setup-title'),
+        document.querySelector('.setup-subtitle'),
+        document.getElementById('setup-progress-dots')
+    ].forEach(function(el) {
+        if (el) {
+            el.style.display = '';
+            el.classList.remove('setup-fade-out');
+        }
+    });
+    document.querySelectorAll('#view-setup .setup-step').forEach(function(step) {
+        step.style.display = 'none';
+        step.classList.remove('setup-fade-out', 'setup-fade-in');
+    });
+    var first = document.getElementById('setup-step-1');
+    if (first) first.style.display = 'block';
+}
+
+function completeSetupAfterIdentityImport() {
+    showSetupConnectingStep();
     // The imported identity is already active when setup has no identity.
     // Restart the core so the dashboard opens on the imported session.
     RS.invoke('api_setup_restart').catch(function() {});
@@ -198,6 +224,36 @@ function completeSetupAfterIdentityImport() {
 }
 
 window.completeSetupAfterIdentityImport = completeSetupAfterIdentityImport;
+
+function completeSetupAfterHardwareIdentity(result, pin) {
+    result = result || {};
+    var hash = result.hash || '';
+    showSetupConnectingStep();
+    if (!hash || !pin) {
+        resetSetupToStart();
+        if (typeof showToast === 'function') {
+            showToast('Hardware setup did not return an identity to unlock.', 'toast-red', 6000);
+        }
+        return;
+    }
+    RS.invoke('hw_activate_and_unlock', { hash: hash, pin: pin }).then(function(res) {
+        if (res && res.ok) {
+            runConnectingProgress();
+            return;
+        }
+        resetSetupToStart();
+        var detail = (res && res.error) ? res.error : 'Could not unlock the hardware identity.';
+        if (typeof showToast === 'function') showToast(detail, 'toast-red', 7000);
+        window.RS.diag('error', '[setup] Hardware identity unlock failed:', detail);
+    }).catch(function(err) {
+        resetSetupToStart();
+        var detail = (err && err.message) ? err.message : 'Could not unlock the hardware identity.';
+        if (typeof showToast === 'function') showToast(detail, 'toast-red', 7000);
+        window.RS.diag('error', '[setup] Hardware identity unlock failed:', detail);
+    });
+}
+
+window.completeSetupAfterHardwareIdentity = completeSetupAfterHardwareIdentity;
 
 // Mobile tap-toggle for .tooltip-trigger; desktop uses CSS hover/focus.
 function initSetupTooltips() {
