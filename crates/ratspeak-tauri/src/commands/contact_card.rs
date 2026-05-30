@@ -134,6 +134,20 @@ fn contact_card_json(card: &ContactCard, payload: Option<&str>) -> Value {
     })
 }
 
+fn contact_card_public_key(state: &AppState, hash_hex: &str) -> AppResult<[u8; 64]> {
+    if let Ok(lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_ref()
+        && let Some(public_key) = mgr.contact_card_public_key(hash_hex)
+    {
+        return Ok(public_key);
+    }
+
+    let key_bytes = super::identity::export_identity_key_bytes(state, hash_hex)?;
+    let identity =
+        Identity::from_private_key(&key_bytes).map_err(|_| AppError::bad_request("Invalid key"))?;
+    Ok(identity.get_public_key())
+}
+
 #[tauri::command]
 pub async fn api_contact_card(
     state: State<'_, Arc<AppState>>,
@@ -146,18 +160,17 @@ pub async fn api_contact_card(
         return Err(AppError::bad_request("Invalid identity hash"));
     }
 
-    let key_bytes = super::identity::export_identity_key_bytes(&state, &requested)?;
-    let identity =
-        Identity::from_private_key(&key_bytes).map_err(|_| AppError::bad_request("Invalid key"))?;
+    let public_key = contact_card_public_key(&state, &requested)?;
+    let identity = Identity::from_public_key(&public_key)
+        .map_err(|_| AppError::bad_request("Invalid public key"))?;
     let identity_hash = hex::encode(identity.hash);
     if identity_hash != requested {
-        return Err(AppError::conflict("Identity file hash mismatch"));
+        return Err(AppError::conflict("Identity public key hash mismatch"));
     }
     let lxmf_hash = hex::encode(Destination::hash_from_name_and_identity(
         LXMF_APP_NAME,
         Some(&identity.hash),
     ));
-    let public_key = identity.get_public_key();
 
     let row_hash = requested.clone();
     let row = db::spawn_db(state.db.clone(), move |p| db::get_identity(&p, &row_hash))

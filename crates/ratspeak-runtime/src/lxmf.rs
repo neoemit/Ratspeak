@@ -1335,12 +1335,62 @@ impl LxmfManager {
     }
 
     pub fn export_identity(&self, hash_hex: &str) -> Option<Vec<u8>> {
+        if self.identity_hash == hash_hex
+            && !self.is_hardware
+            && let Some(private_key) = self.identity.get_private_key()
+        {
+            return Some(private_key.to_vec());
+        }
+
         let id_file = self
             .data_dir
             .join("identities")
             .join(hash_hex)
             .join("identity");
         std::fs::read(&id_file).ok()
+    }
+
+    pub fn contact_card_public_key(&self, hash_hex: &str) -> Option<[u8; 64]> {
+        if self.identity_hash == hash_hex {
+            return Some(self.identity.get_public_key());
+        }
+
+        if let Some(public_key) = self.hwid_contact_card_public_key(hash_hex) {
+            return Some(public_key);
+        }
+
+        self.export_identity(hash_hex).and_then(|key_bytes| {
+            Identity::from_private_key(&key_bytes)
+                .ok()
+                .map(|identity| identity.get_public_key())
+        })
+    }
+
+    #[cfg(feature = "seed")]
+    fn hwid_contact_card_public_key(&self, hash_hex: &str) -> Option<[u8; 64]> {
+        let hwid_file = self
+            .data_dir
+            .join("identities")
+            .join(hash_hex)
+            .join("identity.hwid");
+        let cfg = rns_ratkey::HwidConfig::from_file(&hwid_file).ok()?;
+        if cfg.identity.hash != hash_hex {
+            return None;
+        }
+
+        let x25519_pub = cfg.x25519_pub_bytes().ok()?;
+        let ed25519_pub = cfg.ed25519_pub_bytes().ok()?;
+        let mut public_key = [0u8; 64];
+        public_key[..32].copy_from_slice(&x25519_pub);
+        public_key[32..].copy_from_slice(&ed25519_pub);
+
+        let identity = Identity::from_public_key(&public_key).ok()?;
+        (hex::encode(identity.hash) == hash_hex).then_some(public_key)
+    }
+
+    #[cfg(not(feature = "seed"))]
+    fn hwid_contact_card_public_key(&self, _hash_hex: &str) -> Option<[u8; 64]> {
+        None
     }
 
     fn peer_recently_seen(&self, db_pool: &DbPool, dest_hash_hex: &str) -> bool {
@@ -5026,6 +5076,87 @@ mod tests {
 
         let loaded = LxmfManager::load_or_create(&tmp, Some(&second_hash), None).unwrap();
         assert_eq!(loaded.identity_hash, second_hash);
+    }
+
+    #[test]
+    fn export_identity_uses_unlocked_active_identity_without_plaintext_file() {
+        let unique = TEMP_LXMF_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = std::env::temp_dir().join(format!(
+            "ratspeak-lxmf-export-active-test-{}-{}-{unique}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mgr = LxmfManager::load_or_create(&tmp, None, None).unwrap();
+        let hash = mgr.identity_hash.clone();
+        let private_key = mgr.identity.get_private_key().unwrap().to_vec();
+        let public_key = mgr.identity.get_public_key();
+        let id_file = tmp
+            .join(".ratspeak")
+            .join("identities")
+            .join(&hash)
+            .join("identity");
+        std::fs::remove_file(id_file).unwrap();
+
+        assert_eq!(mgr.export_identity(&hash).unwrap(), private_key);
+        assert_eq!(mgr.contact_card_public_key(&hash).unwrap(), public_key);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[cfg(feature = "seed")]
+    #[test]
+    fn contact_card_public_key_uses_hwid_public_metadata_without_private_key() {
+        let unique = TEMP_LXMF_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = std::env::temp_dir().join(format!(
+            "ratspeak-lxmf-hwid-contact-card-test-{}-{}-{unique}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mgr = LxmfManager::load_or_create(&tmp, None, None).unwrap();
+        let hardware_identity = Identity::new();
+        let hash = hex::encode(hardware_identity.hash);
+        let public_key = hardware_identity.get_public_key();
+        let id_dir = tmp.join(".ratspeak").join("identities").join(&hash);
+        std::fs::create_dir_all(&id_dir).unwrap();
+        std::fs::write(
+            id_dir.join("identity.hwid"),
+            format!(
+                "[identity]\n\
+                 hash = \"{hash}\"\n\
+                 nickname = \"Hardware\"\n\
+                 created_at = 1\n\
+                 \n\
+                 [device]\n\
+                 type = \"yubikey5\"\n\
+                 serial = 123456\n\
+                 firmware = \"5.7.4\"\n\
+                 \n\
+                 [keys]\n\
+                 ed25519_pub = \"{}\"\n\
+                 x25519_pub = \"{}\"\n\
+                 \n\
+                 [slots]\n\
+                 signing = \"9A\"\n\
+                 encryption = \"9D\"\n\
+                 \n\
+                 [policy]\n\
+                 pin_cache_timeout = 300\n\
+                 touch_signing = \"always\"\n\
+                 touch_encryption = \"cached\"\n",
+                hex::encode(&public_key[32..]),
+                hex::encode(&public_key[..32]),
+            ),
+        )
+        .unwrap();
+
+        assert!(mgr.export_identity(&hash).is_none());
+        assert_eq!(mgr.contact_card_public_key(&hash).unwrap(), public_key);
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

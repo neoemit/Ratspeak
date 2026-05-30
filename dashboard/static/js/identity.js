@@ -222,17 +222,17 @@ function identityExportFormatChoices() {
         {
             label: 'Ratspeak Identity Backup',
             value: 'ratspeak',
-            hint: '.rsi identity file with Ratspeak display-name metadata.'
+            hint: 'Advanced: unencrypted .rsi private-key backup with display-name metadata.'
         },
         {
             label: 'Reticulum Identity File',
             value: 'reticulum',
-            hint: 'Raw 64-byte Reticulum private identity key.'
+            hint: 'Advanced: raw unencrypted 64-byte Reticulum private identity key.'
         },
         {
             label: 'Reticulum Base32 Key',
             value: 'reticulum-base32',
-            hint: 'Base32 text form of the same Reticulum private identity key.'
+            hint: 'Advanced: unencrypted text form of the same private identity key.'
         }
     ];
 }
@@ -248,7 +248,7 @@ function chooseIdentityImportFormat() {
 function chooseIdentityExportFormat() {
     return rsChoice({
         title: 'Export Identity',
-        message: 'Choose the destination format.',
+        message: 'Recovery phrases are preferred for normal backup. These exports create unencrypted private-key material.',
         choices: identityExportFormatChoices()
     });
 }
@@ -1241,12 +1241,12 @@ function exportIdentityPayload(hash, format) {
 
 function exportWarningForFormat(format, targetName) {
     if (format === 'reticulum') {
-        return 'This exports only the private Reticulum identity key for ' + targetName + '. Reticulum tools can use it. Ratspeak messages and settings are not included.';
+        return 'This exports the unencrypted private Reticulum identity key for ' + targetName + '. Anyone with this file can use the identity. Ratspeak messages and settings are not included.';
     }
     if (format === 'reticulum-base32') {
-        return 'This exports the private Reticulum identity key for ' + targetName + ' as base32 text. Anyone with this text can use the identity. Ratspeak messages and settings are not included.';
+        return 'This exports the unencrypted private Reticulum identity key for ' + targetName + ' as base32 text. Anyone with this text can use the identity. Ratspeak messages and settings are not included.';
     }
-    return 'Anyone with this Ratspeak identity backup can use ' + targetName + '. It includes identity metadata, but not messages or app settings.';
+    return 'This exports an unencrypted Ratspeak identity backup for ' + targetName + '. Anyone with this file can use the identity. It includes identity metadata, but not messages or app settings.';
 }
 
 function exportIdentityBackup(hash) {
