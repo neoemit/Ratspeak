@@ -4035,8 +4035,11 @@ body.setup-active .bottom-bar {
 .identity-hardware-badge-icon {
     width: 13px;
     height: 13px;
-    fill: currentColor;
-    stroke: none;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
 }
 .identity-hardware-badge--list {
     min-height: 20px;
@@ -4305,6 +4308,7 @@ body.setup-active .bottom-bar {
     letter-spacing: 0.3em;
 }
 .hw-unlock-input:focus { outline: none; border-color: var(--accent); }
+.hw-unlock-input:focus::placeholder { color: transparent; }
 .hw-unlock-error { font-size: var(--text-sm); color: var(--status-error); }
 .hw-unlock-btn {
     width: 100%;

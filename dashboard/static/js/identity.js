@@ -1701,7 +1701,7 @@ RS.listen('identity_switched', function(data) {
 // Hardware Key (YubiKey/Nitrokey PIV) identity flow
 // ---------------------------------------------------------------------------
 
-var HW_BADGE_ICON = '<svg class="identity-hardware-badge-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 7a4 4 0 1 0-3.9 5H15v3h3v3h3v-4l-3-3a4 4 0 0 0-1-4z"/><circle cx="7" cy="10" r="1.2"/></svg>';
+var HW_BADGE_ICON = '<svg class="identity-hardware-badge-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.6 17.4A2 2 0 0 0 2 18.8V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.2a2 2 0 0 0 1.4-.6l.8-.8A6.5 6.5 0 1 0 9.4 10.6z"/><circle cx="16.5" cy="7.5" r="1.5"/></svg>';
 
 var HW_DETECT_ERROR_COPY = "YubiKey not detected. Please make sure it's a YubiKey 5+ running the latest firmware.";
 
@@ -2547,10 +2547,10 @@ function showHwUnlock(hash, kind) {
     overlay.style.display = 'flex';
     var title = isPass ? 'Unlock your identity' : 'Unlock your hardware key';
     var sub = isPass
-        ? 'Enter your passcode to continue.'
+        ? 'Enter your PIN to continue.'
         : 'Enter your YubiKey PIN to continue. Keep the key plugged in.';
     var inputAttrs = isPass
-        ? 'type="password" autocomplete="off" maxlength="128" placeholder="Passcode"'
+        ? 'type="password" autocomplete="off" maxlength="128" placeholder="PIN"'
         : 'type="password" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="PIN"';
     overlay.innerHTML =
         '<div class="hw-unlock-card">' +
@@ -2604,7 +2604,7 @@ function _hwDoUnlock() {
         if (input) input.value = '';
         var msg;
         if (isPass) {
-            msg = 'Incorrect passcode.';
+            msg = 'Incorrect PIN.';
         } else if (res.locked) {
             msg = 'This key is locked after too many wrong PINs. Reset the security key to use it again.';
             btn.disabled = true;

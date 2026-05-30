@@ -2253,6 +2253,7 @@ fn identity_management_is_first_class_tab() {
     assert!(index.contains("application/json,application/octet-stream,text/plain"));
     assert!(index.contains("title=\"Import or restore identity\""));
     assert!(index.contains(r#"<path d="M7 10l5 5 5-5"/>"#));
+    assert!(index.contains("M2.6 17.4A2 2 0 0 0 2 18.8V21"));
     assert!(!index.contains("Import identity backup"));
     assert!(!index.contains(r#"<path d="M7 8l5-5 5 5"/>"#));
 
@@ -2310,6 +2311,7 @@ fn identity_management_is_first_class_tab() {
     assert!(!identity_js.contains("Export Backup"));
     assert!(identity_js.contains("function openIdentityActions(hash)"));
     assert!(identity_js.contains("function deleteIdentityByHash(hash)"));
+    assert!(identity_js.contains("M2.6 17.4A2 2 0 0 0 2 18.8V21"));
 
     let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs js");
     assert!(dialogs_js.contains("built.sheet.addEventListener('keydown'"));
@@ -2399,8 +2401,16 @@ fn hardware_new_identity_reset_flow_handles_initialized_keys() {
     assert!(identity_js.contains("function _hwIsFactoryDefaultPinError"));
     assert!(identity_js.contains("function _hwRecoverNonFactoryPinForProvision"));
     assert!(identity_js.contains("_hwRecoverNonFactoryPinForProvision(msg);"));
+    assert!(identity_js.contains("? 'Enter your PIN to continue.'"));
+    assert!(identity_js.contains(r#"placeholder="PIN""#));
+    assert!(!identity_js.contains(r#"placeholder="Passcode""#));
+    assert!(identity_js.contains("msg = 'Incorrect PIN.';"));
     assert!(!identity_js.contains("title: 'Overwrite this key?'"));
     assert!(!identity_js.contains("confirmText: 'Overwrite'"));
+
+    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+    assert!(views_css.contains(".hw-unlock-input:focus::placeholder { color: transparent; }"));
+    assert!(views_css.contains("stroke-linecap: round;"));
 
     assert!(hardware_rs.contains("not at the factory default"));
     assert!(hardware_rs.contains("Reset the security key to set up a new Ratspeak identity"));
