@@ -910,27 +910,71 @@ function createNewIdentity() {
     bindIdentityPasscodeOption('identity-create');
 }
 
-// Recovery-phrase reveal as a standalone full-screen overlay (reuses the same
-// reveal/copy/confirm pattern as the setup hardware-key backup step). Used both
-// at software creation/restore and later via "View Recovery Phrase"; re-display
-// reads the plaintext sidecar or decrypts it from the passcode vault.
+function recoveryPhraseWords(mnemonic) {
+    return String(mnemonic || '').trim().split(/\s+/).filter(Boolean);
+}
+
+function renderRecoveryPhraseGrid(words) {
+    return (words || []).map(function(w, i) {
+        return '<div class="hw-mnemonic-word"><span class="hw-mnemonic-index">' + (i + 1) +
+            '</span><span class="hw-mnemonic-text">' + escapeHtml(w) + '</span></div>';
+    }).join('');
+}
+
+function pickRecoveryVerifyPositions(count) {
+    var a = Math.floor(Math.random() * count);
+    var b;
+    do { b = Math.floor(Math.random() * count); } while (b === a && count > 1);
+    return a <= b ? [a, b] : [b, a];
+}
+
+function renderRecoveryVerifyFields(positions, inputClass) {
+    var cls = inputClass || 'recovery-verify-input';
+    return (positions || []).map(function(pos, idx) {
+        var ordinal = pos + 1;
+        return '<div class="modal-field recovery-verify-field"' + (idx > 0 ? ' style="margin-top:10px;"' : '') + '>' +
+            '<label>Word #' + ordinal + '</label>' +
+            '<input type="text" class="modal-input ' + cls + '" data-recovery-pos="' + pos + '" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="Enter word ' + ordinal + '">' +
+        '</div>';
+    }).join('');
+}
+
+function validateRecoveryVerifyInputs(root, words) {
+    if (!root) return false;
+    var inputs = root.querySelectorAll('[data-recovery-pos]');
+    var ok = inputs.length > 0;
+    Array.prototype.forEach.call(inputs, function(input) {
+        var pos = parseInt(input.getAttribute('data-recovery-pos'), 10);
+        var expected = (words[pos] || '').toLowerCase();
+        if (input.value.trim().toLowerCase() !== expected) ok = false;
+    });
+    return ok;
+}
+
+window.recoveryPhraseWords = recoveryPhraseWords;
+window.renderRecoveryPhraseGrid = renderRecoveryPhraseGrid;
+window.pickRecoveryVerifyPositions = pickRecoveryVerifyPositions;
+window.renderRecoveryVerifyFields = renderRecoveryVerifyFields;
+window.validateRecoveryVerifyInputs = validateRecoveryVerifyInputs;
+
+// Recovery-phrase reveal as a standalone full-screen overlay. Software and
+// hardware setup flows share the reveal/copy/check/verify pattern so users learn
+// one recovery ritual instead of separate backup flows.
 function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
     opts = opts || {};
-    var words = String(mnemonic || '').trim().split(/\s+/).filter(Boolean);
+    var words = recoveryPhraseWords(mnemonic);
     if (words.length !== RECOVERY_PHRASE_WORDS) {
         if (typeof onDone === 'function') onDone();
         return;
     }
-    var grid = words.map(function(w, i) {
-        return '<div class="hw-mnemonic-word"><span class="hw-mnemonic-index">' + (i + 1) +
-            '</span><span class="hw-mnemonic-text">' + escapeHtml(w) + '</span></div>';
-    }).join('');
+    var grid = renderRecoveryPhraseGrid(words);
     var storageWarn = opts.passcodeProtected
         ? 'Ratspeak encrypts this identity and phrase with your PIN on this device.'
         : 'Ratspeak stores this phrase on this device so you can view it again; set a PIN to encrypt it at rest.';
     var defaultWarn = 'Write down these ' + RECOVERY_PHRASE_WORDS + ' words in order and store them somewhere safe. ' +
         'Anyone with them controls your identity. ' + storageWarn;
     var requireConfirm = opts.requireConfirm !== false;
+    var requireVerify = requireConfirm && opts.requireVerify !== false;
     var confirmHtml = requireConfirm
         ? '<label class="hw-confirm-check">' +
               '<input type="checkbox" id="recovery-backup-confirm">' +
@@ -945,7 +989,15 @@ function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
     overlay.id = 'recovery-backup-overlay';
     overlay.className = 'hw-unlock-overlay';
     overlay.style.display = 'flex';
-    overlay.innerHTML =
+    document.body.appendChild(overlay);
+
+    function finish() {
+        overlay.remove();
+        if (typeof onDone === 'function') onDone();
+    }
+
+    function showPhraseStep() {
+        overlay.innerHTML =
         '<div class="hw-unlock-card recovery-backup-card" role="dialog" aria-modal="true" aria-labelledby="recovery-backup-title">' +
             '<div class="hw-unlock-title" id="recovery-backup-title">' + escapeHtml(opts.title || 'Backup Phrase') + '</div>' +
             '<p class="recovery-warn">' + (opts.warn || defaultWarn) + '</p>' +
@@ -963,47 +1015,91 @@ function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
             confirmHtml +
             '<button type="button" class="nr-btn w-full recovery-backup-done" id="recovery-backup-done"' + doneDisabled + '>' + escapeHtml(doneLabel) + '</button>' +
         '</div>';
-    document.body.appendChild(overlay);
 
-    var cover = document.getElementById('recovery-backup-cover');
-    var shell = document.getElementById('recovery-backup-shell');
-    var gridEl = document.getElementById('recovery-backup-grid');
-    if (cover) {
-        cover.addEventListener('click', function() {
-            cover.style.display = 'none';
-            if (shell) shell.classList.add('revealed');
-            if (gridEl) gridEl.setAttribute('aria-hidden', 'false');
+        var cover = document.getElementById('recovery-backup-cover');
+        var shell = document.getElementById('recovery-backup-shell');
+        var gridEl = document.getElementById('recovery-backup-grid');
+        if (cover) {
+            cover.addEventListener('click', function() {
+                cover.style.display = 'none';
+                if (shell) shell.classList.add('revealed');
+                if (gridEl) gridEl.setAttribute('aria-hidden', 'false');
+            });
+            setTimeout(function() { cover.focus(); }, 50);
+        }
+
+        var copyBtn = document.getElementById('recovery-backup-copy');
+        if (copyBtn) {
+            copyBtn.addEventListener('click', function() {
+                if (!navigator.clipboard) {
+                    showToast('Clipboard is not available', 'toast-orange', 2000);
+                    return;
+                }
+                navigator.clipboard.writeText(mnemonic).then(function() {
+                    showCopyConfirmationToast('Recovery phrase');
+                }).catch(function() {
+                    showToast('Could not copy phrase', 'toast-orange', 2000);
+                });
+            });
+        }
+
+        var confirm = document.getElementById('recovery-backup-confirm');
+        var done = document.getElementById('recovery-backup-done');
+        if (confirm && done) {
+            confirm.addEventListener('change', function() {
+                done.disabled = !confirm.checked;
+            });
+        }
+        if (done) done.addEventListener('click', function() {
+            if (done.disabled) return;
+            if (requireVerify) showVerifyStep();
+            else finish();
         });
-        setTimeout(function() { cover.focus(); }, 50);
     }
 
-    var copyBtn = document.getElementById('recovery-backup-copy');
-    if (copyBtn) {
-        copyBtn.addEventListener('click', function() {
-            if (!navigator.clipboard) {
-                showToast('Clipboard is not available', 'toast-orange', 2000);
+    function showVerifyStep() {
+        var positions = pickRecoveryVerifyPositions(words.length);
+        overlay.innerHTML =
+            '<div class="hw-unlock-card recovery-backup-card" role="dialog" aria-modal="true" aria-labelledby="recovery-backup-title">' +
+                '<div class="hw-unlock-title" id="recovery-backup-title">' + escapeHtml(opts.verifyTitle || 'Confirm Backup') + '</div>' +
+                '<p class="recovery-warn">' + escapeHtml(opts.verifyWarn || 'Confirm your backup by entering the requested words.') + '</p>' +
+                '<div id="recovery-verify-fields">' + renderRecoveryVerifyFields(positions, 'recovery-verify-input') + '</div>' +
+                '<div class="hw-error" id="recovery-verify-error" style="display:none;"></div>' +
+                '<button type="button" class="nr-btn w-full recovery-backup-done" id="recovery-verify-btn">' + escapeHtml(opts.verifyButton || 'Verify & Finish') + '</button>' +
+                '<button type="button" class="nr-btn nr-btn-ghost w-full recovery-backup-back" id="recovery-verify-back-btn">Back to phrase</button>' +
+            '</div>';
+        var fields = document.getElementById('recovery-verify-fields');
+        var err = document.getElementById('recovery-verify-error');
+        var verify = document.getElementById('recovery-verify-btn');
+        function submitVerify() {
+            if (validateRecoveryVerifyInputs(fields, words)) {
+                if (err) err.style.display = 'none';
+                finish();
                 return;
             }
-            navigator.clipboard.writeText(mnemonic).then(function() {
-                showCopyConfirmationToast('Recovery phrase');
-            }).catch(function() {
-                showToast('Could not copy phrase', 'toast-orange', 2000);
+            if (err) {
+                err.textContent = "Those words don't match. Check your written phrase and try again.";
+                err.style.display = '';
+            }
+        }
+        if (verify) verify.addEventListener('click', submitVerify);
+        if (fields) {
+            fields.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    submitVerify();
+                }
             });
-        });
+        }
+        var back = document.getElementById('recovery-verify-back-btn');
+        if (back) back.addEventListener('click', showPhraseStep);
+        setTimeout(function() {
+            var first = document.querySelector('#recovery-verify-fields .recovery-verify-input');
+            if (first && !isMobile()) first.focus();
+        }, 50);
     }
 
-    var confirm = document.getElementById('recovery-backup-confirm');
-    var done = document.getElementById('recovery-backup-done');
-    if (confirm && done) {
-        confirm.addEventListener('change', function() {
-            done.disabled = !confirm.checked;
-        });
-    }
-    if (done) done.addEventListener('click', function() {
-        if (done.disabled) return;
-        overlay.remove();
-        if (typeof onDone === 'function') onDone();
-    });
+    showPhraseStep();
 }
 window.showRecoveryPhraseBackup = showRecoveryPhraseBackup;
 
@@ -2287,18 +2383,13 @@ function _hwProvisionHardwareOnly() {
 
 function _hwShowMnemonic(mnemonic) {
     _hwSetTitle('Backup Phrase');
-    var words = String(mnemonic || '').trim().split(/\s+/).filter(Boolean);
+    var words = recoveryPhraseWords(mnemonic);
     _hwCtx.mnemonic = mnemonic;
     _hwCtx.mnemonicWords = words;
 
     var grid = document.getElementById('hw-mnemonic-grid');
     if (grid) {
-        grid.innerHTML = words.map(function(word, i) {
-            return '<div class="hw-mnemonic-word">' +
-                '<span class="hw-mnemonic-index">' + (i + 1) + '</span>' +
-                '<span class="hw-mnemonic-text">' + escapeHtml(word) + '</span>' +
-            '</div>';
-        }).join('');
+        grid.innerHTML = renderRecoveryPhraseGrid(words);
     }
     var cover = document.getElementById('hw-mnemonic-cover');
     if (cover) cover.style.display = '';
@@ -2315,10 +2406,7 @@ function _hwShowMnemonic(mnemonic) {
 
 // Pick two distinct word positions for the verify step.
 function _hwPickVerifyPositions(count) {
-    var a = Math.floor(Math.random() * count);
-    var b;
-    do { b = Math.floor(Math.random() * count); } while (b === a && count > 1);
-    return a <= b ? [a, b] : [b, a];
+    return pickRecoveryVerifyPositions(count);
 }
 
 function _hwShowVerify() {
@@ -2330,13 +2418,7 @@ function _hwShowVerify() {
 
     var fields = document.getElementById('hw-verify-fields');
     if (fields) {
-        fields.innerHTML = positions.map(function(pos, idx) {
-            var ordinal = pos + 1;
-            return '<div class="modal-field"' + (idx > 0 ? ' style="margin-top:10px;"' : '') + '>' +
-                '<label>Word #' + ordinal + '</label>' +
-                '<input type="text" class="modal-input hw-verify-input" data-pos="' + pos + '" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="Enter word ' + ordinal + '">' +
-            '</div>';
-        }).join('');
+        fields.innerHTML = renderRecoveryVerifyFields(positions, 'hw-verify-input');
     }
     var err = document.getElementById('hw-verify-error');
     if (err) err.style.display = 'none';
@@ -2349,13 +2431,7 @@ function _hwShowVerify() {
 
 function _hwVerifyAndFinish() {
     var words = _hwCtx.mnemonicWords || [];
-    var inputs = document.querySelectorAll('#hw-verify-fields .hw-verify-input');
-    var ok = inputs.length > 0;
-    Array.prototype.forEach.call(inputs, function(input) {
-        var pos = parseInt(input.getAttribute('data-pos'), 10);
-        var expected = (words[pos] || '').toLowerCase();
-        if (input.value.trim().toLowerCase() !== expected) ok = false;
-    });
+    var ok = validateRecoveryVerifyInputs(document.getElementById('hw-verify-fields'), words);
     var err = document.getElementById('hw-verify-error');
     if (!ok) {
         if (err) { err.textContent = "Those words don't match. Check your written phrase and try again."; err.style.display = ''; }

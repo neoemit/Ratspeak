@@ -291,6 +291,15 @@
                             </label>
                             <button class="nr-btn nr-btn-lg w-full" id="setup-mnemonic-continue-btn" disabled>Continue</button>
                         </div>
+                        <div class="setup-step" id="setup-step-backup-verify" style="display:none;">
+                            <div class="setup-divider"></div>
+                            <h3 class="setup-step-title">Confirm Backup</h3>
+                            <p class="setup-recovery-warn">Confirm your backup by entering the requested words.</p>
+                            <div id="setup-verify-fields"></div>
+                            <div class="hw-error" id="setup-verify-error" style="display:none;"></div>
+                            <button class="nr-btn nr-btn-lg w-full" id="setup-verify-btn">Verify &amp; Continue</button>
+                            <button class="nr-btn nr-btn-ghost nr-btn-lg w-full mt-3" id="setup-verify-back-btn">Back to phrase</button>
+                        </div>
                         <div class="setup-step" id="setup-step-2" style="display:none;">
                             <div class="modal-field">
                                 <label>Your Identity <span class="help-icon tooltip-trigger" tabindex="0" role="button" aria-label="What is this?" data-tooltip="This is your LXMF identity, it's the address others use to message you."><svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor" aria-hidden="true"><circle cx="8" cy="3.5" r="1.5"/><rect x="6.5" y="6.5" width="3" height="7" rx="1"/></svg></span></label>

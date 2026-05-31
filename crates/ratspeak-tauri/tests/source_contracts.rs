@@ -1343,7 +1343,7 @@ fn active_call_surface_is_passive_and_shows_elapsed_duration() {
 fn settings_version_display_uses_package_version_api() {
     let root = repo_root();
     let version_file = read_source(root.join("VERSION")).expect("display version");
-    assert_eq!(version_file.trim(), "1.0.18b");
+    assert_eq!(version_file.trim(), "1.0.19");
 
     let system_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");
@@ -1419,7 +1419,7 @@ fn settings_version_display_uses_package_version_api() {
     assert!(
         tauri_conf.contains("connect-src 'self' ipc: http://ipc.localhost https://api.github.com")
     );
-    assert!(tauri_conf.contains(r#""versionCode": 1000021"#));
+    assert!(tauri_conf.contains(r#""versionCode": 1000022"#));
 
     let android_gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))
         .expect("android gradle");
@@ -2469,10 +2469,19 @@ fn software_identity_creation_uses_passcode_and_shared_backup_flow() {
     assert!(identity_js.contains("id=\"recovery-backup-cover\""));
     assert!(identity_js.contains("id=\"recovery-backup-copy\""));
     assert!(identity_js.contains("opts.requireConfirm !== false"));
+    assert!(identity_js.contains("function renderRecoveryVerifyFields"));
+    assert!(identity_js.contains("function validateRecoveryVerifyInputs"));
+    assert!(identity_js.contains("var requireVerify = requireConfirm && opts.requireVerify !== false;"));
+    assert!(identity_js.contains("showVerifyStep();"));
     assert!(identity_js.contains("passcodeProtected: !!passcode"));
     assert!(setup_js.contains("function showSetupRecoveryStep"));
+    assert!(setup_js.contains("function showSetupRecoveryVerifyStep"));
+    assert!(setup_js.contains("window.renderRecoveryVerifyFields"));
+    assert!(setup_js.contains("window.validateRecoveryVerifyInputs"));
     assert!(setup_js.contains("showSetupRecoveryStep(data.mnemonic || '', genStep)"));
     assert!(index.contains(r#"id="setup-step-backup""#));
+    assert!(index.contains(r#"id="setup-step-backup-verify""#));
+    assert!(index.contains(r#"id="setup-verify-fields""#));
     assert_eq!(index.matches(r#"class="setup-dot"#).count(), 4);
     assert_eq!(index.matches(r#"class="setup-dot active"#).count(), 1);
 

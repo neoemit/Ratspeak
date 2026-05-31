@@ -1,6 +1,7 @@
 var needsSetup = false;
 var SETUP_RECOVERY_PHRASE_WORDS = 12;
 var setupRecoveryMnemonic = '';
+var setupRecoveryVerifyPositions = [];
 
 function setSetupStep(stepIndex) {
     var dots = document.querySelectorAll('#setup-progress-dots .setup-dot');
@@ -116,11 +117,40 @@ function startCryptoAnimation() {
 }
 
 function setupRecoveryWords(mnemonic) {
+    if (typeof window.recoveryPhraseWords === 'function') {
+        return window.recoveryPhraseWords(mnemonic);
+    }
     return String(mnemonic || '').trim().split(/\s+/).filter(Boolean);
+}
+
+function setupRecoveryPhraseGrid(words) {
+    if (typeof window.renderRecoveryPhraseGrid === 'function') {
+        return window.renderRecoveryPhraseGrid(words);
+    }
+    return (words || []).map(function(word, i) {
+        return '<div class="hw-mnemonic-word">' +
+            '<span class="hw-mnemonic-index">' + (i + 1) + '</span>' +
+            '<span class="hw-mnemonic-text">' + escapeHtml(word) + '</span>' +
+        '</div>';
+    }).join('');
+}
+
+function setupRecoveryVerifyFields(positions) {
+    if (typeof window.renderRecoveryVerifyFields === 'function') {
+        return window.renderRecoveryVerifyFields(positions, 'setup-verify-input');
+    }
+    return (positions || []).map(function(pos, idx) {
+        var ordinal = pos + 1;
+        return '<div class="modal-field recovery-verify-field"' + (idx > 0 ? ' style="margin-top:10px;"' : '') + '>' +
+            '<label>Word #' + ordinal + '</label>' +
+            '<input type="text" class="modal-input setup-verify-input" data-recovery-pos="' + pos + '" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="Enter word ' + ordinal + '">' +
+        '</div>';
+    }).join('');
 }
 
 function resetSetupRecoveryStep() {
     setupRecoveryMnemonic = '';
+    setupRecoveryVerifyPositions = [];
     var grid = document.getElementById('setup-mnemonic-grid');
     if (grid) {
         grid.innerHTML = '';
@@ -134,6 +164,10 @@ function resetSetupRecoveryStep() {
     if (confirm) confirm.checked = false;
     var continueBtn = document.getElementById('setup-mnemonic-continue-btn');
     if (continueBtn) continueBtn.disabled = true;
+    var verifyFields = document.getElementById('setup-verify-fields');
+    if (verifyFields) verifyFields.innerHTML = '';
+    var verifyError = document.getElementById('setup-verify-error');
+    if (verifyError) verifyError.style.display = 'none';
 }
 
 function showSetupRecoveryStep(mnemonic, fromEl) {
@@ -146,12 +180,7 @@ function showSetupRecoveryStep(mnemonic, fromEl) {
     setupRecoveryMnemonic = mnemonic;
     var grid = document.getElementById('setup-mnemonic-grid');
     if (grid) {
-        grid.innerHTML = words.map(function(word, i) {
-            return '<div class="hw-mnemonic-word">' +
-                '<span class="hw-mnemonic-index">' + (i + 1) + '</span>' +
-                '<span class="hw-mnemonic-text">' + escapeHtml(word) + '</span>' +
-            '</div>';
-        }).join('');
+        grid.innerHTML = setupRecoveryPhraseGrid(words);
         grid.setAttribute('aria-hidden', 'true');
     }
 
@@ -168,6 +197,56 @@ function showSetupRecoveryStep(mnemonic, fromEl) {
     transitionStep(fromEl, document.getElementById('setup-step-backup'), null, function() {
         if (cover && !isMobile()) cover.focus();
     });
+}
+
+function showSetupRecoveryVerifyStep(fromEl) {
+    var words = setupRecoveryWords(setupRecoveryMnemonic);
+    if (words.length < 2) {
+        showSetupIdentityStep(fromEl);
+        return;
+    }
+
+    setupRecoveryVerifyPositions = (typeof window.pickRecoveryVerifyPositions === 'function')
+        ? window.pickRecoveryVerifyPositions(words.length)
+        : [0, 1];
+
+    var fields = document.getElementById('setup-verify-fields');
+    if (fields) fields.innerHTML = setupRecoveryVerifyFields(setupRecoveryVerifyPositions);
+    var err = document.getElementById('setup-verify-error');
+    if (err) err.style.display = 'none';
+
+    setSetupStep(2);
+    transitionStep(fromEl, document.getElementById('setup-step-backup-verify'), null, function() {
+        var first = document.querySelector('#setup-verify-fields .setup-verify-input');
+        if (first && !isMobile()) first.focus();
+    });
+}
+
+function verifySetupRecoveryPhrase() {
+    var words = setupRecoveryWords(setupRecoveryMnemonic);
+    var fields = document.getElementById('setup-verify-fields');
+    var ok = (typeof window.validateRecoveryVerifyInputs === 'function')
+        ? window.validateRecoveryVerifyInputs(fields, words)
+        : (function() {
+            if (!fields) return false;
+            var inputs = fields.querySelectorAll('[data-recovery-pos]');
+            var valid = inputs.length > 0;
+            Array.prototype.forEach.call(inputs, function(input) {
+                var pos = parseInt(input.getAttribute('data-recovery-pos'), 10);
+                if (input.value.trim().toLowerCase() !== (words[pos] || '').toLowerCase()) valid = false;
+            });
+            return valid;
+        })();
+    var err = document.getElementById('setup-verify-error');
+    if (!ok) {
+        if (err) {
+            err.textContent = "Those words don't match. Check your written phrase and try again.";
+            err.style.display = '';
+        }
+        return;
+    }
+    if (err) err.style.display = 'none';
+    showSetupIdentityStep(document.getElementById('setup-step-backup-verify'));
 }
 
 function showSetupIdentityStep(fromEl) {
@@ -476,7 +555,25 @@ document.addEventListener('DOMContentLoaded', function() {
     if (setupMnemonicContinue) {
         setupMnemonicContinue.addEventListener('click', function() {
             if (setupMnemonicContinue.disabled) return;
-            showSetupIdentityStep(document.getElementById('setup-step-backup'));
+            showSetupRecoveryVerifyStep(document.getElementById('setup-step-backup'));
+        });
+    }
+
+    var setupVerifyBtn = document.getElementById('setup-verify-btn');
+    if (setupVerifyBtn) setupVerifyBtn.addEventListener('click', verifySetupRecoveryPhrase);
+    var setupVerifyFields = document.getElementById('setup-verify-fields');
+    if (setupVerifyFields) {
+        setupVerifyFields.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                verifySetupRecoveryPhrase();
+            }
+        });
+    }
+    var setupVerifyBack = document.getElementById('setup-verify-back-btn');
+    if (setupVerifyBack) {
+        setupVerifyBack.addEventListener('click', function() {
+            showSetupRecoveryStep(setupRecoveryMnemonic, document.getElementById('setup-step-backup-verify'));
         });
     }
 
