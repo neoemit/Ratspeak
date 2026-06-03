@@ -551,6 +551,10 @@ fn ble_peer_requested_state_survives_restart_when_valid() {
     assert!(ble_rs.contains("Bluetooth Peer already enabled"));
     assert!(ble_rs.contains("current_expires_at == expires_at"));
     assert!(ble_rs.contains("spawn_enable_ble_peer_task(state, duration_secs, expires_at);"));
+    assert!(ble_rs.contains("const BLE_RECENT_DISCONNECTS_V2_SETTING"));
+    assert!(ble_rs.contains("ble_recent_disconnect_seed_addresses"));
+    assert!(ble_rs.contains("update_ble_recent_disconnect_records"));
+    assert!(ble_rs.contains("seed_addresses"));
 
     let state_rs =
         read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("state source");

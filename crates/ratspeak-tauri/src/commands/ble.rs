@@ -5,6 +5,8 @@ use std::sync::Arc;
 #[cfg(feature = "ble")]
 use bytes::Bytes;
 use serde::Deserialize;
+#[cfg(any(feature = "ble", test))]
+use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::State;
 
@@ -120,6 +122,131 @@ pub struct EnableBlePeerArgs {
 
 const BLE_PEER_ENABLED_SETTING: &str = "ble_peer_enabled";
 const BLE_PEER_EXPIRES_AT_SETTING: &str = "ble_peer_expires_at";
+#[cfg(any(feature = "ble", test))]
+const BLE_RECENT_DISCONNECTS_SETTING: &str = "ble_recent_disconnects";
+#[cfg(any(feature = "ble", test))]
+const BLE_RECENT_DISCONNECTS_V2_SETTING: &str = "ble_recent_disconnects_v2";
+#[cfg(any(feature = "ble", test))]
+const BLE_RECENT_DISCONNECTS_LIMIT: usize = 50;
+
+#[cfg(any(feature = "ble", test))]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+struct BleRecentDisconnectRecord {
+    address: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    identity_hash: String,
+    #[serde(default)]
+    disconnected_at: u64,
+}
+
+#[cfg(any(feature = "ble", test))]
+fn is_valid_identity_hash_hex(value: &str) -> bool {
+    if value.len() != 32 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return false;
+    }
+    hex::decode(value)
+        .map(|bytes| bytes.len() == 16 && bytes.iter().any(|b| *b != 0))
+        .unwrap_or(false)
+}
+
+#[cfg(any(feature = "ble", test))]
+fn normalize_ble_address(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+#[cfg(any(feature = "ble", test))]
+fn normalize_ble_recent_disconnect_record(
+    mut record: BleRecentDisconnectRecord,
+) -> Option<BleRecentDisconnectRecord> {
+    record.address = normalize_ble_address(&record.address)?;
+    record.identity_hash = record.identity_hash.trim().to_ascii_lowercase();
+    if !is_valid_identity_hash_hex(&record.identity_hash) {
+        record.identity_hash.clear();
+    }
+    Some(record)
+}
+
+#[cfg(any(feature = "ble", test))]
+fn ble_recent_disconnect_seed_addresses(
+    v2_json: Option<&str>,
+    legacy_json: Option<&str>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(v2) = v2_json {
+        if let Ok(records) = serde_json::from_str::<Vec<BleRecentDisconnectRecord>>(v2) {
+            for record in records {
+                if let Some(record) = normalize_ble_recent_disconnect_record(record) {
+                    if !out.iter().any(|address| address == &record.address) {
+                        out.push(record.address);
+                    }
+                }
+                if out.len() >= BLE_RECENT_DISCONNECTS_LIMIT {
+                    return out;
+                }
+            }
+        }
+    }
+
+    if let Some(legacy) = legacy_json {
+        if let Ok(values) = serde_json::from_str::<Vec<String>>(legacy) {
+            for value in values {
+                if is_valid_identity_hash_hex(value.trim()) {
+                    continue;
+                }
+                if let Some(address) = normalize_ble_address(&value) {
+                    if !out.iter().any(|existing| existing == &address) {
+                        out.push(address);
+                    }
+                }
+                if out.len() >= BLE_RECENT_DISCONNECTS_LIMIT {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(any(feature = "ble", test))]
+fn update_ble_recent_disconnect_records(
+    mut records: Vec<BleRecentDisconnectRecord>,
+    address: String,
+    identity_hash: Option<String>,
+    disconnected_at: u64,
+) -> Vec<BleRecentDisconnectRecord> {
+    let Some(address) = normalize_ble_address(&address) else {
+        return records;
+    };
+    let identity_hash = identity_hash
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| is_valid_identity_hash_hex(value))
+        .unwrap_or_default();
+
+    records = records
+        .into_iter()
+        .filter_map(normalize_ble_recent_disconnect_record)
+        .filter(|record| {
+            record.address != address
+                && (identity_hash.is_empty() || record.identity_hash != identity_hash)
+        })
+        .collect();
+
+    records.insert(
+        0,
+        BleRecentDisconnectRecord {
+            address,
+            identity_hash,
+            disconnected_at,
+        },
+    );
+    records.truncate(BLE_RECENT_DISCONNECTS_LIMIT);
+    records
+}
 
 fn now_unix_secs() -> u64 {
     std::time::SystemTime::now()
@@ -277,7 +404,7 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                 .ok()
                 .and_then(|g| g.as_ref().map(|mgr| mgr.identity_hash.clone()));
 
-            let (identity_hash, seed_identities) = db::spawn_db(state_arc.db.clone(), move |p| {
+            let (identity_hash, seed_addresses) = db::spawn_db(state_arc.db.clone(), move |p| {
                 let hash_hex = from_lxmf
                     .filter(|h| !h.is_empty())
                     .or_else(|| {
@@ -289,12 +416,16 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                     })
                     .unwrap_or_default();
                 let id = hex::decode(&hash_hex).unwrap_or_default();
-                let seed: Vec<String> = db::get_setting(&p, "ble_recent_disconnects")
-                    .and_then(|v| serde_json::from_str::<Vec<String>>(&v).ok())
-                    .unwrap_or_default();
+                let recent_v2 = db::get_setting(&p, BLE_RECENT_DISCONNECTS_V2_SETTING);
+                let recent_legacy = db::get_setting(&p, BLE_RECENT_DISCONNECTS_SETTING);
+                let seed = ble_recent_disconnect_seed_addresses(
+                    recent_v2.as_deref(),
+                    recent_legacy.as_deref(),
+                );
                 tracing::info!(
                     hash_hex_len = hash_hex.len(),
                     decoded_len = id.len(),
+                    seed_address_count = seed.len(),
                     "Bluetooth Peer enable: resolved active identity"
                 );
                 (id, seed)
@@ -334,7 +465,7 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                     identity_hash,
                     Some(event_tx),
                     state_arc.foreground_changed.clone(),
-                    seed_identities,
+                    seed_addresses,
                 ),
             )
             .await
@@ -410,24 +541,50 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                                     );
                                 }
                                 BlePeerEvent::Disconnected { address, reason } => {
-                                    if let Some(id_hex) = address_to_identity.remove(&address) {
+                                    let identity_hash = address_to_identity
+                                        .remove(&address)
+                                        .filter(|value| is_valid_identity_hash_hex(value));
+                                    if !address.is_empty() {
                                         let db = state_relay.db.clone();
+                                        let address_for_persist = address.clone();
+                                        let disconnected_at = now_unix_secs();
                                         tokio::spawn(async move {
                                             let _ = db::spawn_db(db, move |p| {
-                                                let mut list: Vec<String> =
-                                                    db::get_setting(&p, "ble_recent_disconnects")
-                                                        .and_then(|v| {
-                                                            serde_json::from_str::<Vec<String>>(&v)
-                                                                .ok()
-                                                        })
-                                                        .unwrap_or_default();
-                                                list.retain(|x| x != &id_hex);
-                                                list.insert(0, id_hex);
-                                                list.truncate(50);
-                                                if let Ok(json) = serde_json::to_string(&list) {
+                                                let records = db::get_setting(
+                                                    &p,
+                                                    BLE_RECENT_DISCONNECTS_V2_SETTING,
+                                                )
+                                                .and_then(|v| {
+                                                    serde_json::from_str::<
+                                                        Vec<BleRecentDisconnectRecord>,
+                                                    >(
+                                                        &v
+                                                    )
+                                                    .ok()
+                                                })
+                                                .unwrap_or_default();
+                                                let records = update_ble_recent_disconnect_records(
+                                                    records,
+                                                    address_for_persist,
+                                                    identity_hash,
+                                                    disconnected_at,
+                                                );
+                                                if let Ok(json) = serde_json::to_string(&records) {
                                                     db::set_setting(
                                                         &p,
-                                                        "ble_recent_disconnects",
+                                                        BLE_RECENT_DISCONNECTS_V2_SETTING,
+                                                        &json,
+                                                    );
+                                                }
+                                                let addresses = records
+                                                    .iter()
+                                                    .map(|record| record.address.clone())
+                                                    .collect::<Vec<_>>();
+                                                if let Ok(json) = serde_json::to_string(&addresses)
+                                                {
+                                                    db::set_setting(
+                                                        &p,
+                                                        BLE_RECENT_DISCONNECTS_SETTING,
                                                         &json,
                                                     );
                                                 }
@@ -1087,5 +1244,90 @@ mod tests {
     #[test]
     fn ble_peer_remaining_secs_keeps_unexpired_timed_request() {
         assert_eq!(ble_peer_remaining_secs(130, 100), Some(30));
+    }
+
+    #[test]
+    fn ble_recent_disconnect_setting_names_are_stable() {
+        assert_eq!(BLE_RECENT_DISCONNECTS_SETTING, "ble_recent_disconnects");
+        assert_eq!(
+            BLE_RECENT_DISCONNECTS_V2_SETTING,
+            "ble_recent_disconnects_v2"
+        );
+    }
+
+    #[test]
+    fn ble_recent_disconnect_seed_addresses_use_v2_records() {
+        let v2 = serde_json::to_string(&vec![
+            BleRecentDisconnectRecord {
+                address: "AA:BB:CC:DD:EE:FF".into(),
+                identity_hash: "11111111111111111111111111111111".into(),
+                disconnected_at: 10,
+            },
+            BleRecentDisconnectRecord {
+                address: "AA:BB:CC:DD:EE:FF".into(),
+                identity_hash: "22222222222222222222222222222222".into(),
+                disconnected_at: 9,
+            },
+            BleRecentDisconnectRecord {
+                address: "11:22:33:44:55:66".into(),
+                identity_hash: String::new(),
+                disconnected_at: 8,
+            },
+        ])
+        .unwrap();
+        let seeds = ble_recent_disconnect_seed_addresses(Some(&v2), None);
+
+        assert_eq!(
+            seeds,
+            vec![
+                "AA:BB:CC:DD:EE:FF".to_string(),
+                "11:22:33:44:55:66".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn ble_recent_disconnect_seed_addresses_ignore_legacy_identity_hashes() {
+        let legacy = serde_json::to_string(&vec![
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            "AA:BB:CC:DD:EE:FF".to_string(),
+        ])
+        .unwrap();
+        let seeds = ble_recent_disconnect_seed_addresses(None, Some(&legacy));
+
+        assert_eq!(seeds, vec!["AA:BB:CC:DD:EE:FF".to_string()]);
+    }
+
+    #[test]
+    fn ble_recent_disconnect_records_dedupe_address_and_identity() {
+        let records = vec![
+            BleRecentDisconnectRecord {
+                address: "old-address".into(),
+                identity_hash: "11111111111111111111111111111111".into(),
+                disconnected_at: 1,
+            },
+            BleRecentDisconnectRecord {
+                address: "AA:BB:CC:DD:EE:FF".into(),
+                identity_hash: String::new(),
+                disconnected_at: 2,
+            },
+        ];
+
+        let records = update_ble_recent_disconnect_records(
+            records,
+            "AA:BB:CC:DD:EE:FF".into(),
+            Some("11111111111111111111111111111111".into()),
+            3,
+        );
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0],
+            BleRecentDisconnectRecord {
+                address: "AA:BB:CC:DD:EE:FF".into(),
+                identity_hash: "11111111111111111111111111111111".into(),
+                disconnected_at: 3,
+            }
+        );
     }
 }
