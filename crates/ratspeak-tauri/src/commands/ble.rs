@@ -157,6 +157,47 @@ fn clear_ble_peer_requested_state(state: &Arc<AppState>) {
     });
 }
 
+#[cfg(feature = "ble")]
+fn is_ble_peer_interface_name(name: &str) -> bool {
+    name == "Bluetooth Peer" || name == "BLE Mesh"
+}
+
+#[cfg(feature = "ble")]
+async fn live_ble_peer_interface_id(
+    handle: &rns_runtime::reticulum::ReticulumHandle,
+) -> Option<u64> {
+    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+    if handle
+        .transport_tx
+        .send(rns_transport::messages::TransportMessage::Rpc {
+            query: rns_transport::messages::TransportQuery::GetInterfaceStats,
+            response_tx: resp_tx,
+        })
+        .await
+        .is_err()
+    {
+        return None;
+    }
+    match resp_rx.await.ok()? {
+        rns_transport::messages::TransportQueryResponse::InterfaceStats(stats) => stats
+            .into_iter()
+            .find(|iface| is_ble_peer_interface_name(&iface.name))
+            .map(|iface| iface.id),
+        _ => None,
+    }
+}
+
+#[cfg_attr(not(feature = "ble"), allow(dead_code))]
+async fn persist_ble_peer_requested_state(state: &Arc<AppState>, expires_at: u64) {
+    let db = state.db.clone();
+    let _ = db::spawn_db(db, move |p| {
+        db::set_setting(&p, BLE_PEER_ENABLED_SETTING, "1");
+        db::set_setting(&p, BLE_PEER_EXPIRES_AT_SETTING, &expires_at.to_string());
+    })
+    .await;
+    state.emit_to_all("ble_peer_status_update", json!({ "enabled": true }));
+}
+
 #[cfg_attr(not(feature = "ble"), allow(dead_code))]
 fn schedule_ble_peer_expiry(state: &Arc<AppState>, duration_secs: u64, expires_at: u64) {
     if duration_secs == 0 || expires_at == 0 {
@@ -200,6 +241,7 @@ pub async fn enable_ble_peer_interface(
 fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expires_at: u64) {
     // Mark `ble_peer_enabled=1` only after spawn success.
     tokio::spawn(async move {
+        let _enable_guard = state_arc.ble_peer_enable_lock.lock().await;
         let _rns_handle = state_arc
             .rns
             .read()
@@ -208,6 +250,26 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
 
         #[cfg(feature = "ble")]
         if let Some(handle) = _rns_handle {
+            if let Some(id) = live_ble_peer_interface_id(&handle).await {
+                persist_ble_peer_requested_state(&state_arc, expires_at).await;
+                schedule_ble_peer_expiry(&state_arc, duration_secs, expires_at);
+                tracing::info!(
+                    interface_id = id,
+                    duration_secs,
+                    expires_at,
+                    "Bluetooth Peer enable request reused existing interface"
+                );
+                emit_op_status_broadcast(
+                    &state_arc,
+                    "enable_ble_peer",
+                    "hub",
+                    "Bluetooth Peer already enabled",
+                    true,
+                    None,
+                );
+                return;
+            }
+
             // LXMF is source of truth; fall back to DB on startup race.
             let from_lxmf: Option<String> = state_arc
                 .lxmf
@@ -278,12 +340,7 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
             .await
             {
                 Ok(Ok(_id)) => {
-                    let _ = db::spawn_db(state_arc.db.clone(), move |p| {
-                        db::set_setting(&p, BLE_PEER_ENABLED_SETTING, "1");
-                        db::set_setting(&p, BLE_PEER_EXPIRES_AT_SETTING, &expires_at.to_string());
-                    })
-                    .await;
-                    state_arc.emit_to_all("ble_peer_status_update", json!({ "enabled": true }));
+                    persist_ble_peer_requested_state(&state_arc, expires_at).await;
 
                     let state_relay: Arc<AppState> = Arc::clone(&state_arc);
                     tokio::spawn(async move {
@@ -531,6 +588,17 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                     );
                 }
             }
+        } else {
+            clear_ble_peer_requested_state(&state_arc);
+            state_arc.emit_to_all("ble_peer_status_update", json!({ "enabled": false }));
+            emit_op_status_broadcast(
+                &state_arc,
+                "enable_ble_peer",
+                "hub",
+                "Bluetooth Peer failed to start",
+                true,
+                Some("RNS is not initialized yet"),
+            );
         }
         #[cfg(not(feature = "ble"))]
         {

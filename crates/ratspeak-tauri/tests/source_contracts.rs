@@ -546,8 +546,15 @@ fn ble_peer_requested_state_survives_restart_when_valid() {
         read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("ble source");
     assert!(ble_rs.contains("const BLE_PEER_EXPIRES_AT_SETTING"));
     assert!(ble_rs.contains("pub(crate) async fn restore_ble_peer_if_requested"));
+    assert!(ble_rs.contains("let _enable_guard = state_arc.ble_peer_enable_lock.lock().await;"));
+    assert!(ble_rs.contains("async fn live_ble_peer_interface_id"));
+    assert!(ble_rs.contains("Bluetooth Peer already enabled"));
     assert!(ble_rs.contains("current_expires_at == expires_at"));
     assert!(ble_rs.contains("spawn_enable_ble_peer_task(state, duration_secs, expires_at);"));
+
+    let state_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("state source");
+    assert!(state_rs.contains("pub ble_peer_enable_lock: tokio::sync::Mutex<()>"));
 
     let shared_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/shared.rs"))
         .expect("shared source");

@@ -106,6 +106,7 @@ pub struct AppState {
     /// Serializes read-modify-write edits to the active Reticulum config file.
     pub rns_config_lock: Mutex<()>,
     pub identity_switch_lock: tokio::sync::Mutex<()>,
+    pub ble_peer_enable_lock: tokio::sync::Mutex<()>,
     pub identity_session_generation: AtomicU64,
     /// PIN handed to the next hardware-identity load (set by `hw_unlock`, consumed
     /// by `init_rns_lxmf`). Never persisted.
@@ -217,6 +218,7 @@ impl AppState {
             native_notifications_enabled: AtomicBool::new(initial_notifications_enabled),
             rns_config_lock: Mutex::new(()),
             identity_switch_lock: tokio::sync::Mutex::new(()),
+            ble_peer_enable_lock: tokio::sync::Mutex::new(()),
             identity_session_generation: AtomicU64::new(0),
             hw_pending_pin: Mutex::new(None),
             hw_locked: RwLock::new(None),
