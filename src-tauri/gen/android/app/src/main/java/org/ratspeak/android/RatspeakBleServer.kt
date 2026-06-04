@@ -115,6 +115,7 @@ object RatspeakBleServer {
         gattServer = null
         connectedDevices.clear()
         connectedCentrals.clear()
+        centralMtu.clear()
         txCharacteristics.clear()
         Log.i(TAG, "GATT server: closed")
     }
@@ -310,6 +311,21 @@ object RatspeakBleServer {
             sb.append(addr)
         }
         return sb.toString()
+    }
+
+    /**
+     * Snapshot every remote central currently attached to our local GATT server,
+     * including devices that have connected but not yet completed CCCD
+     * subscription. Rust uses this to avoid initiating an opposite-direction
+     * GATT client connection to the same phone, which triggers flaky Android
+     * dual-role collision behavior on some devices.
+     */
+    @JvmStatic
+    fun connectedOrSubscribedAddresses(): String {
+        val addresses = linkedSetOf<String>()
+        addresses.addAll(connectedDevices.keys)
+        addresses.addAll(connectedCentrals.keys)
+        return addresses.joinToString("\n")
     }
 
     @Suppress("DEPRECATION")
