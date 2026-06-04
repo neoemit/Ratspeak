@@ -2760,15 +2760,19 @@
     .setup-container {
         align-items: center;
         justify-content: center;
-        padding: calc(20px + var(--sat, 0px)) 16px 16px;
+        height: 100%;
+        box-sizing: border-box;
+        padding: calc(20px + var(--sat, 0px)) 16px calc(16px + var(--sab, 0px));
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
+        scroll-padding-bottom: calc(16px + var(--sab, 0px));
     }
     .setup-card {
         padding: 32px 24px;
         border-radius: var(--radius-xl);
         max-width: 100%;
         box-shadow: var(--shadow-xl);
+        box-sizing: border-box;
     }
     .setup-title {
         font-size: var(--text-xl);
@@ -2783,6 +2787,51 @@
     .setup-btn {
         min-height: 48px;
         font-size: var(--text-base);
+    }
+    body.setup-backup-active .setup-container {
+        align-items: stretch;
+        justify-content: flex-start;
+        padding-top: calc(12px + var(--sat, 0px));
+        padding-bottom: calc(18px + var(--sab, 0px));
+    }
+    body.setup-backup-active .setup-card {
+        padding: 24px 22px;
+    }
+    body.setup-backup-active .setup-icon {
+        margin-bottom: var(--space-6);
+    }
+    body.setup-backup-active .setup-subtitle {
+        margin-bottom: var(--space-4);
+    }
+    body.setup-backup-active .setup-progress-dots {
+        margin-bottom: var(--space-6);
+    }
+    body.setup-backup-active .setup-divider {
+        margin: var(--space-6) 0;
+    }
+    body.setup-backup-active .setup-step-title {
+        margin-bottom: var(--space-3);
+    }
+    body.setup-backup-active .setup-recovery-warn {
+        line-height: 1.55;
+        margin-bottom: var(--space-4) !important;
+    }
+    body.setup-backup-active .setup-mnemonic-shell {
+        margin-top: var(--space-4);
+    }
+    body.setup-backup-active .hw-mnemonic-grid {
+        gap: var(--space-2);
+    }
+    body.setup-backup-active .hw-mnemonic-word {
+        min-height: 34px;
+        padding: var(--space-2) var(--space-3);
+    }
+    body.setup-backup-active .hw-confirm-check {
+        margin-top: var(--space-4);
+        gap: var(--space-3);
+    }
+    body.setup-backup-active #setup-mnemonic-continue-btn {
+        margin-top: var(--space-4);
     }
 }
 

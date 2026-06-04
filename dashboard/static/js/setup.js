@@ -2,6 +2,10 @@ var needsSetup = false;
 var SETUP_RECOVERY_PHRASE_WORDS = 12;
 var setupRecoveryMnemonic = '';
 
+function setSetupBackupLayout(active) {
+    document.body.classList.toggle('setup-backup-active', !!active);
+}
+
 function setSetupStep(stepIndex) {
     var dots = document.querySelectorAll('#setup-progress-dots .setup-dot');
     for (var i = 0; i < dots.length; i++) {
@@ -48,6 +52,7 @@ function checkSetupStatus() {
                 enterSetupMode();
             } else {
                 document.body.classList.remove('setup-active');
+                setSetupBackupLayout(false);
             }
             document.body.classList.remove('checking-setup');
         })
@@ -58,6 +63,7 @@ function checkSetupStatus() {
 
 function enterSetupMode() {
     document.body.classList.add('setup-active');
+    setSetupBackupLayout(false);
 
     var sidebar = document.querySelector('.sidebar');
     if (sidebar) sidebar.style.display = 'none';
@@ -175,6 +181,7 @@ function showSetupRecoveryStep(mnemonic, fromEl) {
     if (continueBtn) continueBtn.disabled = true;
 
     setSetupStep(2);
+    setSetupBackupLayout(true);
     transitionStep(fromEl, document.getElementById('setup-step-backup'), null, function() {
         if (cover && !isMobile()) cover.focus();
     });
@@ -182,6 +189,7 @@ function showSetupRecoveryStep(mnemonic, fromEl) {
 
 function showSetupIdentityStep(fromEl) {
     setSetupStep(3);
+    setSetupBackupLayout(false);
     transitionStep(fromEl, document.getElementById('setup-step-2'), null, function() {
         var nameInput = document.getElementById('setup-display-name');
         if (nameInput && !isMobile()) nameInput.focus();
@@ -251,6 +259,7 @@ function runConnectingProgress() {
 
 function showSetupConnectingStep() {
     needsSetup = false;
+    setSetupBackupLayout(false);
     setSetupStep(3);
 
     var headerExtras = [
@@ -273,6 +282,7 @@ function showSetupConnectingStep() {
 function resetSetupToStart() {
     needsSetup = true;
     document.body.classList.add('setup-active');
+    setSetupBackupLayout(false);
     setSetupStep(0);
     resetSetupRecoveryStep();
     [
@@ -413,6 +423,7 @@ document.addEventListener('DOMContentLoaded', function() {
             generateBtn.disabled = true;
             generateBtn.textContent = 'Creating...';
 
+            setSetupBackupLayout(false);
             setSetupStep(1);
             var step1El = document.getElementById('setup-step-1');
             var genStep = document.getElementById('setup-step-generating');
@@ -433,6 +444,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     showSetupRecoveryStep(data.mnemonic || '', genStep);
                 })
                 .catch(function(err) {
+                    setSetupBackupLayout(false);
                     transitionStep(genStep, document.getElementById('setup-step-1'));
                     generateBtn.disabled = false;
                     generateBtn.textContent = 'Create Identity';

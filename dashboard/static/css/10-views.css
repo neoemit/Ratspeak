@@ -2170,6 +2170,18 @@ body.setup-active .bottom-bar {
     display: none;
 }
 
+body.checking-setup .app-layout,
+body.setup-active .app-layout {
+    height: var(--app-height, 100vh);
+    height: var(--app-height, 100dvh);
+    padding-bottom: 0;
+}
+
+body.checking-setup .main-content,
+body.setup-active .main-content {
+    padding-bottom: 0;
+}
+
 .setup-container {
     display: flex;
     align-items: center;
