@@ -73,6 +73,28 @@ fn diagnostics_enabled() -> bool {
     env_flag("RATSPEAK_DIAGNOSTICS")
 }
 
+fn apply_linux_webkit_rendering_workarounds() -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+
+    let wayland_session = std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var("XDG_SESSION_TYPE")
+            .map(|value| value.eq_ignore_ascii_case("wayland"))
+            .unwrap_or(false);
+    if !wayland_session
+        || env_flag("RATSPEAK_DISABLE_WEBKIT_DMABUF_WORKAROUND")
+        || std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some()
+    {
+        return false;
+    }
+
+    // WebKitGTK's DMA-BUF renderer can create blank webviews on recent
+    // Wayland stacks. Ratspeak is not GPU-heavy, so prefer reliable startup.
+    std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    true
+}
+
 fn validate_http_url(raw: &str) -> Result<String, String> {
     let parsed = url::Url::parse(raw.trim()).map_err(|_| "Invalid URL".to_string())?;
     match parsed.scheme() {
@@ -417,7 +439,11 @@ fn init_tracing() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let linux_webkit_dmabuf_workaround = apply_linux_webkit_rendering_workarounds();
     init_tracing();
+    if linux_webkit_dmabuf_workaround {
+        tracing::debug!("disabled WebKitGTK DMA-BUF renderer for Linux Wayland startup");
+    }
 
     let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
 

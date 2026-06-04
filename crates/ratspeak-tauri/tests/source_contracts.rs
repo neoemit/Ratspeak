@@ -435,6 +435,31 @@ fn process_diagnostics_are_explicit_opt_in() {
 }
 
 #[test]
+fn linux_wayland_webkit_startup_keeps_blank_window_workaround() {
+    let source = read_source(repo_root().join("src-tauri/src/lib.rs")).expect("app shell");
+
+    assert!(source.contains("fn apply_linux_webkit_rendering_workarounds()"));
+    assert!(source.contains("WAYLAND_DISPLAY"));
+    assert!(source.contains("XDG_SESSION_TYPE"));
+    assert!(source.contains("WEBKIT_DISABLE_DMABUF_RENDERER"));
+    assert!(source.contains("RATSPEAK_DISABLE_WEBKIT_DMABUF_WORKAROUND"));
+
+    let workaround_pos = source
+        .find("let linux_webkit_dmabuf_workaround = apply_linux_webkit_rendering_workarounds();")
+        .expect("workaround applied at process startup");
+    let tracing_pos = source
+        .find("init_tracing();")
+        .expect("tracing initialization");
+    let builder_pos = source
+        .find("tauri::Builder::default()")
+        .expect("tauri builder construction");
+    assert!(
+        workaround_pos < tracing_pos && tracing_pos < builder_pos,
+        "WebKitGTK env workaround must run before Tauri constructs the webview"
+    );
+}
+
+#[test]
 fn modal_action_footers_use_shared_dialog_buttons() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
