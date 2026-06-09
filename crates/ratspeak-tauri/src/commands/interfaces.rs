@@ -1099,6 +1099,10 @@ pub struct AddLoraArgs {
     pub coding_rate: u8,
     #[serde(default = "default_tx")]
     pub tx_power: i8,
+    #[serde(default)]
+    pub airtime_limit_short: Option<f64>,
+    #[serde(default)]
+    pub airtime_limit_long: Option<f64>,
 }
 
 fn default_lora_name() -> String {
@@ -1218,6 +1222,8 @@ struct ResolvedLoraRadio {
     tx_power: i8,
     region_key: Option<&'static str>,
     preset_key: Option<&'static str>,
+    airtime_limit_short: Option<f64>,
+    airtime_limit_long: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1230,6 +1236,8 @@ struct LoraRadioArgs<'a> {
     spreading_factor: u8,
     coding_rate: u8,
     tx_power: i8,
+    airtime_limit_short: Option<f64>,
+    airtime_limit_long: Option<f64>,
 }
 
 fn non_empty_key(value: Option<&str>) -> Option<&str> {
@@ -1275,6 +1283,17 @@ fn validate_lora_radio_params(
     Ok(())
 }
 
+fn validate_airtime_limit(value: Option<f64>, label: &str) -> AppResult<()> {
+    if let Some(v) = value
+        && !(v.is_finite() && (0.0..=100.0).contains(&v))
+    {
+        return Err(AppError::bad_request(format!(
+            "Invalid {label} airtime limit"
+        )));
+    }
+    Ok(())
+}
+
 fn rnode_preset_matches_params(
     preset: &ratspeak_core::radio::RnodePreset,
     bandwidth: u64,
@@ -1298,7 +1317,11 @@ fn resolve_lora_radio_args(args: LoraRadioArgs<'_>) -> AppResult<ResolvedLoraRad
         spreading_factor,
         coding_rate,
         tx_power,
+        airtime_limit_short,
+        airtime_limit_long,
     } = args;
+    validate_airtime_limit(airtime_limit_short, "short-term")?;
+    validate_airtime_limit(airtime_limit_long, "long-term")?;
     let region_key = non_empty_key(region_key);
     let preset_key = non_empty_key(preset_key);
     if custom_params {
@@ -1359,6 +1382,8 @@ fn resolve_lora_radio_args(args: LoraRadioArgs<'_>) -> AppResult<ResolvedLoraRad
             tx_power,
             region_key: resolved_region_key,
             preset_key: resolved_preset_key,
+            airtime_limit_short,
+            airtime_limit_long,
         });
     }
 
@@ -1375,6 +1400,8 @@ fn resolve_lora_radio_args(args: LoraRadioArgs<'_>) -> AppResult<ResolvedLoraRad
             tx_power: params.tx_power,
             region_key: ratspeak_core::radio::rnode_region(region_key).map(|r| r.key),
             preset_key: ratspeak_core::radio::rnode_preset(preset_key).map(|p| p.key),
+            airtime_limit_short,
+            airtime_limit_long,
         });
     }
 
@@ -1398,6 +1425,8 @@ fn resolve_lora_radio_args(args: LoraRadioArgs<'_>) -> AppResult<ResolvedLoraRad
             coding_rate,
             tx_power,
         ),
+        airtime_limit_short,
+        airtime_limit_long,
     })
 }
 
@@ -1412,6 +1441,8 @@ enum EditableInterfaceConfig {
         spreading_factor: u8,
         coding_rate: u8,
         tx_power: i8,
+        airtime_limit_short: Option<f64>,
+        airtime_limit_long: Option<f64>,
     },
     TcpClient {
         name: String,
@@ -1487,6 +1518,13 @@ fn cfg_i8(entry: &Value, key: &str) -> Option<i8> {
         .get(key)
         .and_then(|v| v.as_str())
         .and_then(|s| s.parse::<i8>().ok())
+}
+
+fn cfg_f64(entry: &Value, key: &str) -> Option<f64> {
+    entry
+        .get(key)
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
 }
 
 fn cfg_usize(entry: &Value, key: &str) -> Option<usize> {
@@ -1643,6 +1681,8 @@ fn rnode_config_from_entry(entry: &Value) -> Option<EditableInterfaceConfig> {
         spreading_factor: cfg_u8(entry, "spreadingfactor").unwrap_or_else(default_sf),
         coding_rate: cfg_u8(entry, "codingrate").unwrap_or_else(default_cr),
         tx_power: cfg_i8(entry, "txpower").unwrap_or_else(default_tx),
+        airtime_limit_short: cfg_f64(entry, "airtime_limit_short"),
+        airtime_limit_long: cfg_f64(entry, "airtime_limit_long"),
     })
 }
 
@@ -1824,6 +1864,8 @@ async fn spawn_editable_interface(
             spreading_factor,
             coding_rate,
             tx_power,
+            airtime_limit_short,
+            airtime_limit_long,
         } => {
             #[cfg(all(
                 not(feature = "serial"),
@@ -1839,6 +1881,8 @@ async fn spawn_editable_interface(
                 coding_rate,
                 tx_power,
                 mode,
+                airtime_limit_short,
+                airtime_limit_long,
             );
 
             if port.starts_with("ble://") {
@@ -1860,6 +1904,8 @@ async fn spawn_editable_interface(
                             "coding_rate": coding_rate,
                             "tx_power": tx_power,
                             "mode": mode,
+                            "airtime_limit_short": airtime_limit_short,
+                            "airtime_limit_long": airtime_limit_long,
                             "rollback_on_error": false,
                         }),
                     );
@@ -1878,6 +1924,9 @@ async fn spawn_editable_interface(
                             coding_rate: *coding_rate,
                             tx_power: *tx_power,
                             mode: rnode_runtime_mode(mode),
+                            st_alock: airtime_limit_short.map(|v| v as f32),
+                            lt_alock: airtime_limit_long.map(|v| v as f32),
+                            flow_control: false,
                         },
                     )
                     .await?;
@@ -1911,6 +1960,9 @@ async fn spawn_editable_interface(
                         *coding_rate,
                         *tx_power,
                         rnode_runtime_mode(mode),
+                        airtime_limit_short.map(|v| v as f32),
+                        airtime_limit_long.map(|v| v as f32),
+                        false,
                     )
                     .await?;
                     return Ok(format!("USB LoRa interface active (#{id})"));
@@ -1939,6 +1991,9 @@ async fn spawn_editable_interface(
                         coding_rate: *coding_rate,
                         tx_power: *tx_power,
                         mode: rnode_runtime_mode(mode),
+                        st_alock: airtime_limit_short.map(|v| v as f32),
+                        lt_alock: airtime_limit_long.map(|v| v as f32),
+                        flow_control: false,
                     },
                 )
                 .await?;
@@ -2312,6 +2367,8 @@ pub async fn add_lora_interface(
         spreading_factor: args.spreading_factor,
         coding_rate: args.coding_rate,
         tx_power: args.tx_power,
+        airtime_limit_short: args.airtime_limit_short,
+        airtime_limit_long: args.airtime_limit_long,
     })?;
     let mode = normalize_lora_interface_mode(args.mode.as_deref())?;
     let runtime_mode = rnode_runtime_mode(mode);
@@ -2343,6 +2400,8 @@ pub async fn add_lora_interface(
                 tx_power: radio.tx_power,
                 region_key: radio.region_key,
                 preset_key: radio.preset_key,
+                airtime_limit_short: radio.airtime_limit_short,
+                airtime_limit_long: radio.airtime_limit_long,
             },
         );
         (existing_rnode_port, config_written)
@@ -2438,6 +2497,9 @@ pub async fn add_lora_interface(
                     radio.coding_rate,
                     radio.tx_power,
                     runtime_mode,
+                    radio.airtime_limit_short.map(|v| v as f32),
+                    radio.airtime_limit_long.map(|v| v as f32),
+                    false,
                 )
                 .await
                 {
@@ -2529,6 +2591,8 @@ pub async fn add_lora_interface(
                         "coding_rate": radio.coding_rate,
                         "tx_power": radio.tx_power,
                         "mode": mode,
+                        "airtime_limit_short": radio.airtime_limit_short,
+                        "airtime_limit_long": radio.airtime_limit_long,
                         "rollback_on_error": true,
                     }),
                 );
@@ -2573,6 +2637,9 @@ pub async fn add_lora_interface(
                             coding_rate: radio.coding_rate,
                             tx_power: radio.tx_power,
                             mode: runtime_mode,
+                            st_alock: radio.airtime_limit_short.map(|v| v as f32),
+                            lt_alock: radio.airtime_limit_long.map(|v| v as f32),
+                            flow_control: false,
                         },
                     )
                     .await
@@ -2705,6 +2772,9 @@ pub async fn add_lora_interface(
                         coding_rate: radio.coding_rate,
                         tx_power: radio.tx_power,
                         mode: runtime_mode,
+                        st_alock: radio.airtime_limit_short.map(|v| v as f32),
+                        lt_alock: radio.airtime_limit_long.map(|v| v as f32),
+                        flow_control: false,
                     },
                 )
                 .await
@@ -2793,6 +2863,10 @@ pub struct UpdateLoraArgs {
     pub coding_rate: u8,
     #[serde(default = "default_tx")]
     pub tx_power: i8,
+    #[serde(default)]
+    pub airtime_limit_short: Option<f64>,
+    #[serde(default)]
+    pub airtime_limit_long: Option<f64>,
 }
 
 #[tauri::command]
@@ -2824,6 +2898,8 @@ pub async fn update_lora_interface(
         spreading_factor: args.spreading_factor,
         coding_rate: args.coding_rate,
         tx_power: args.tx_power,
+        airtime_limit_short: args.airtime_limit_short,
+        airtime_limit_long: args.airtime_limit_long,
     })?;
     let mode = normalize_lora_interface_mode(args.mode.as_deref())?;
 
@@ -2850,6 +2926,8 @@ pub async fn update_lora_interface(
                     tx_power: radio.tx_power,
                     region_key: radio.region_key,
                     preset_key: radio.preset_key,
+                    airtime_limit_short: radio.airtime_limit_short,
+                    airtime_limit_long: radio.airtime_limit_long,
                 },
             );
             Ok::<_, AppError>((old_runtime, old_config_content, config_written))
@@ -2876,6 +2954,8 @@ pub async fn update_lora_interface(
         spreading_factor: radio.spreading_factor,
         coding_rate: radio.coding_rate,
         tx_power: radio.tx_power,
+        airtime_limit_short: radio.airtime_limit_short,
+        airtime_limit_long: radio.airtime_limit_long,
     };
     emit_hub_interfaces(
         &state_arc,
@@ -4937,6 +5017,8 @@ mod backbone_args_tests {
             spreading_factor: 5,
             coding_rate: 5,
             tx_power: 0,
+            airtime_limit_short: None,
+            airtime_limit_long: None,
         })
         .expect("keyed catalog params");
 
@@ -4958,6 +5040,8 @@ mod backbone_args_tests {
                 spreading_factor: 5,
                 coding_rate: 5,
                 tx_power: 0,
+                airtime_limit_short: None,
+                airtime_limit_long: None,
             })
             .is_err()
         );
@@ -4971,6 +5055,8 @@ mod backbone_args_tests {
                 spreading_factor: 9,
                 coding_rate: 5,
                 tx_power: 17,
+                airtime_limit_short: None,
+                airtime_limit_long: None,
             })
             .is_err()
         );
@@ -4984,6 +5070,8 @@ mod backbone_args_tests {
                 spreading_factor: 13,
                 coding_rate: 5,
                 tx_power: 17,
+                airtime_limit_short: None,
+                airtime_limit_long: None,
             })
             .is_err()
         );
@@ -5000,6 +5088,8 @@ mod backbone_args_tests {
             spreading_factor: 11,
             coding_rate: 5,
             tx_power: 22,
+            airtime_limit_short: None,
+            airtime_limit_long: None,
         })
         .expect("custom frequency with catalog preset");
 
@@ -5023,6 +5113,8 @@ mod backbone_args_tests {
             spreading_factor: 10,
             coding_rate: 6,
             tx_power: 17,
+            airtime_limit_short: None,
+            airtime_limit_long: None,
         })
         .expect("433 MHz custom params");
 
@@ -5033,5 +5125,47 @@ mod backbone_args_tests {
         assert_eq!(radio.tx_power, 17);
         assert_eq!(radio.region_key, Some("uhf_433"));
         assert_eq!(radio.preset_key, None);
+    }
+
+    #[test]
+    fn lora_args_validate_airtime_limits() {
+        let base = LoraRadioArgs {
+            region_key: Some("americas"),
+            preset_key: Some("medium_fast"),
+            custom_params: false,
+            frequency: 915_000_000,
+            bandwidth: 250_000,
+            spreading_factor: 9,
+            coding_rate: 5,
+            tx_power: 17,
+            airtime_limit_short: Some(33.0),
+            airtime_limit_long: Some(3.3),
+        };
+
+        let radio = resolve_lora_radio_args(base).expect("valid airtime limits");
+        assert_eq!(radio.airtime_limit_short, Some(33.0));
+        assert_eq!(radio.airtime_limit_long, Some(3.3));
+
+        assert!(
+            resolve_lora_radio_args(LoraRadioArgs {
+                airtime_limit_short: Some(100.5),
+                ..base
+            })
+            .is_err()
+        );
+        assert!(
+            resolve_lora_radio_args(LoraRadioArgs {
+                airtime_limit_long: Some(-0.1),
+                ..base
+            })
+            .is_err()
+        );
+        assert!(
+            resolve_lora_radio_args(LoraRadioArgs {
+                airtime_limit_short: Some(f64::NAN),
+                ..base
+            })
+            .is_err()
+        );
     }
 }

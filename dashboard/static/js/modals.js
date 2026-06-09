@@ -534,6 +534,21 @@ function _rnodeSelectedPresetKey() {
     return select ? select.value : (_rnodeCatalogDefaults.preset || 'medium_fast');
 }
 
+// Empty input = no duty-cycle limit; returns null for empty, NaN for garbage.
+function _rnodeParseAirtimePercent(id) {
+    var el = document.getElementById(id);
+    var raw = el ? String(el.value).trim() : '';
+    if (!raw) return null;
+    return parseFloat(raw);
+}
+
+function _rnodeSetAirtimeLimits(shortVal, longVal) {
+    var shortInput = document.getElementById('rnode-airtime-short');
+    var longInput = document.getElementById('rnode-airtime-long');
+    if (shortInput) shortInput.value = shortVal === null || shortVal === undefined ? '' : String(shortVal);
+    if (longInput) longInput.value = longVal === null || longVal === undefined ? '' : String(longVal);
+}
+
 function _rnodeReadRadioSettings() {
     var freq = _rnodeParseFrequencyHz(document.getElementById('rnode-frequency').value);
     var bw = _rnodeParseBandwidthHz(document.getElementById('rnode-bandwidth').value);
@@ -556,6 +571,14 @@ function _rnodeReadRadioSettings() {
     if (isNaN(tx) || tx < limits.txMin || tx > limits.txMax) {
         return { error: 'TX power must be between ' + limits.txMin + ' and ' + limits.txMax + ' dBm' };
     }
+    var airtimeShort = _rnodeParseAirtimePercent('rnode-airtime-short');
+    var airtimeLong = _rnodeParseAirtimePercent('rnode-airtime-long');
+    if (airtimeShort !== null && (isNaN(airtimeShort) || airtimeShort < 0 || airtimeShort > 100)) {
+        return { error: 'Short-term airtime limit must be between 0 and 100 %' };
+    }
+    if (airtimeLong !== null && (isNaN(airtimeLong) || airtimeLong < 0 || airtimeLong > 100)) {
+        return { error: 'Long-term airtime limit must be between 0 and 100 %' };
+    }
 
     var regionKey = _rnodeSelectedRegionKey();
     var presetKey = _rnodeSelectedPresetKey();
@@ -573,6 +596,8 @@ function _rnodeReadRadioSettings() {
         codingRate: cr,
         txPower: tx,
         customParams: customParams,
+        airtimeShort: airtimeShort,
+        airtimeLong: airtimeLong,
     };
 }
 
@@ -809,6 +834,7 @@ function openRnodeModal(mode, editIface) {
     if (tcpInput) tcpInput.value = '';
     var catalogReady = loadRnodePresetCatalog();
     _rnodeApplyDefaultRadioControls();
+    _rnodeSetAirtimeLimits(null, null);
     _rnodeSetInterfaceMode('full');
     _rnodeSyncInterfaceModeVisibility();
     _bleSelectedDevice = null;
@@ -869,6 +895,10 @@ function openRnodeModal(mode, editIface) {
         var sf = _ifaceInt(editIface, 'spreadingfactor', 9);
         var cr = _ifaceInt(editIface, 'codingrate', 5);
         var tx = _ifaceInt(editIface, 'txpower', 17);
+        var airtimeShortRaw = parseFloat(_ifaceString(editIface, 'airtime_limit_short', ''));
+        var airtimeLongRaw = parseFloat(_ifaceString(editIface, 'airtime_limit_long', ''));
+        var airtimeShort = isNaN(airtimeShortRaw) ? null : airtimeShortRaw;
+        var airtimeLong = isNaN(airtimeLongRaw) ? null : airtimeLongRaw;
         document.getElementById('rnode-iface-name').value = editIface.name || '';
         var applyRadioSelection = function() {
             var regionKey = _rnodeRegionForInterface(editIface, freq);
@@ -881,8 +911,10 @@ function openRnodeModal(mode, editIface) {
                 sf,
                 cr,
                 tx,
-                regionKey === _RNODE_CUSTOM_REGION_KEY || presetKey === _RNODE_CUSTOM_PRESET_KEY
+                regionKey === _RNODE_CUSTOM_REGION_KEY || presetKey === _RNODE_CUSTOM_PRESET_KEY ||
+                    airtimeShort !== null || airtimeLong !== null
             );
+            _rnodeSetAirtimeLimits(airtimeShort, airtimeLong);
         };
         applyRadioSelection();
         catalogReady.then(applyRadioSelection).catch(function() {});
@@ -1446,6 +1478,8 @@ function submitRnodeInterface() {
         if (radioSettings.regionKey !== _RNODE_CUSTOM_REGION_KEY) loraArgs.region_key = radioSettings.regionKey;
         if (radioSettings.presetKey !== _RNODE_CUSTOM_PRESET_KEY) loraArgs.preset_key = radioSettings.presetKey;
         if (radioSettings.customParams) loraArgs.custom_params = true;
+        if (radioSettings.airtimeShort !== null) loraArgs.airtime_limit_short = radioSettings.airtimeShort;
+        if (radioSettings.airtimeLong !== null) loraArgs.airtime_limit_long = radioSettings.airtimeLong;
         if (isEdit) loraArgs.old_name = _rnodeEditContext.oldName;
         var loraRequest = RS.invoke(loraCommand, { args: loraArgs });
 

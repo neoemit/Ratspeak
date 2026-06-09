@@ -959,6 +959,10 @@ pub struct BleRnodeBridgeArgs {
     pub tx_power: i8,
     #[serde(default)]
     pub mode: Option<String>,
+    #[serde(default)]
+    pub airtime_limit_short: Option<f64>,
+    #[serde(default)]
+    pub airtime_limit_long: Option<f64>,
 }
 
 fn default_name() -> String {
@@ -997,6 +1001,15 @@ pub async fn ble_rnode_bridge_ready(
     let tx = args.tx_power;
     let mode = crate::rns_config::rnode_interface_mode_value(args.mode.as_deref())
         .ok_or_else(|| AppError::bad_request("Invalid RNode interface mode"))?;
+    // Range-validated at add_lora time; clamp here as belt-and-braces.
+    let st_alock = args
+        .airtime_limit_short
+        .filter(|v| v.is_finite() && (0.0..=100.0).contains(v))
+        .map(|v| v as f32);
+    let lt_alock = args
+        .airtime_limit_long
+        .filter(|v| v.is_finite() && (0.0..=100.0).contains(v))
+        .map(|v| v as f32);
 
     if tcp_port == 0 {
         emit_op_status_broadcast(
@@ -1040,6 +1053,9 @@ pub async fn ble_rnode_bridge_ready(
                         coding_rate: cr,
                         tx_power: tx,
                         mode,
+                        st_alock,
+                        lt_alock,
+                        flow_control: false,
                     },
                     tcp_port,
                 )
@@ -1103,7 +1119,9 @@ pub async fn ble_rnode_bridge_ready(
     }
     #[cfg(not(feature = "ble"))]
     {
-        let _ = (tcp_port, name, port, frequency, bandwidth, sf, cr, tx, mode);
+        let _ = (
+            tcp_port, name, port, frequency, bandwidth, sf, cr, tx, mode, st_alock, lt_alock,
+        );
         emit_op_status_broadcast(
             &state_arc,
             "add_lora",

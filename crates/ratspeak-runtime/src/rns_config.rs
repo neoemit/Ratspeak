@@ -649,6 +649,8 @@ pub struct RnodeInterfaceArgs<'a> {
     pub tx_power: i8,
     pub region_key: Option<&'a str>,
     pub preset_key: Option<&'a str>,
+    pub airtime_limit_short: Option<f64>,
+    pub airtime_limit_long: Option<f64>,
 }
 
 pub fn auto_interface_names(config_dir: &Path) -> Vec<String> {
@@ -861,12 +863,20 @@ fn rnode_interface_block(args: RnodeInterfaceArgs<'_>) -> String {
         tx_power,
         region_key,
         preset_key,
+        airtime_limit_short,
+        airtime_limit_long,
     } = args;
     let mode = normalize_rnode_interface_mode(mode).unwrap_or(RNODE_DEFAULT_INTERFACE_MODE);
 
     let mut block = format!(
         "\n  [[{name}]]\n    type = RNodeInterface\n    port = {port}\n    mode = {mode}\n    frequency = {frequency}\n    bandwidth = {bandwidth}\n    spreadingfactor = {spreading_factor}\n    codingrate = {coding_rate}\n    txpower = {tx_power}\n    enabled = true\n"
     );
+    if let Some(v) = airtime_limit_short {
+        block.push_str(&format!("    airtime_limit_short = {v}\n"));
+    }
+    if let Some(v) = airtime_limit_long {
+        block.push_str(&format!("    airtime_limit_long = {v}\n"));
+    }
     if let Some(region_key) = region_key {
         block.push_str(&format!("    ratspeak_region = {region_key}\n"));
     }
@@ -1555,6 +1565,8 @@ mod tests {
                 tx_power: 17,
                 region_key: Some("americas"),
                 preset_key: Some("short_fast"),
+                airtime_limit_short: None,
+                airtime_limit_long: None,
             },
         ));
 
@@ -1572,6 +1584,8 @@ mod tests {
                 tx_power: 20,
                 region_key: Some("americas"),
                 preset_key: None,
+                airtime_limit_short: None,
+                airtime_limit_long: None,
             },
         ));
 
@@ -1604,6 +1618,8 @@ mod tests {
                 tx_power: 17,
                 region_key: Some("uhf_433"),
                 preset_key: None,
+                airtime_limit_short: Some(33.0),
+                airtime_limit_long: Some(3.5),
             },
         ));
 
@@ -1614,6 +1630,8 @@ mod tests {
         assert!(content.contains("spreadingfactor = 10"));
         assert!(content.contains("codingrate = 6"));
         assert!(content.contains("txpower = 17"));
+        assert!(content.contains("airtime_limit_short = 33"));
+        assert!(content.contains("airtime_limit_long = 3.5"));
         assert!(content.contains("ratspeak_region = uhf_433"));
         assert!(!content.contains("ratspeak_preset ="));
     }
@@ -1636,6 +1654,8 @@ mod tests {
                 tx_power: 17,
                 region_key: Some("americas"),
                 preset_key: Some("medium_fast"),
+                airtime_limit_short: None,
+                airtime_limit_long: None,
             },
         ));
 
@@ -1643,6 +1663,8 @@ mod tests {
         assert!(content.contains("port = tcp://rnode.local:7633"));
         assert!(content.contains("mode = gateway"));
         assert!(content.contains("type = RNodeInterface"));
+        assert!(!content.contains("airtime_limit_short ="));
+        assert!(!content.contains("airtime_limit_long ="));
     }
 
     #[test]
@@ -1663,6 +1685,8 @@ mod tests {
                 tx_power: 17,
                 region_key: Some("americas"),
                 preset_key: Some("medium_fast"),
+                airtime_limit_short: None,
+                airtime_limit_long: None,
             },
         ));
 
@@ -1688,6 +1712,8 @@ mod tests {
                 tx_power: 17,
                 region_key: Some("americas"),
                 preset_key: Some("medium_fast"),
+                airtime_limit_short: None,
+                airtime_limit_long: None,
             },
         ));
         assert!(read_config(&dir).unwrap().contains("[interfaces]"));
