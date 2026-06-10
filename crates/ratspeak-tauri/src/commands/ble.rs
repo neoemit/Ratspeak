@@ -177,35 +177,35 @@ fn ble_recent_disconnect_seed_addresses(
     legacy_json: Option<&str>,
 ) -> Vec<String> {
     let mut out = Vec::new();
-    if let Some(v2) = v2_json {
-        if let Ok(records) = serde_json::from_str::<Vec<BleRecentDisconnectRecord>>(v2) {
-            for record in records {
-                if let Some(record) = normalize_ble_recent_disconnect_record(record) {
-                    if !out.iter().any(|address| address == &record.address) {
-                        out.push(record.address);
-                    }
-                }
-                if out.len() >= BLE_RECENT_DISCONNECTS_LIMIT {
-                    return out;
-                }
+    if let Some(v2) = v2_json
+        && let Ok(records) = serde_json::from_str::<Vec<BleRecentDisconnectRecord>>(v2)
+    {
+        for record in records {
+            if let Some(record) = normalize_ble_recent_disconnect_record(record)
+                && !out.iter().any(|address| address == &record.address)
+            {
+                out.push(record.address);
+            }
+            if out.len() >= BLE_RECENT_DISCONNECTS_LIMIT {
+                return out;
             }
         }
     }
 
-    if let Some(legacy) = legacy_json {
-        if let Ok(values) = serde_json::from_str::<Vec<String>>(legacy) {
-            for value in values {
-                if is_valid_identity_hash_hex(value.trim()) {
-                    continue;
-                }
-                if let Some(address) = normalize_ble_address(&value) {
-                    if !out.iter().any(|existing| existing == &address) {
-                        out.push(address);
-                    }
-                }
-                if out.len() >= BLE_RECENT_DISCONNECTS_LIMIT {
-                    break;
-                }
+    if let Some(legacy) = legacy_json
+        && let Ok(values) = serde_json::from_str::<Vec<String>>(legacy)
+    {
+        for value in values {
+            if is_valid_identity_hash_hex(value.trim()) {
+                continue;
+            }
+            if let Some(address) = normalize_ble_address(&value)
+                && !out.iter().any(|existing| existing == &address)
+            {
+                out.push(address);
+            }
+            if out.len() >= BLE_RECENT_DISCONNECTS_LIMIT {
+                break;
             }
         }
     }

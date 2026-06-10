@@ -669,9 +669,6 @@ mod tests {
             data_dir: temp.path().join(".ratspeak"),
             rns_config_dir: override_dir.clone(),
             rns_config_dir_overridden: true,
-            port: 5050,
-            api_token: String::new(),
-            poll_interval: 1.5,
             max_log_entries: 200,
         };
         let state = state_for_config(config);
