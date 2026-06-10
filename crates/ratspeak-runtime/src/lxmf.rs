@@ -3623,33 +3623,40 @@ impl LxmfManager {
         })
     }
 
-    fn ensure_message_stamp(&self, message: &mut LxMessage) {
-        if message.stamp.is_none()
-            && let Some(cost) = self.router.get_stamp_cost(&message.destination_hash)
-            && cost > 0
-        {
-            tracing::info!(
-                dest = %hex::encode(message.destination_hash),
-                cost = cost,
-                "generating stamp (cost={}) for outbound message — this may take a moment",
-                cost,
-            );
-            message.stamp_cost = Some(cost);
-            match message.get_stamp() {
-                Some(stamp) => {
-                    tracing::info!(
-                        dest = %hex::encode(message.destination_hash),
-                        stamp = %hex::encode(stamp),
-                        "stamp generated successfully"
-                    );
-                }
-                None => {
-                    tracing::warn!(
-                        dest = %hex::encode(message.destination_hash),
-                        cost = cost,
-                        "failed to generate stamp — sending without stamp"
-                    );
-                }
+    /// Hand `message` back when it is ready to send (stamped or no stamp
+    /// required); `None` when stamp PoW was deferred to a worker — the
+    /// message re-enters `pending_outbound` with the stamp attached, so the
+    /// caller must skip this delivery attempt. Never grinds PoW inline: the
+    /// tick holds the manager lock, and a synchronous search blocked it for
+    /// 53 s in live testing (announces and all manager work stalled).
+    fn ensure_message_stamp_or_defer(&mut self, mut message: LxMessage) -> Option<LxMessage> {
+        if message.stamp.is_some() {
+            return Some(message);
+        }
+        let Some(cost) = self
+            .router
+            .get_stamp_cost(&message.destination_hash)
+            .filter(|cost| *cost > 0)
+        else {
+            return Some(message);
+        };
+        message.stamp_cost = Some(cost);
+        let dest = hex::encode(message.destination_hash);
+        match self.router.defer_stamp(message) {
+            None => {
+                tracing::info!(
+                    dest = %dest,
+                    cost,
+                    "stamp required; deferred to worker — delivery resumes when ready"
+                );
+                None
+            }
+            Some(mut message) => {
+                // No id to key the deferred job on; keep prior inline
+                // behavior as the last resort.
+                tracing::warn!(dest = %dest, cost, "stamp needed but message has no id; generating inline");
+                message.get_stamp();
+                Some(message)
             }
         }
     }
@@ -3687,7 +3694,7 @@ impl LxmfManager {
 
     fn start_propagation_delivery(
         &mut self,
-        mut message: LxMessage,
+        message: LxMessage,
         prop_hash: [u8; 16],
         results: &mut Vec<(String, &'static str)>,
     ) {
@@ -3726,7 +3733,9 @@ impl LxmfManager {
             return;
         }
 
-        self.ensure_message_stamp(&mut message);
+        let Some(mut message) = self.ensure_message_stamp_or_defer(message) else {
+            return;
+        };
         let Some(packed) = self.pack_message_for_propagation(&mut message, prop_hash) else {
             tracing::warn!(
                 dest = %dest_hex,
@@ -3920,7 +3929,7 @@ impl LxmfManager {
         let mut results = Vec::new();
 
         for action in actions {
-            let (mut message, dest_hash, is_opportunistic, mut direct_plan) = match action {
+            let (message, dest_hash, is_opportunistic, mut direct_plan) = match action {
                 OutboundAction::DeliverDirect { message, dest_hash } => {
                     (message, dest_hash, false, None)
                 }
@@ -3951,7 +3960,9 @@ impl LxmfManager {
                     continue;
                 }
             };
-            self.ensure_message_stamp(&mut message);
+            let Some(mut message) = self.ensure_message_stamp_or_defer(message) else {
+                continue;
+            };
 
             let msg_hash = message.hash;
             let is_ephemeral = msg_hash

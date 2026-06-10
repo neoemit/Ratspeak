@@ -342,7 +342,15 @@ pub async fn send_lxmf_message(
     let tt = title.clone();
     let id_c = identity_id.clone();
     let msg_id = tokio::task::spawn_blocking(move || {
+        let send_lock_started = std::time::Instant::now();
         if let Ok(mut lxmf) = st.lxmf.lock() {
+            let waited = send_lock_started.elapsed();
+            if waited > std::time::Duration::from_secs(1) {
+                tracing::warn!(
+                    waited_ms = waited.as_millis() as u64,
+                    "send waited on lxmf manager lock"
+                );
+            }
             lxmf.as_mut().and_then(|mgr| {
                 mgr.send_message_with_preference(MessageSendRequest {
                     dest_hash_hex: &dh,
@@ -482,7 +490,15 @@ pub async fn send_reaction(
     let ac = action.clone();
     let id_c = identity_id.clone();
     let sent = tokio::task::spawn_blocking(move || {
+        let send_lock_started = std::time::Instant::now();
         if let Ok(mut lxmf) = st.lxmf.lock() {
+            let waited = send_lock_started.elapsed();
+            if waited > std::time::Duration::from_secs(1) {
+                tracing::warn!(
+                    waited_ms = waited.as_millis() as u64,
+                    "send waited on lxmf manager lock"
+                );
+            }
             if let Some(mgr) = lxmf.as_mut() {
                 mgr.send_reaction_with_preference(ReactionSendRequest {
                     dest_hash_hex: &dh,
@@ -588,7 +604,15 @@ pub async fn send_lxmf_reply(
     let id_c = identity_id.clone();
     let reply_id_for_send = wire_reply_to_id.clone();
     let msg_id = tokio::task::spawn_blocking(move || {
+        let send_lock_started = std::time::Instant::now();
         if let Ok(mut lxmf) = st.lxmf.lock() {
+            let waited = send_lock_started.elapsed();
+            if waited > std::time::Duration::from_secs(1) {
+                tracing::warn!(
+                    waited_ms = waited.as_millis() as u64,
+                    "send waited on lxmf manager lock"
+                );
+            }
             lxmf.as_mut().and_then(|mgr| {
                 mgr.send_reply_with_preference(ReplyMessageSendRequest {
                     dest_hash_hex: &dh,
@@ -697,7 +721,15 @@ pub async fn send_lxmf_propagated(
     let tt = title.clone();
     let id_c = identity_id.clone();
     let msg_id = tokio::task::spawn_blocking(move || {
+        let send_lock_started = std::time::Instant::now();
         if let Ok(mut lxmf) = st.lxmf.lock() {
+            let waited = send_lock_started.elapsed();
+            if waited > std::time::Duration::from_secs(1) {
+                tracing::warn!(
+                    waited_ms = waited.as_millis() as u64,
+                    "send waited on lxmf manager lock"
+                );
+            }
             lxmf.as_mut().and_then(|mgr| {
                 mgr.send_message_with_method(
                     &dh,
@@ -880,7 +912,15 @@ pub async fn send_lxmf_with_attachment(
     let im = image_mime.clone();
     let id_c = identity_id.clone();
     let msg_id = tokio::task::spawn_blocking(move || {
+        let send_lock_started = std::time::Instant::now();
         if let Ok(mut lxmf) = st.lxmf.lock() {
+            let waited = send_lock_started.elapsed();
+            if waited > std::time::Duration::from_secs(1) {
+                tracing::warn!(
+                    waited_ms = waited.as_millis() as u64,
+                    "send waited on lxmf manager lock"
+                );
+            }
             if let Some(mgr) = lxmf.as_mut() {
                 // Append "[File: …]" so non-attachment clients see the name.
                 let msg_content = if ct.is_empty() {

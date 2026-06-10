@@ -1534,12 +1534,28 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     let should_save_crypto_state = save_counter.is_multiple_of(600);
                     let tick_state_for_lxmf = tick_state.clone();
                     let tick_result = tokio::task::spawn_blocking(move || {
+                        let lock_wait_started = std::time::Instant::now();
                         if let Ok(mut lxmf) = tick_state_for_lxmf.lxmf.lock()
                             && let Some(mgr) = lxmf.as_mut()
                         {
+                            let waited = lock_wait_started.elapsed();
+                            if waited > Duration::from_secs(1) {
+                                tracing::warn!(
+                                    waited_ms = waited.as_millis() as u64,
+                                    "lxmf tick waited on manager lock"
+                                );
+                            }
+                            let hold_started = std::time::Instant::now();
                             let results = mgr.tick_with_auto_propagation_download_ready(
                                 auto_inbox_download_ready,
                             );
+                            let tick_held = hold_started.elapsed();
+                            if tick_held > Duration::from_secs(1) {
+                                tracing::warn!(
+                                    held_ms = tick_held.as_millis() as u64,
+                                    "lxmf tick held manager lock (tick body)"
+                                );
+                            }
                             let delivery_progress = mgr.take_delivery_progress_updates();
                             let downloaded = mgr.take_downloaded_propagation_messages();
                             let (
@@ -2140,9 +2156,17 @@ async fn send_announce_from_state_inner(
     }
     let (packets, transport_tx) = {
         let mut packets: Vec<([u8; 16], Vec<u8>, &'static str, bool)> = Vec::new();
+        let lock_wait_started = std::time::Instant::now();
         if let Ok(mut lxmf) = state.lxmf.lock()
             && let Some(mgr) = lxmf.as_mut()
         {
+            let waited = lock_wait_started.elapsed();
+            if waited > Duration::from_secs(1) {
+                tracing::warn!(
+                    waited_ms = waited.as_millis() as u64,
+                    "announce waited on lxmf manager lock"
+                );
+            }
             if let Ok(raw) = mgr.create_announce_packet() {
                 packets.push((
                     mgr.lxmf_dest_hash,
