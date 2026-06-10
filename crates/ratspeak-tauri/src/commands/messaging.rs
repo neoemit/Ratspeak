@@ -1218,14 +1218,10 @@ pub async fn api_file_download(
     state: State<'_, Arc<AppState>>,
     stored_name: String,
 ) -> AppResult<FileDownload> {
-    let sanitized: String = stored_name
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
-        .take(200)
-        .collect();
+    // get_received_file applies the shared stored-filename sanitizer.
     let file_path = if let Ok(lxmf) = state.lxmf.lock() {
         lxmf.as_ref()
-            .and_then(|mgr| mgr.get_received_file(&sanitized))
+            .and_then(|mgr| mgr.get_received_file(&stored_name))
     } else {
         None
     };

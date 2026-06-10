@@ -2076,12 +2076,7 @@ impl LxmfManager {
     }
 
     pub fn get_received_file(&self, stored_name: &str) -> Option<PathBuf> {
-        // SAFETY: char-whitelist guards against path traversal.
-        let sanitized: String = stored_name
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
-            .take(200)
-            .collect();
+        let sanitized = sanitize_stored_file_name(stored_name)?;
         let path = self.files_dir().join(&sanitized);
         if path.exists() && path.is_file() {
             Some(path)
@@ -2095,11 +2090,7 @@ impl LxmfManager {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        let safe_name: String = file_name
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_' || *c == ' ')
-            .take(200)
-            .collect();
+        let safe_name = sanitize_stored_file_name(file_name).unwrap_or_else(|| "file".to_string());
         let stored_name = format!("{ts}_{safe_name}");
         let path = self.files_dir().join(&stored_name);
         std::fs::write(&path, data).ok();
@@ -2129,17 +2120,11 @@ impl LxmfManager {
         let file_refs = db::delete_conversation(db_pool, dest_hash, identity_id);
         let files_dir = self.files_dir();
         for file_ref in file_refs {
-            let sanitized: String = file_ref
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_' || *c == ' ')
-                .take(240)
-                .collect();
-            if sanitized != file_ref {
+            let Some(sanitized) = sanitize_stored_file_name(&file_ref) else {
                 tracing::warn!(stored_name = %file_ref, "skipping unsafe stored attachment path");
                 continue;
-            }
-            let path = files_dir.join(sanitized);
-            std::fs::remove_file(&path).ok();
+            };
+            std::fs::remove_file(files_dir.join(sanitized)).ok();
         }
     }
 
@@ -4746,6 +4731,23 @@ async fn pull_identity_from_announces(
     }
 }
 
+/// Single filename rule for everything under `files_dir`: the
+/// save/get/download/delete paths all use it, so a name that saves is always
+/// retrievable and deletable. The char whitelist (spaces allowed — existing
+/// stored attachments contain them) guards against path traversal; pure
+/// dot-names are rejected so the result can never reference a directory.
+pub fn sanitize_stored_file_name(raw: &str) -> Option<String> {
+    let sanitized: String = raw
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | ' '))
+        .take(240)
+        .collect();
+    if sanitized.is_empty() || sanitized.chars().all(|c| c == '.' || c == ' ') {
+        return None;
+    }
+    Some(sanitized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4782,6 +4784,59 @@ mod tests {
             }
         }
         panic!("expected outbound transport message");
+    }
+
+    /// T1-7: one shared sanitizer — names that save (spaces included) must
+    /// list, download, and delete; traversal input never escapes files_dir.
+    #[test]
+    fn attachment_with_spaces_round_trips_save_get_delete() {
+        let mgr = test_manager();
+
+        let stored = mgr.save_attachment("my report final.pdf", b"data");
+        assert!(stored.ends_with("_my report final.pdf"));
+
+        let listed = mgr.list_received_files();
+        assert!(
+            listed
+                .iter()
+                .any(|f| f.get("stored_name").and_then(|v| v.as_str()) == Some(stored.as_str())),
+            "saved file must appear in the listing"
+        );
+
+        let path = mgr
+            .get_received_file(&stored)
+            .expect("space-bearing stored name must resolve");
+        assert_eq!(std::fs::read(&path).unwrap(), b"data");
+
+        std::fs::remove_file(&path).unwrap();
+        assert!(mgr.get_received_file(&stored).is_none());
+    }
+
+    #[test]
+    fn stored_file_name_sanitizer_blocks_traversal() {
+        assert_eq!(
+            sanitize_stored_file_name("../../etc/passwd").as_deref(),
+            Some("....etcpasswd"),
+            "separators are stripped so the result cannot traverse"
+        );
+        assert_eq!(sanitize_stored_file_name(".."), None);
+        assert_eq!(sanitize_stored_file_name("."), None);
+        assert_eq!(sanitize_stored_file_name(". ."), None);
+        assert_eq!(sanitize_stored_file_name("///"), None);
+        assert_eq!(sanitize_stored_file_name(""), None);
+        assert_eq!(
+            sanitize_stored_file_name("a/b\\c").as_deref(),
+            Some("abc"),
+            "separators are stripped, not preserved"
+        );
+        assert_eq!(
+            sanitize_stored_file_name("my file.txt").as_deref(),
+            Some("my file.txt")
+        );
+
+        let mgr = test_manager();
+        assert!(mgr.get_received_file("../../etc/passwd").is_none());
+        assert!(mgr.get_received_file("..").is_none());
     }
 
     #[test]

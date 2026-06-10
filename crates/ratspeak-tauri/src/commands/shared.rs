@@ -61,15 +61,10 @@ pub(crate) fn remove_stored_file_refs(
         if file_ref.is_empty() {
             continue;
         }
-        let sanitized: String = file_ref
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_' || *c == ' ')
-            .take(240)
-            .collect();
-        if sanitized != file_ref {
+        let Some(sanitized) = ratspeak_runtime::lxmf::sanitize_stored_file_name(&file_ref) else {
             tracing::warn!(stored_name = %file_ref, "skipping unsafe stored attachment path");
             continue;
-        }
+        };
         std::fs::remove_file(files_dir.join(sanitized)).ok();
     }
 }
