@@ -2287,24 +2287,16 @@ impl LxmfManager {
             .map_err(|e| format!("Failed to send announce: {e}"))
     }
 
-    pub fn update_display_name(
-        &mut self,
-        name: &str,
-        db_pool: &DbPool,
-        identity_id: &str,
-    ) -> Result<(), String> {
+    /// Memory-only; callers persist via `db::update_identity` outside the
+    /// manager lock so the mutex is never held across a DB write.
+    pub fn set_display_name(&mut self, name: &str) {
         self.display_name = name.to_string();
-        db::update_identity(db_pool, identity_id, None, Some(name))
     }
 
-    pub fn update_status(
-        &mut self,
-        status: &str,
-        db_pool: &DbPool,
-        identity_id: &str,
-    ) -> Result<(), String> {
+    /// Memory-only; callers persist via `db::update_identity_status` outside
+    /// the manager lock.
+    pub fn set_status(&mut self, status: &str) {
         self.status = status.to_string();
-        db::update_identity_status(db_pool, identity_id, status)
     }
 
     pub fn request_all_paths(&self, db_pool: &DbPool, identity_id: &str) -> usize {

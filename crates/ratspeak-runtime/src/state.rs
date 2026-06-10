@@ -118,7 +118,15 @@ pub struct AppState {
     /// Bumped on every session teardown; an auto-lock timer no-ops if its captured
     /// generation no longer matches (i.e. the session was switched/unlocked/quit).
     pub hw_lock_gen: AtomicU64,
+    /// Read-through cache for the active identity's (hash, lxmf_hash),
+    /// stamped with `db::identity_generation()` so identity-table writes
+    /// invalidate it. Keeps hot async paths off sync DB reads.
+    pub active_identity_cache: Mutex<Option<CachedActiveIdentity>>,
 }
+
+/// (identity-table generation, active identity (hash, lxmf_hash) at that
+/// generation — `None` when no identity is active).
+pub type CachedActiveIdentity = (u64, Option<(String, String)>);
 
 impl AppState {
     pub fn new(
@@ -224,6 +232,7 @@ impl AppState {
             hw_locked: RwLock::new(None),
             hw_last_error: Mutex::new(None),
             hw_lock_gen: AtomicU64::new(0),
+            active_identity_cache: Mutex::new(None),
         }
     }
 

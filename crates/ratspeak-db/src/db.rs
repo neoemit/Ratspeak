@@ -1304,6 +1304,22 @@ pub fn get_identity(pool: &DbPool, hash_hex: &str) -> Option<serde_json::Value> 
     stmt.query_row(params![hash_hex], row_to_identity).ok()
 }
 
+/// Process-wide identity-table generation. Bumped by every db-layer write
+/// that can change which identity is active (or its lxmf hash) so runtime
+/// caches invalidate without each caller remembering to — see
+/// `ratspeak_runtime::helpers::active_identity_id`.
+static IDENTITY_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn identity_generation() -> u64 {
+    IDENTITY_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// For identity-table writes that bypass the helpers in this module
+/// (factory reset's raw table wipe).
+pub fn note_identity_tables_changed() {
+    IDENTITY_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Release);
+}
+
 pub fn save_identity(
     pool: &DbPool,
     hash_hex: &str,
@@ -1311,6 +1327,7 @@ pub fn save_identity(
     nickname: &str,
     display_name: &str,
 ) {
+    note_identity_tables_changed();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return,
@@ -1347,6 +1364,7 @@ pub fn set_identity_propagation_node(
 }
 
 pub fn set_active_identity(pool: &DbPool, hash_hex: &str) -> Result<(), String> {
+    note_identity_tables_changed();
     let mut conn = pool.get().map_err(|e| format!("pool: {e}"))?;
     let now = now_ts();
     let tx = conn.transaction().map_err(|e| format!("begin: {e}"))?;
@@ -1449,6 +1467,7 @@ const IDENTITY_CASCADE: &[(&str, &str)] = &[
 ];
 
 pub fn delete_identity(pool: &DbPool, hash_hex: &str, cascade: bool) -> Result<(), String> {
+    note_identity_tables_changed();
     let mut conn = pool.get().map_err(|e| format!("pool: {e}"))?;
     let tx = conn.transaction().map_err(|e| format!("begin: {e}"))?;
     if cascade {

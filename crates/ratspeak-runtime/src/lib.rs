@@ -1648,7 +1648,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     } else {
                         helpers::active_identity_id(&tick_state)
                     };
-                    let mut persisted: Vec<(String, &'static str)> =
+                    let mut persisted: Vec<(String, &'static str, Option<String>)> =
                         Vec::with_capacity(results.len());
                     for (msg_id, new_state) in &results {
                         let msg_id_for_db = msg_id.clone();
@@ -1657,6 +1657,8 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         let delivery_method_for_db =
                             matches!(*new_state, "propagating" | "propagated")
                                 .then_some("propagated".to_string());
+                        // Same blocking-pool hop also reads the method back
+                        // for the emit below.
                         match db::spawn_db(tick_state.db.clone(), move |p| {
                             if let Some(method) = delivery_method_for_db.as_deref() {
                                 db::update_message_delivery_method(
@@ -1673,10 +1675,11 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 &new_state_for_db,
                                 None,
                             );
+                            db::get_message_delivery_method(&p, &msg_id_for_db)
                         })
                         .await
                         {
-                            Ok(()) => persisted.push((msg_id.clone(), *new_state)),
+                            Ok(method) => persisted.push((msg_id.clone(), *new_state, method)),
                             Err(e) => tracing::error!(
                                 msg_id = %msg_id,
                                 new_state = %new_state,
@@ -1685,13 +1688,12 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             ),
                         }
                     }
-                    for (msg_id, new_state) in &persisted {
+                    for (msg_id, new_state, method) in &persisted {
                         let client_msg_id = tick_state
                             .msg_id_map
                             .lock()
                             .ok()
                             .and_then(|map| map.get(msg_id).cloned());
-                        let method = db::get_message_delivery_method(&tick_state.db, msg_id);
                         tick_state.emit_to_all(
                             "lxmf_step",
                             json!({
@@ -1803,7 +1805,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     if timeout_check_counter.is_multiple_of(60) {
                         propagation::reconcile_active_auto_node(&tick_state).await;
                         propagation::probe_static_nodes_background(&tick_state).await;
-                        check_message_timeouts(&tick_state);
+                        check_message_timeouts(&tick_state).await;
                         sweep_undelivered_game_sessions(&tick_state).await;
                         let cleanup_now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -2471,8 +2473,10 @@ async fn handle_inbound_lxmf(
             let rtt_ms = rtt.map(|d| d.as_secs_f64() * 1000.0);
             let msg_id_for_db = msg_id.clone();
             let identity_for_db = helpers::active_identity_id(&state);
-            db::spawn_db(state.db.clone(), move |p| {
+            // One hop: flip the state and read the method back for the emit.
+            let method = db::spawn_db(state.db.clone(), move |p| {
                 db::update_message_state(&p, &msg_id_for_db, &identity_for_db, "delivered", rtt_ms);
+                db::get_message_delivery_method(&p, &msg_id_for_db)
             })
             .await
             .expect("db task panicked");
@@ -2484,7 +2488,6 @@ async fn handle_inbound_lxmf(
                 .lock()
                 .ok()
                 .and_then(|mut map| map.remove(msg_id));
-            let method = db::get_message_delivery_method(&state.db, msg_id);
             state.emit_to_all(
                 "lxmf_step",
                 json!({
@@ -2850,7 +2853,7 @@ async fn process_inbound_lxmf(
     if !matches!(
         chat_extension,
         Some(lxmf::RatspeakChatExtension::Reply { .. })
-    ) && try_handle_inbound_lrgp(state, &msg, &source_hash, &lxmf_id)
+    ) && try_handle_inbound_lrgp(state, &msg, &source_hash, &lxmf_id).await
     {
         return;
     }
@@ -3825,7 +3828,7 @@ const MESSAGE_TIMEOUT_SECS: f64 = 180.0;
 // propagated challenges can sit on a relay for the normal LXMF expiry window.
 const LRGP_UNDELIVERED_TIMEOUT_SECS: f64 = lxmf_core::constants::MESSAGE_EXPIRY as f64;
 
-fn check_message_timeouts(state: &AppState) {
+async fn check_message_timeouts(state: &AppState) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -3844,20 +3847,31 @@ fn check_message_timeouts(state: &AppState) {
     } else {
         Vec::new()
     };
+    if timed_out.is_empty() {
+        return;
+    }
 
-    let identity_id = if timed_out.is_empty() {
-        String::new()
-    } else {
-        helpers::active_identity_id(state)
-    };
-    for msg_id in &timed_out {
-        db::update_message_state(&state.db, msg_id, &identity_id, "failed", None);
+    // One blocking-pool hop for the whole sweep: state flips + method reads.
+    let identity_id = helpers::active_identity_id(state);
+    let ids_for_db = timed_out.clone();
+    let methods = db::spawn_db(state.db.clone(), move |p| {
+        ids_for_db
+            .iter()
+            .map(|msg_id| {
+                db::update_message_state(&p, msg_id, &identity_id, "failed", None);
+                db::get_message_delivery_method(&p, msg_id)
+            })
+            .collect::<Vec<Option<String>>>()
+    })
+    .await
+    .unwrap_or_default();
+
+    for (msg_id, method) in timed_out.iter().zip(methods) {
         let client_msg_id = state
             .msg_id_map
             .lock()
             .ok()
             .and_then(|mut map| map.remove(msg_id));
-        let method = db::get_message_delivery_method(&state.db, msg_id);
         state.emit_to_all(
             "lxmf_step",
             json!({
@@ -4068,7 +4082,7 @@ fn extract_name_from_msgpack(value: &rmpv::Value) -> Option<String> {
 }
 
 // Returns true if the envelope was LRGP (dispatched); false → fall through.
-fn try_handle_inbound_lrgp(
+async fn try_handle_inbound_lrgp(
     state: &AppState,
     msg: &lxmf_core::message::LxMessage,
     sender_hash: &str,
@@ -4158,7 +4172,6 @@ fn try_handle_inbound_lrgp(
         );
         return true;
     }
-    let had_session = db::get_game_session(&state.db, &session_id, identity_id).is_some();
 
     tracing::info!(
         target: "ttt_trace",
@@ -4175,81 +4188,107 @@ fn try_handle_inbound_lrgp(
         "dispatch_incoming ok"
     );
 
-    let action_num = db::get_game_action_count(&state.db, &session_id, identity_id);
     let payload_json = result
         .emit
         .as_ref()
         .map(|e| serde_json::to_value(e).unwrap_or(json!({})))
         .unwrap_or(json!({}));
 
-    let action = lrgp::store::Action {
-        session_id: session_id.clone(),
-        identity_id: identity_id.to_string(),
-        action_num,
-        command: command.clone(),
-        payload_json: serde_json::to_string(&payload_json).unwrap_or_else(|_| "{}".into()),
-        sender: sender_hash.to_string(),
-        timestamp: msg.timestamp,
+    // The whole persistence sequence is one blocking-pool hop; previously
+    // these ~7 sequential sync calls all ran on the async worker.
+    let (had_session, sessions, all) = {
+        let session_id = session_id.clone();
+        let identity_id = identity_id.to_string();
+        let sender_hash = sender_hash.to_string();
+        let app_id = app_id.clone();
+        let command = command.clone();
+        let session_data = result.session.clone();
+        let timestamp = msg.timestamp;
+        db::spawn_db(state.db.clone(), move |p| {
+            let had_session = db::get_game_session(&p, &session_id, &identity_id).is_some();
+
+            let action_num = db::get_game_action_count(&p, &session_id, &identity_id);
+            let action = lrgp::store::Action {
+                session_id: session_id.clone(),
+                identity_id: identity_id.clone(),
+                action_num,
+                command: command.clone(),
+                payload_json: serde_json::to_string(&payload_json)
+                    .unwrap_or_else(|_| "{}".into()),
+                sender: sender_hash.clone(),
+                timestamp,
+            };
+            db::save_game_action(&p, &action, None);
+
+            if let Some(ref session_data) = session_data {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64();
+
+                let status = session_data
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("pending");
+                let initiator = session_data
+                    .get("initiator")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&sender_hash);
+
+                // Unwrap nested "metadata" so DB has flat fields the frontend reads.
+                let metadata_map: std::collections::HashMap<String, serde_json::Value> =
+                    session_data
+                        .get("metadata")
+                        .and_then(|v| v.as_object())
+                        .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                        .unwrap_or_default();
+
+                // Bump unread relative to the persisted row so repeat actions
+                // accumulate instead of clobbering each other to 1.
+                let unread = db::get_game_session(&p, &session_id, &identity_id)
+                    .as_ref()
+                    .and_then(|row| row.get("unread").and_then(|v| v.as_i64()))
+                    .unwrap_or(0)
+                    + 1;
+
+                let session = lrgp::session::Session {
+                    session_id: session_id.clone(),
+                    identity_id: identity_id.clone(),
+                    app_id: app_id.clone(),
+                    app_version: 1,
+                    contact_hash: sender_hash.clone(),
+                    initiator: initiator.to_string(),
+                    status: status.to_string(),
+                    metadata: metadata_map,
+                    unread,
+                    created_at: session_data
+                        .get("created_at")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(now),
+                    updated_at: now,
+                    last_action_at: now,
+                };
+                db::save_game_session(&p, &session);
+            } else if let Some(existing) = db::get_game_session(&p, &session_id, &identity_id) {
+                let unread = existing.get("unread").and_then(|v| v.as_i64()).unwrap_or(0) + 1;
+                if let Ok(conn) = p.get() {
+                    conn.execute(
+                        "UPDATE app_sessions SET unread = ?1, last_action_at = ?2 WHERE session_id = ?3 AND identity_id = ?4",
+                        rusqlite::params![unread, timestamp, session_id, identity_id],
+                    ).ok();
+                }
+            }
+
+            let sessions = db::list_game_sessions(&p, &identity_id, Some(&sender_hash), None);
+            let all = db::list_game_sessions(&p, &identity_id, None, None);
+            (had_session, sessions, all)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "LRGP inbound persistence task panicked");
+            (false, Vec::new(), Vec::new())
+        })
     };
-    db::save_game_action(&state.db, &action, None);
-
-    if let Some(ref session_data) = result.session {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64();
-
-        let status = session_data
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("pending");
-        let initiator = session_data
-            .get("initiator")
-            .and_then(|v| v.as_str())
-            .unwrap_or(sender_hash);
-
-        // Unwrap nested "metadata" so DB has flat fields the frontend reads.
-        let metadata_map: std::collections::HashMap<String, serde_json::Value> = session_data
-            .get("metadata")
-            .and_then(|v| v.as_object())
-            .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default();
-
-        // Bump unread relative to the persisted row so repeat actions accumulate
-        // instead of clobbering each other to 1.
-        let unread = db::get_game_session(&state.db, &session_id, identity_id)
-            .as_ref()
-            .and_then(|row| row.get("unread").and_then(|v| v.as_i64()))
-            .unwrap_or(0)
-            + 1;
-
-        let session = lrgp::session::Session {
-            session_id: session_id.clone(),
-            identity_id: identity_id.to_string(),
-            app_id: app_id.clone(),
-            app_version: 1,
-            contact_hash: sender_hash.to_string(),
-            initiator: initiator.to_string(),
-            status: status.to_string(),
-            metadata: metadata_map,
-            unread,
-            created_at: session_data
-                .get("created_at")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(now),
-            updated_at: now,
-            last_action_at: now,
-        };
-        db::save_game_session(&state.db, &session);
-    } else if let Some(existing) = db::get_game_session(&state.db, &session_id, identity_id) {
-        let unread = existing.get("unread").and_then(|v| v.as_i64()).unwrap_or(0) + 1;
-        if let Ok(conn) = state.db.get() {
-            conn.execute(
-                "UPDATE app_sessions SET unread = ?1, last_action_at = ?2 WHERE session_id = ?3 AND identity_id = ?4",
-                rusqlite::params![unread, msg.timestamp, session_id, identity_id],
-            ).ok();
-        }
-    }
 
     if result.error.is_none() {
         notify_game_if_background(
@@ -4262,12 +4301,10 @@ fn try_handle_inbound_lrgp(
         );
     }
 
-    let sessions = db::list_game_sessions(&state.db, identity_id, Some(sender_hash), None);
     state.emit_to_all(
         "active_games",
         json!({"hash": sender_hash, "games": sessions}),
     );
-    let all = db::list_game_sessions(&state.db, identity_id, None, None);
     tracing::info!(
         target: "ttt_trace",
         step = "inbound.emitted_all",

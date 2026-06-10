@@ -631,6 +631,7 @@ pub async fn api_factory_reset(state: State<'_, Arc<AppState>>) -> AppResult<Val
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     db::spawn_db(state.db.clone(), |pool| {
+        db::note_identity_tables_changed();
         if let Ok(conn) = pool.get() {
             for table in db::RESET_TABLES {
                 let _ = conn.execute(&format!("DELETE FROM {}", table), []);

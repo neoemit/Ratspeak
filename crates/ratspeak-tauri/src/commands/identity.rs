@@ -832,15 +832,22 @@ pub async fn api_export_identity_backup_base64(
         .unwrap_or("")
         .to_string();
 
-    let mnemonic = ratspeak_runtime::vault::reveal_mnemonic(
-        &state.config.data_dir.join("identities").join(&hash_hex),
-        None,
-    )
-    .ok()
-    .map(|m| m.as_str().to_string());
-    let vault =
-        ratspeak_runtime::vault::encrypt_identity(&passcode, &key_array, mnemonic.as_deref())
-            .map_err(|e| AppError::internal(format!("failed to encrypt identity backup: {e}")))?;
+    // Argon2id KDF — off the async worker like the other vault paths.
+    let identity_dir = state.config.data_dir.join("identities").join(&hash_hex);
+    let passcode_for_kdf = passcode.clone();
+    let vault = tokio::task::spawn_blocking(move || {
+        let mnemonic = ratspeak_runtime::vault::reveal_mnemonic(&identity_dir, None)
+            .ok()
+            .map(|m| m.as_str().to_string());
+        ratspeak_runtime::vault::encrypt_identity(
+            &passcode_for_kdf,
+            &key_array,
+            mnemonic.as_deref(),
+        )
+    })
+    .await
+    .map_err(|_| AppError::internal("identity backup task panicked"))?
+    .map_err(|e| AppError::internal(format!("failed to encrypt identity backup: {e}")))?;
 
     let backup = EncryptedIdentityBackupV2 {
         format: IDENTITY_BACKUP_FORMAT.to_string(),
@@ -1145,7 +1152,8 @@ pub async fn api_set_display_name(
         return Err(AppError::conflict("no active identity"));
     }
 
-    // Prefer in-memory LXMF mgr; fall back to DB-only on startup race.
+    // Memory update under a short lock; the DB write happens after it drops
+    // (the mgr may be absent on a startup race — DB-only then).
     let updated_in_memory = {
         let mut guard = state
             .lxmf
@@ -1153,30 +1161,24 @@ pub async fn api_set_display_name(
             .map_err(|_| AppError::internal("lxmf state lock poisoned"))?;
         match guard.as_mut() {
             Some(mgr) => {
-                mgr.update_display_name(&display_name, &state.db, &identity_id)
-                    .map_err(|e| {
-                        tracing::error!(error = %e, "display_name: update_identity failed");
-                        AppError::internal("failed to save display name")
-                    })?;
+                mgr.set_display_name(&display_name);
                 true
             }
             None => false,
         }
     };
 
-    if !updated_in_memory {
-        let id = identity_id.clone();
-        let dn = display_name.clone();
-        db::spawn_db(state.db.clone(), move |p| {
-            db::update_identity(&p, &id, None, Some(&dn))
-        })
-        .await
-        .map_err(|_| AppError::internal("failed to save display name"))?
-        .map_err(|e| {
-            tracing::error!(error = %e, "display_name: update_identity failed (no lxmf)");
-            AppError::internal("failed to save display name")
-        })?;
-    }
+    let id = identity_id.clone();
+    let dn = display_name.clone();
+    db::spawn_db(state.db.clone(), move |p| {
+        db::update_identity(&p, &id, None, Some(&dn))
+    })
+    .await
+    .map_err(|_| AppError::internal("failed to save display name"))?
+    .map_err(|e| {
+        tracing::error!(error = %e, "display_name: update_identity failed");
+        AppError::internal("failed to save display name")
+    })?;
 
     if updated_in_memory {
         crate::send_announce_from_state(&state).await;
@@ -1197,44 +1199,35 @@ pub async fn set_identity_status(
         return Err(AppError::conflict("no active identity"));
     }
 
-    let mut identity_payload: Option<Value> = None;
-    let updated_in_memory = {
+    // Memory update under a short lock; the DB write happens after it drops
+    // (the mgr may be absent on a startup race — DB-only then).
+    let identity_payload: Option<Value> = {
         let mut guard = state
             .lxmf
             .lock()
             .map_err(|_| AppError::internal("lxmf state lock poisoned"))?;
-        match guard.as_mut() {
-            Some(mgr) => {
-                mgr.update_status(&status, &state.db, &identity_id)
-                    .map_err(|e| {
-                        tracing::error!(error = %e, "status: update_identity_status failed");
-                        AppError::internal("failed to save status")
-                    })?;
-                identity_payload = Some(json!({
-                    "hash": mgr.lxmf_hash.clone(),
-                    "identity_hash": mgr.identity_hash.clone(),
-                    "display_name": mgr.display_name.clone(),
-                    "status": status.clone(),
-                }));
-                true
-            }
-            None => false,
-        }
+        guard.as_mut().map(|mgr| {
+            mgr.set_status(&status);
+            json!({
+                "hash": mgr.lxmf_hash.clone(),
+                "identity_hash": mgr.identity_hash.clone(),
+                "display_name": mgr.display_name.clone(),
+                "status": status.clone(),
+            })
+        })
     };
 
-    if !updated_in_memory {
-        let id = identity_id.clone();
-        let saved_status = status.clone();
-        db::spawn_db(state.db.clone(), move |p| {
-            db::update_identity_status(&p, &id, &saved_status)
-        })
-        .await
-        .map_err(|_| AppError::internal("failed to save status"))?
-        .map_err(|e| {
-            tracing::error!(error = %e, "status: update_identity_status failed (no lxmf)");
-            AppError::internal("failed to save status")
-        })?;
-    }
+    let id = identity_id.clone();
+    let saved_status = status.clone();
+    db::spawn_db(state.db.clone(), move |p| {
+        db::update_identity_status(&p, &id, &saved_status)
+    })
+    .await
+    .map_err(|_| AppError::internal("failed to save status"))?
+    .map_err(|e| {
+        tracing::error!(error = %e, "status: update_identity_status failed");
+        AppError::internal("failed to save status")
+    })?;
 
     if let Some(payload) = identity_payload {
         state.emit_to_all("lxmf_identity", payload);
