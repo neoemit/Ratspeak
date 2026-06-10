@@ -1796,6 +1796,9 @@ function _onChatDetailExit() {
 
 // Cache-first render to avoid an empty-spinner flash; reconciles via fetch.
 function _loadConversation(hash) {
+    // Reactions are keyed per message; drop the previous conversation's
+    // entries so the map doesn't accumulate across switches.
+    _msgReactions = {};
     var cached = cacheGet(hash);
     if (cached && cached.length > 0) {
         lxmfConversation = cached;
@@ -2249,16 +2252,45 @@ function _renderConversationsFromCache(convos) {
     }
 }
 
+// T2-3: per-poll full re-renders are gated. Hidden views skip the rebuild
+// entirely (the switchView hooks repaint on activation); visible repaints
+// are deduped against the freshly built markup. Counters back the source
+// contract test and manual QA.
+var _renderGate = { skippedHidden: 0, skippedClean: 0, painted: 0 };
+
+function _gateHidden(viewId, container) {
+    var view = document.getElementById(viewId);
+    if (view && !view.classList.contains('active')) {
+        _renderGate.skippedHidden++;
+        if (container) container._rsLastHtml = null;
+        return true;
+    }
+    return false;
+}
+
+function _gateClean(container, html) {
+    if (container._rsLastHtml === html) {
+        _renderGate.skippedClean++;
+        return true;
+    }
+    container._rsLastHtml = html;
+    _renderGate.painted++;
+    return false;
+}
+
 function renderContactList() {
     var container = document.getElementById('lxmf-contacts');
     if (!container) return;
+    if (_gateHidden('view-message', container)) return;
 
     if (lxmfContacts.length === 0) {
-        container.innerHTML = '<div class="empty-state">' +
+        var emptyHtml = '<div class="empty-state">' +
             '<svg class="empty-state-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>' +
             '<span class="empty-state-primary">No contacts yet</span>' +
             '<span class="empty-state-hint">Add a contact to start a conversation</span>' +
         '</div>';
+        if (_gateClean(container, emptyHtml)) return;
+        container.innerHTML = emptyHtml;
         return;
     }
 
@@ -2303,6 +2335,7 @@ function renderContactList() {
             '<button class="lxmf-contact-remove" data-hash="' + escapeHtml(c.hash) + '" title="Remove contact">&times;</button>' +
         '</div>';
     });
+    if (_gateClean(container, html)) return;
     container.innerHTML = html;
 
     container.querySelectorAll('.lxmf-contact').forEach(function(el) {
@@ -2347,16 +2380,19 @@ function renderStandaloneContactList() {
     if (!container._ptrAttached) {
         RS.gestures.attachPullToRefresh(container, { onRefresh: renderStandaloneContactList });
     }
+    if (_gateHidden('view-contacts', container)) return;
 
     var countEl = document.getElementById('contacts-count');
 
     if (lxmfContacts.length === 0) {
         if (countEl) countEl.textContent = '0 contacts';
-        container.innerHTML = '<div class="empty-state">' +
+        var emptyHtml = '<div class="empty-state">' +
             '<svg class="empty-state-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>' +
             '<span class="empty-state-primary">No contacts yet</span>' +
             '<span class="empty-state-hint">Add a contact from Peers, or tap +</span>' +
         '</div>';
+        if (_gateClean(container, emptyHtml)) return;
+        container.innerHTML = emptyHtml;
         return;
     }
 
@@ -2384,7 +2420,9 @@ function renderStandaloneContactList() {
     }
 
     if (sorted.length === 0) {
-        container.innerHTML = '<div class="empty-state"><span class="empty-state-primary">No matches</span></div>';
+        var noMatchHtml = '<div class="empty-state"><span class="empty-state-primary">No matches</span></div>';
+        if (_gateClean(container, noMatchHtml)) return;
+        container.innerHTML = noMatchHtml;
         return;
     }
 
@@ -2408,6 +2446,7 @@ function renderStandaloneContactList() {
             '</div>' +
         '</div>';
     });
+    if (_gateClean(container, html)) return;
     container.innerHTML = html;
 
     container.querySelectorAll('.contacts-row').forEach(function(el) {
@@ -2420,9 +2459,12 @@ function renderStandaloneContactList() {
 function renderNetworkContactList() {
     var container = document.getElementById('dashboard-contacts-list');
     if (!container) return;
+    if (_gateHidden('view-dashboard', container)) return;
 
     if (lxmfContacts.length === 0) {
-        container.innerHTML = '<div class="empty-state p-10"><span class="empty-state-primary">No contacts yet</span></div>';
+        var emptyHtml = '<div class="empty-state p-10"><span class="empty-state-primary">No contacts yet</span></div>';
+        if (_gateClean(container, emptyHtml)) return;
+        container.innerHTML = emptyHtml;
         return;
     }
 
@@ -2445,6 +2487,7 @@ function renderNetworkContactList() {
             '</div>' +
         '</div>';
     });
+    if (_gateClean(container, html)) return;
     container.innerHTML = html;
 
     container.querySelectorAll('.contacts-row').forEach(function(el) {

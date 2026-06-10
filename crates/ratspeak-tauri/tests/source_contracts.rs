@@ -115,6 +115,28 @@ fn ratspeak_capability_marker_drives_name_badge() {
 }
 
 #[test]
+fn contact_list_renders_are_gated() {
+    let root = repo_root();
+    // T2-3: visibility gates per owning view + content-hash dedupe.
+    let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    assert!(lxmf_js.contains("function _gateHidden"));
+    assert!(lxmf_js.contains("function _gateClean"));
+    assert!(lxmf_js.contains("_gateHidden('view-message'"));
+    assert!(lxmf_js.contains("_gateHidden('view-contacts'"));
+    assert!(lxmf_js.contains("_gateHidden('view-dashboard'"));
+    // Reactions map resets on conversation switch.
+    assert!(lxmf_js.contains("_msgReactions = {};"));
+
+    let connections_js =
+        read_source(root.join("dashboard/static/js/connections.js")).expect("connections js");
+    assert!(connections_js.contains("if (container._rsLastHtml === mobileHtml) return;"));
+
+    // Message view heals gated skips on activation.
+    let nav_js = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    assert!(nav_js.contains("Heal renders skipped while this view was hidden."));
+}
+
+#[test]
 fn reaction_emoji_is_escaped_and_validated() {
     let root = repo_root();
     // Render site escapes the peer-controlled emoji text (T0-5).

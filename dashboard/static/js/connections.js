@@ -282,6 +282,8 @@ function renderConnectionsTable(contacts, scrollOnly) {
                 '</div>';
             }
         });
+        if (container._rsLastHtml === mobileHtml) return;
+        container._rsLastHtml = mobileHtml;
         container.innerHTML = mobileHtml;
         container.querySelectorAll('.conn-group-header').forEach(function(hdr) {
             hdr.addEventListener('click', function() {
