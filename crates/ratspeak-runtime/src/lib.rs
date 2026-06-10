@@ -1201,23 +1201,25 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 None
                             }
                         } else if path_hash == get_path_hash {
-                            if let Ok(mut node) = get_node.lock() {
-                                let remote_identity_hash = link_identities
-                                    .lock()
-                                    .ok()
-                                    .and_then(|ids| ids.get(&link_id).copied());
-                                let client_dest_hash = remote_identity_hash
-                                    .map(|identity_hash| {
-                                        rns_identity::destination::Destination::hash_from_name_and_identity(
-                                            "lxmf.delivery",
-                                            Some(&identity_hash),
-                                        )
-                                    })
-                                    .unwrap_or([0u8; 16]);
-                                Some(node.handle_get_request(&data, &client_dest_hash))
+                            let remote_identity_hash = link_identities
+                                .lock()
+                                .ok()
+                                .and_then(|ids| ids.get(&link_id).copied());
+                            let client_dest_hash = remote_identity_hash
+                                .map(|identity_hash| {
+                                    rns_identity::destination::Destination::hash_from_name_and_identity(
+                                        "lxmf.delivery",
+                                        Some(&identity_hash),
+                                    )
+                                })
+                                .unwrap_or([0u8; 16]);
+                            let action = if let Ok(mut node) = get_node.lock() {
+                                node.handle_get_request(&data, &client_dest_hash)
                             } else {
-                                None
-                            }
+                                return None;
+                            };
+                            // Phase-2 file reads happen here, after the node lock drops.
+                            Some(action.into_response())
                         } else {
                             None
                         }
