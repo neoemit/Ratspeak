@@ -52,16 +52,7 @@
                 return _contactNameCache[hash];
             }
         }
-        return _shortHash(hash, 8, 4);
-    }
-
-    function _shortHash(hash, front, back) {
-        if (!hash) return '';
-        if (typeof shortHash === 'function') return shortHash(hash, front || 8, back || 4);
-        front = front || 8;
-        back = back || 4;
-        if (hash.length <= front + back + 1) return hash;
-        return hash.substring(0, front) + '\u2026' + hash.slice(-back);
+        return shortHash(hash, 8, 4);
     }
 
     function _isMe(session, hash) {
@@ -1401,7 +1392,7 @@
                     '<span class="games-sheet-contact-avatar">' + avatar + '</span>' +
                     '<span class="games-sheet-contact-copy">' +
                         '<span class="games-sheet-contact-name">' + ratspeakDisplayNameHtml(name, c) + '</span>' +
-                        '<span class="games-sheet-contact-hash">' + escapeHtml(_shortHash(c.hash, 8, 4)) + '</span>' +
+                        '<span class="games-sheet-contact-hash">' + escapeHtml(shortHash(c.hash, 8, 4)) + '</span>' +
                     '</span>' +
                 '</button>';
             }

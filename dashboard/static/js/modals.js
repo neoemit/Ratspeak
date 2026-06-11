@@ -1274,7 +1274,13 @@ function scanBleDevices() {
                     'Bluetooth permission denied. Grant permission in system settings to scan for LoRa radios.</div>';
             }
         };
-        window.RatspeakAndroid.requestBlePermissions();
+        try {
+            window.RatspeakAndroid.requestBlePermissions();
+        } catch (e) {
+            window._onBlePermissionResult = null;
+            scanBtn.textContent = 'Start Scan';
+            scanBtn.disabled = false;
+        }
         return;
     }
 
@@ -1319,7 +1325,14 @@ function _doBleScan(list, scanBtn) {
                 renderBleDeviceList(rnodeDevices);
             }
         };
-        window.RatspeakAndroid.scanBleDevices(5000);
+        try {
+            window.RatspeakAndroid.scanBleDevices(5000);
+        } catch (e) {
+            window._onNativeBleScanResult = null;
+            clearWatchdog();
+            resetScanBtn();
+            list.innerHTML = '<div class="ble-scan-placeholder inline-error">Failed to start BLE scan.</div>';
+        }
         return;
     }
 
@@ -1442,7 +1455,9 @@ function submitRnodeInterface() {
     var proceed = Promise.resolve(true);
     if (_rnodeConnectionType === 'android-usb' && _androidUsbSelectedDevice && hasAndroidBridge()) {
         var devName = _androidUsbSelectedDevice.device_name;
-        if (window.RatspeakAndroid.hasUsbPermission(devName)) {
+        var hasUsbPerm = false;
+        try { hasUsbPerm = window.RatspeakAndroid.hasUsbPermission(devName); } catch (e) {}
+        if (hasUsbPerm) {
             proceed = Promise.resolve(true);
         } else {
             proceed = new Promise(function(resolve) {

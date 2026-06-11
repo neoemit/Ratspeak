@@ -4690,7 +4690,7 @@ function closeFabContactPicker() {
         e.preventDefault();
         if (!lxmfActiveContact) { showPreConditionToast('Select a conversation first'); return; }
         // Rename pasted 'image.png' with a timestamp to avoid backend collisions.
-        if (file.name === 'image.png' || !file.name) {
+        if (typeof File !== 'undefined' && (file.name === 'image.png' || !file.name)) {
             var ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
             var ext = (file.type && file.type.split('/')[1]) || 'png';
             file = new File([file], 'paste-' + ts + '.' + ext, { type: file.type });
