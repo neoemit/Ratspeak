@@ -80,6 +80,39 @@ window.RS.invoke = function(name, args) {
     });
 };
 
+// Copy text to the clipboard, resolving true on success. The synchronous
+// execCommand path runs first because navigator.clipboard.writeText silently
+// fails in macOS WKWebView; execCommand works in every webview as long as it
+// runs inside the user gesture.
+window.RS.copyText = function(value) {
+    var text = String(value == null ? '' : value);
+    var ok = false;
+    try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        var sel = document.getSelection();
+        var prevRange = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+        ta.select();
+        ta.setSelectionRange(0, text.length);
+        ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (prevRange && sel) { sel.removeAllRanges(); sel.addRange(prevRange); }
+    } catch (_) { ok = false; }
+    if (ok) return Promise.resolve(true);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text).then(
+            function() { return true; },
+            function() { return false; }
+        );
+    }
+    return Promise.resolve(false);
+};
+
 var _rsAndroidMediaPermissionSeq = 0;
 var _rsAndroidMediaPermissionWaiters = {};
 
@@ -745,16 +778,18 @@ document.addEventListener('click', function(e) {
 
     e.stopPropagation();
     var fullHash = target.dataset.full;
-    navigator.clipboard.writeText(fullHash).then(function() {
-        showCopyConfirmationToast('Address');
-        target.classList.add('copied');
-        setTimeout(function() { target.classList.remove('copied'); }, 850);
-    }).catch(function() {
-        var range = document.createRange();
-        range.selectNodeContents(target);
-        var sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(range);
+    RS.copyText(fullHash).then(function(ok) {
+        if (ok) {
+            showCopyConfirmationToast('Address');
+            target.classList.add('copied');
+            setTimeout(function() { target.classList.remove('copied'); }, 850);
+        } else {
+            var range = document.createRange();
+            range.selectNodeContents(target);
+            var sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+        }
     });
 });
 

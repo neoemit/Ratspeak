@@ -34,13 +34,10 @@
 
     function copyText(value, label) {
         if (!value) return Promise.resolve(false);
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            return navigator.clipboard.writeText(value).then(function() {
-                if (typeof showCopyConfirmationToast === 'function') showCopyConfirmationToast(label || 'Value');
-                return true;
-            }).catch(function() { return false; });
-        }
-        return Promise.resolve(false);
+        return RS.copyText(value).then(function(ok) {
+            if (ok && typeof showCopyConfirmationToast === 'function') showCopyConfirmationToast(label || 'Value');
+            return ok;
+        });
     }
 
     function shortValue(value, front, back) {

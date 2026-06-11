@@ -645,10 +645,9 @@ function showConnectionDetailSheet(hash, options) {
         copyBtn.addEventListener('click', function(ev) {
             ev.stopPropagation();
             var h = this.dataset.hash;
-            if (navigator.clipboard) {
-                navigator.clipboard.writeText(h);
-                if (typeof showCopyConfirmationToast === 'function') showCopyConfirmationToast('Address');
-            }
+            RS.copyText(h).then(function(ok) {
+                if (ok && typeof showCopyConfirmationToast === 'function') showCopyConfirmationToast('Address');
+            });
         });
     }
 

@@ -487,8 +487,8 @@ function renderPeersDetailPanel(hash) {
     var hashEl = document.getElementById('peers-detail-hash-copy');
     if (hashEl) {
         hashEl.addEventListener('click', function() {
-            navigator.clipboard.writeText(hash).then(function() {
-                if (typeof showCopyConfirmationToast === 'function') showCopyConfirmationToast('Address');
+            RS.copyText(hash).then(function(ok) {
+                if (ok && typeof showCopyConfirmationToast === 'function') showCopyConfirmationToast('Address');
             });
         });
     }

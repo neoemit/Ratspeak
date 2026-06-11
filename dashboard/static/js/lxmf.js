@@ -2653,10 +2653,9 @@ function showContactDetailSheet(hash) {
     if (copyBtn) {
         copyBtn.addEventListener('click', function(ev) {
             ev.stopPropagation();
-            if (navigator.clipboard) {
-                navigator.clipboard.writeText(hash);
-                showCopyConfirmationToast('Address');
-            }
+            RS.copyText(hash).then(function(ok) {
+                if (ok) showCopyConfirmationToast('Address');
+            });
         });
     }
 
@@ -3792,27 +3791,7 @@ function _sendReactionForMessage(msgData, emoji, opts) {
 
 function _copyToClipboard(text) {
     if (!text) return Promise.resolve(false);
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        return navigator.clipboard.writeText(text).then(function() { return true; }).catch(function() {
-            return _copyToClipboardFallback(text);
-        });
-    }
-    return _copyToClipboardFallback(text);
-}
-
-function _copyToClipboardFallback(text) {
-    var ta = document.createElement('textarea');
-    ta.value = text;
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.left = '-9999px';
-    ta.style.top = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    var ok = false;
-    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
-    if (ta.parentNode) ta.parentNode.removeChild(ta);
-    return Promise.resolve(ok);
+    return RS.copyText(text);
 }
 
 function _resolveMessageImageFile(msgData) {
@@ -4767,10 +4746,9 @@ function openChatHeaderDropdown(triggerEl) {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
             onSelect: function() {
                 if (!lxmfActiveContact) return;
-                navigator.clipboard.writeText(lxmfActiveContact).then(function() {
-                    showCopyConfirmationToast('Hash');
-                }).catch(function() {
-                    showToast('Could not copy', 'toast-orange', 1500);
+                RS.copyText(lxmfActiveContact).then(function(ok) {
+                    if (ok) showCopyConfirmationToast('Hash');
+                    else showToast('Could not copy', 'toast-orange', 1500);
                 });
             }
         },

@@ -5,11 +5,9 @@ var RECOVERY_PHRASE_WORDS = 12;
 
 function shareAddress(address, displayName) {
     if (!navigator.share) {
-        if (navigator.clipboard) {
-            navigator.clipboard.writeText(address).then(function() {
-                showCopyConfirmationToast('Address');
-            });
-        }
+        RS.copyText(address).then(function(ok) {
+            if (ok) showCopyConfirmationToast('Address');
+        });
         return;
     }
     var title = displayName ? displayName + ' (Ratspeak)' : 'Ratspeak Address';
@@ -59,13 +57,10 @@ function isOriginalIdentity(hash) {
 
 function copyIdentityValue(value, noun) {
     if (!value) return;
-    if (!navigator.clipboard) {
-        shareAddress(value, '');
-        return;
-    }
-    navigator.clipboard.writeText(value).then(function() {
-        showCopyConfirmationToast(noun || 'Value');
-    }).catch(function() {});
+    RS.copyText(value).then(function(ok) {
+        if (ok) showCopyConfirmationToast(noun || 'Value');
+        else shareAddress(value, '');
+    });
 }
 
 function identitySetInlineError(id, message) {
@@ -984,14 +979,9 @@ function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
         var copyBtn = document.getElementById('recovery-backup-copy');
         if (copyBtn) {
             copyBtn.addEventListener('click', function() {
-                if (!navigator.clipboard) {
-                    showToast('Clipboard is not available', 'toast-orange', 2000);
-                    return;
-                }
-                navigator.clipboard.writeText(mnemonic).then(function() {
-                    showCopyConfirmationToast('Recovery phrase');
-                }).catch(function() {
-                    showToast('Could not copy phrase', 'toast-orange', 2000);
+                RS.copyText(mnemonic).then(function(ok) {
+                    if (ok) showCopyConfirmationToast('Recovery phrase');
+                    else showToast('Could not copy phrase', 'toast-orange', 2000);
                 });
             });
         }
@@ -1783,13 +1773,10 @@ document.addEventListener('DOMContentLoaded', function() {
         var active = activeIdentity();
         var address = active && (active.lxmf_hash || active.hash);
         if (!address) return;
-        if (!navigator.clipboard) {
-            shareAddress(address, active.display_name || active.nickname || '');
-            return;
-        }
-        navigator.clipboard.writeText(address).then(function() {
-            showCopyConfirmationToast('Address');
-        }).catch(function() {});
+        RS.copyText(address).then(function(ok) {
+            if (ok) showCopyConfirmationToast('Address');
+            else shareAddress(address, active.display_name || active.nickname || '');
+        });
     });
 
     var identityShareBtn = document.getElementById('identity-share-address-btn');
@@ -2480,11 +2467,9 @@ function _hwFinish(result) {
 function _hwCopyMnemonic() {
     var phrase = _hwCtx && _hwCtx.mnemonic;
     if (!phrase) return;
-    if (navigator.clipboard) {
-        navigator.clipboard.writeText(phrase).then(function() {
-            showCopyConfirmationToast('Recovery phrase');
-        }).catch(function() {});
-    }
+    RS.copyText(phrase).then(function(ok) {
+        if (ok) showCopyConfirmationToast('Recovery phrase');
+    });
 }
 
 document.addEventListener('DOMContentLoaded', function() {
