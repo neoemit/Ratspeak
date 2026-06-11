@@ -1022,6 +1022,15 @@ RS.listen('ble_rnode_pairing_finished', function(data) {
     _bleRnodeDismissModal(record);
 });
 
+// Android-only: interface teardown must close the Kotlin GATT link, or the
+// RNode stays connected and never advertises again.
+RS.listen('ble_rnode_disconnect_native', function() {
+    if (typeof window.RatspeakAndroid !== 'undefined' &&
+        typeof window.RatspeakAndroid.disconnectBleDevice === 'function') {
+        try { window.RatspeakAndroid.disconnectBleDevice(); } catch (_) {}
+    }
+});
+
 // Android-only: Rust asks Kotlin to open GATT + TCP bridge first.
 RS.listen('ble_rnode_connect_native', function(data) {
     if (typeof window.RatspeakAndroid === 'undefined' ||

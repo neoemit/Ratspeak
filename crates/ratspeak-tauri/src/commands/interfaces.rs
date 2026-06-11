@@ -1815,6 +1815,13 @@ async fn teardown_live_interface_by_name(
     )))]
     let _ = rnode_port;
 
+    // Android BLE GATT lives in the Kotlin bridge; without an explicit
+    // disconnect the link lingers and the RNode cannot advertise again.
+    #[cfg(target_os = "android")]
+    if rnode_port.is_some_and(|p| p.starts_with("ble://")) {
+        state.emit_to_all("ble_rnode_disconnect_native", json!({}));
+    }
+
     let Some(handle) = runtime_handle(state) else {
         return;
     };
