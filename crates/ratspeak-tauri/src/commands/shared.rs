@@ -53,6 +53,32 @@ pub(crate) fn with_rns_config_lock<T>(state: &AppState, f: impl FnOnce() -> T) -
     f()
 }
 
+// Interface names whose most recent `add_lora_interface` created a brand-new
+// config entry. Connect-failure rollback (`cancel_ble_connect`) may only
+// delete these; reconnects of pre-existing radios must survive a failed or
+// cancelled connect.
+static FRESH_LORA_ADDS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+pub(crate) fn mark_lora_add_freshness(name: &str, fresh: bool) {
+    let mut set = FRESH_LORA_ADDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if fresh {
+        set.insert(name.to_string());
+    } else {
+        set.remove(name);
+    }
+}
+
+#[cfg_attr(not(feature = "ble"), allow(dead_code))]
+pub(crate) fn take_fresh_lora_add(name: &str) -> bool {
+    FRESH_LORA_ADDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(name)
+}
+
 pub(crate) fn remove_stored_file_refs(
     files_dir: &Path,
     file_refs: impl IntoIterator<Item = String>,
@@ -624,6 +650,23 @@ mod tests {
             Arc::new(ratspeak_core::NoopEmitter),
             Arc::new(ratspeak_core::NoopNotifier),
         )
+    }
+
+    #[test]
+    fn fresh_lora_add_marker_gates_rollback_and_consumes_once() {
+        // Fresh add: rollback allowed exactly once.
+        mark_lora_add_freshness("Marker Radio Fresh", true);
+        assert!(take_fresh_lora_add("Marker Radio Fresh"));
+        assert!(!take_fresh_lora_add("Marker Radio Fresh"));
+
+        // Re-add of an existing entry clears any stale fresh marker, so a
+        // failed reconnect never deletes pre-existing config.
+        mark_lora_add_freshness("Marker Radio Existing", true);
+        mark_lora_add_freshness("Marker Radio Existing", false);
+        assert!(!take_fresh_lora_add("Marker Radio Existing"));
+
+        // Resume/cancel paths that never went through add are not deletable.
+        assert!(!take_fresh_lora_add("Marker Radio Never Added"));
     }
 
     #[test]

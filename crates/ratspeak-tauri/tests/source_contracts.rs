@@ -987,6 +987,53 @@ fn interface_pause_resume_is_config_backed_and_visible() {
 }
 
 #[test]
+fn failed_lora_reconnects_keep_persisted_interface_config() {
+    let root = repo_root();
+
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    // Resume/update reconnects never request frontend rollback; only an add
+    // that created the entry may (`fresh_add`). A hardcoded `true` regresses
+    // re-adds of existing radios into config deletion on connect failure.
+    assert!(interfaces_rs.contains("\"rollback_on_error\": false,"));
+    assert!(interfaces_rs.contains("\"rollback_on_error\": fresh_add,"));
+    assert!(!interfaces_rs.contains("\"rollback_on_error\": true"));
+    assert!(
+        interfaces_rs
+            .contains("find_config_interface_with_group(&config_dir, None, &name).is_none()")
+    );
+    assert!(interfaces_rs.contains("mark_lora_add_freshness(&name, fresh_add)"));
+    // Desktop pairing-timeout rollback only deletes entries the add created.
+    assert!(interfaces_rs.contains("if fresh_add {"));
+    // Failed resume flips the entry back to paused instead of deleting it or
+    // leaving a dead enabled config.
+    assert!(
+        interfaces_rs
+            .contains("crate::rns_config::set_interface_enabled(&config_dir, &iface_name, false)")
+    );
+
+    let shared_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/shared.rs"))
+        .expect("shared commands");
+    assert!(shared_rs.contains("pub(crate) fn mark_lora_add_freshness"));
+    assert!(shared_rs.contains("pub(crate) fn take_fresh_lora_add"));
+
+    let ble_rs =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("ble commands");
+    assert!(ble_rs.contains("take_fresh_lora_add(&name)"));
+    assert!(ble_rs.contains("if fresh_add {"));
+
+    // JS guards: auto-rollback only when Rust requested it; manual cancel
+    // only invokes the cancel command for adds, never for edits.
+    let events_js = read_source(root.join("dashboard/static/js/tauri_events.js"))
+        .expect("tauri events js");
+    assert!(events_js.contains("if (data.rollback_on_error && data.name) {"));
+    let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
+    assert!(modals_js.contains(
+        "if (!isEdit) RS.invoke('cancel_ble_connect', { name: bleName }).catch(function() {});"
+    ));
+}
+
+#[test]
 fn rnode_radio_catalog_has_single_runtime_source() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("index html");

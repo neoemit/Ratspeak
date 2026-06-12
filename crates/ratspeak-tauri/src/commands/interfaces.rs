@@ -2292,6 +2292,11 @@ pub async fn resume_interface(
                 }
             }
             Err(e) => {
+                // Failed resume returns to paused; the config entry is kept
+                // so the user can retry.
+                let _ = with_rns_config_lock(&st, || {
+                    crate::rns_config::set_interface_enabled(&config_dir, &iface_name, false)
+                });
                 emit_op_status_broadcast(
                     &st,
                     "resume_interface",
@@ -2353,7 +2358,10 @@ pub async fn add_lora_interface(
         None,
     );
 
-    let (existing_rnode_port, config_written) = with_rns_config_lock(&state_arc, || {
+    let (fresh_add, existing_rnode_port, config_written) = with_rns_config_lock(&state_arc, || {
+        // add_rnode_interface upserts by name; only entries this add creates
+        // may be rolled back (deleted) on connect failure or cancel.
+        let fresh_add = find_config_interface_with_group(&config_dir, None, &name).is_none();
         let existing_rnode_port = find_config_interface(&config_dir, "rnode", &name)
             .and_then(|entry| rnode_config_from_entry(&entry))
             .and_then(|config| config.rnode_port().map(str::to_string));
@@ -2374,7 +2382,7 @@ pub async fn add_lora_interface(
                 airtime_limit_long: radio.airtime_limit_long,
             },
         );
-        (existing_rnode_port, config_written)
+        (fresh_add, existing_rnode_port, config_written)
     });
     #[cfg(not(any(feature = "ble", target_os = "android")))]
     let _ = &existing_rnode_port;
@@ -2390,6 +2398,7 @@ pub async fn add_lora_interface(
         );
         return Err(AppError::internal("Config write error"));
     }
+    crate::commands::shared::mark_lora_add_freshness(&name, fresh_add);
 
     // USB-OTG: factory skips `androidusb://` on restart; user re-adds.
     #[cfg(target_os = "android")]
@@ -2563,7 +2572,7 @@ pub async fn add_lora_interface(
                         "mode": mode,
                         "airtime_limit_short": radio.airtime_limit_short,
                         "airtime_limit_long": radio.airtime_limit_long,
-                        "rollback_on_error": true,
+                        "rollback_on_error": fresh_add,
                     }),
                 );
                 emit_op_status_broadcast(
@@ -2638,15 +2647,19 @@ pub async fn add_lora_interface(
                                     break;
                                 }
                                 if start.elapsed() > timeout {
-                                    // Rollback: interface never came up.
-                                    let _ = with_rns_config_lock(&st, || {
-                                        crate::rns_config::remove_interface(
-                                            &config_dir,
-                                            &name_for_status,
-                                        )
-                                    });
-                                    let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
-                                    emit_hub_interfaces(&st, ifaces);
+                                    // Rollback only entries this add created;
+                                    // pre-existing radios stay configured.
+                                    if fresh_add {
+                                        let _ = with_rns_config_lock(&st, || {
+                                            crate::rns_config::remove_interface(
+                                                &config_dir,
+                                                &name_for_status,
+                                            )
+                                        });
+                                        let ifaces =
+                                            crate::rns_config::get_all_interfaces(&config_dir);
+                                        emit_hub_interfaces(&st, ifaces);
+                                    }
                                     emit_op_status_broadcast(
                                         &st,
                                         "add_lora",

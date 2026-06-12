@@ -1141,6 +1141,8 @@ pub async fn ble_rnode_bridge_ready(
 }
 
 /// Aborts in-flight iOS SMP exchange (the OS dialog may briefly linger).
+/// Config rollback only applies to entries the in-flight add created;
+/// cancelling a reconnect of a pre-existing radio keeps its config.
 #[tauri::command]
 pub async fn cancel_ble_connect(state: State<'_, Arc<AppState>>, name: String) -> AppResult<Value> {
     #[cfg(feature = "ble")]
@@ -1158,6 +1160,7 @@ pub async fn cancel_ble_connect(state: State<'_, Arc<AppState>>, name: String) -
         #[cfg(target_os = "linux")]
         rns_interface::ble_rnode::linux_cancel_pairing();
 
+        let fresh_add = crate::commands::shared::take_fresh_lora_add(&name);
         let config_dir = active_rns_config_dir(&state_arc);
         let name_clone = name.clone();
         tokio::spawn(async move {
@@ -1190,9 +1193,11 @@ pub async fn cancel_ble_connect(state: State<'_, Arc<AppState>>, name: String) -
                 }
             }
 
-            let _ = with_rns_config_lock(&state_arc, || {
-                crate::rns_config::remove_interface(&config_dir, &name_clone)
-            });
+            if fresh_add {
+                let _ = with_rns_config_lock(&state_arc, || {
+                    crate::rns_config::remove_interface(&config_dir, &name_clone)
+                });
+            }
             let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
             emit_hub_interfaces(&state_arc, ifaces);
             emit_op_status_broadcast(
