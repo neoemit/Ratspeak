@@ -4098,7 +4098,7 @@ async fn touch_peer_last_heard(state: &AppState, source_hash: &str) {
 }
 
 // Three wire shapes: UTF-8 string, msgpack BIN/STR (NomadNet),
-// msgpack fixarray(1)[bin8(name)] (ratdeck/ratcom).
+// msgpack fixarray(1)[bin8(name)] (rsdeck/ratcom).
 pub(crate) fn extract_display_name(data: &[u8]) -> String {
     if let Ok(s) = std::str::from_utf8(data) {
         return s.to_string();
