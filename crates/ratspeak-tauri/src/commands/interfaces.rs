@@ -2125,13 +2125,15 @@ async fn spawn_editable_interface(
             let _ = i2p_tunneled;
             let id = rns_runtime::reticulum::spawn_backbone_client_runtime_with_ifac(
                 &handle,
-                name,
-                host,
-                *port,
-                *prefer_ipv6,
-                *connect_timeout,
-                *max_reconnect_tries,
-                ifac.runtime_config(),
+                rns_runtime::reticulum::RuntimeBackboneClientConfig {
+                    name,
+                    host,
+                    port: *port,
+                    prefer_ipv6: *prefer_ipv6,
+                    connect_timeout: *connect_timeout,
+                    max_reconnect_tries: *max_reconnect_tries,
+                    ifac: ifac.runtime_config(),
+                },
             )
             .await?;
             Ok(format!("Backbone interface active (#{id})"))
@@ -4304,13 +4306,15 @@ pub async fn add_backbone_connection(
             teardown_live_interface_by_name(&st, &iface_name_clone, None).await;
             match rns_runtime::reticulum::spawn_backbone_client_runtime_with_ifac(
                 &handle,
-                &iface_name_clone,
-                &host_clone,
-                port as u16,
-                prefer_ipv6,
-                connect_timeout,
-                max_reconnect_tries,
-                ifac_clone.runtime_config(),
+                rns_runtime::reticulum::RuntimeBackboneClientConfig {
+                    name: &iface_name_clone,
+                    host: &host_clone,
+                    port: port as u16,
+                    prefer_ipv6,
+                    connect_timeout,
+                    max_reconnect_tries,
+                    ifac: ifac_clone.runtime_config(),
+                },
             )
             .await
             {
