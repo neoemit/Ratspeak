@@ -1411,6 +1411,7 @@ enum EditableInterfaceConfig {
         name: String,
         host: String,
         port: u16,
+        ifac: InterfaceIfacSettings,
     },
     TcpServer {
         name: String,
@@ -1425,6 +1426,7 @@ enum EditableInterfaceConfig {
         connect_timeout: Option<u64>,
         max_reconnect_tries: Option<usize>,
         i2p_tunneled: bool,
+        ifac: InterfaceIfacSettings,
     },
     BackboneServer {
         name: String,
@@ -1459,6 +1461,10 @@ fn cfg_str(entry: &Value, key: &str) -> Option<String> {
         .get(key)
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
+}
+
+fn cfg_non_empty_str(entry: &Value, key: &str) -> Option<String> {
+    cfg_str(entry, key).filter(|s| !s.is_empty())
 }
 
 fn cfg_u64(entry: &Value, key: &str) -> Option<u64> {
@@ -1513,6 +1519,80 @@ fn cfg_bool_default_true(entry: &Value, key: &str) -> bool {
             )
         })
         .unwrap_or(true)
+}
+
+#[derive(Clone, Debug, Default)]
+struct InterfaceIfacSettings {
+    network_name: Option<String>,
+    passphrase: Option<String>,
+    ifac_size: Option<usize>,
+}
+
+impl InterfaceIfacSettings {
+    fn is_enabled(&self) -> bool {
+        self.network_name.as_ref().is_some_and(|s| !s.is_empty())
+            || self.passphrase.as_ref().is_some_and(|s| !s.is_empty())
+    }
+
+    fn config_args(&self) -> crate::rns_config::InterfaceIfacArgs<'_> {
+        crate::rns_config::InterfaceIfacArgs {
+            network_name: self.network_name.as_deref(),
+            passphrase: self.passphrase.as_deref(),
+            ifac_size: self.ifac_size,
+        }
+    }
+
+    fn runtime_config(&self) -> Option<rns_runtime::reticulum::RuntimeInterfaceIfacConfig> {
+        self.is_enabled()
+            .then(|| rns_runtime::reticulum::RuntimeInterfaceIfacConfig {
+                network_name: self.network_name.clone(),
+                passphrase: self.passphrase.clone(),
+                ifac_size: self.ifac_size,
+            })
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct InterfaceIfacCommandFields {
+    #[serde(default)]
+    ifac_enabled: Option<bool>,
+    #[serde(default)]
+    ifac_network_name: Option<String>,
+    #[serde(default)]
+    ifac_passphrase: Option<String>,
+}
+
+fn ifac_settings_from_entry(entry: &Value) -> InterfaceIfacSettings {
+    InterfaceIfacSettings {
+        network_name: cfg_non_empty_str(entry, "network_name")
+            .or_else(|| cfg_non_empty_str(entry, "networkname")),
+        passphrase: cfg_non_empty_str(entry, "passphrase")
+            .or_else(|| cfg_non_empty_str(entry, "pass_phrase")),
+        ifac_size: cfg_usize(entry, "ifac_size"),
+    }
+}
+
+fn ifac_settings_from_args(
+    fields: &InterfaceIfacCommandFields,
+    existing: Option<&InterfaceIfacSettings>,
+) -> InterfaceIfacSettings {
+    match fields.ifac_enabled {
+        Some(true) => InterfaceIfacSettings {
+            network_name: fields
+                .ifac_network_name
+                .as_deref()
+                .map(|s| sanitize_text(s, 128))
+                .filter(|s| !s.is_empty()),
+            passphrase: fields
+                .ifac_passphrase
+                .as_deref()
+                .map(|s| sanitize_text(s, 256))
+                .filter(|s| !s.is_empty()),
+            ifac_size: existing.and_then(|settings| settings.ifac_size),
+        },
+        Some(false) => InterfaceIfacSettings::default(),
+        None => existing.cloned().unwrap_or_default(),
+    }
 }
 
 fn cfg_rnode_mode(entry: &Value) -> String {
@@ -1654,6 +1734,7 @@ fn tcp_client_config_from_entry(entry: &Value) -> Option<EditableInterfaceConfig
         name: cfg_str(entry, "name")?,
         host: cfg_str(entry, "target_host")?,
         port: cfg_u16(entry, "target_port")?,
+        ifac: ifac_settings_from_entry(entry),
     })
 }
 
@@ -1674,6 +1755,7 @@ fn backbone_client_config_from_entry(entry: &Value) -> Option<EditableInterfaceC
         connect_timeout: cfg_u64(entry, "connect_timeout"),
         max_reconnect_tries: cfg_usize(entry, "max_reconnect_tries"),
         i2p_tunneled: cfg_bool(entry, "i2p_tunneled"),
+        ifac: ifac_settings_from_entry(entry),
     })
 }
 
@@ -2000,9 +2082,20 @@ async fn spawn_editable_interface(
                 }
             }
         }
-        EditableInterfaceConfig::TcpClient { name, host, port } => {
-            let id = rns_runtime::reticulum::spawn_tcp_client_runtime(&handle, name, host, *port)
-                .await?;
+        EditableInterfaceConfig::TcpClient {
+            name,
+            host,
+            port,
+            ifac,
+        } => {
+            let id = rns_runtime::reticulum::spawn_tcp_client_runtime_with_ifac(
+                &handle,
+                name,
+                host,
+                *port,
+                ifac.runtime_config(),
+            )
+            .await?;
             Ok(format!("TCP interface active (#{id})"))
         }
         EditableInterfaceConfig::TcpServer {
@@ -2027,9 +2120,10 @@ async fn spawn_editable_interface(
             connect_timeout,
             max_reconnect_tries,
             i2p_tunneled,
+            ifac,
         } => {
             let _ = i2p_tunneled;
-            let id = rns_runtime::reticulum::spawn_backbone_client_runtime(
+            let id = rns_runtime::reticulum::spawn_backbone_client_runtime_with_ifac(
                 &handle,
                 name,
                 host,
@@ -2037,6 +2131,7 @@ async fn spawn_editable_interface(
                 *prefer_ipv6,
                 *connect_timeout,
                 *max_reconnect_tries,
+                ifac.runtime_config(),
             )
             .await?;
             Ok(format!("Backbone interface active (#{id})"))
@@ -3486,6 +3581,8 @@ pub struct TcpConnectionArgs {
     pub port: i64,
     #[serde(default = "default_tcp_name")]
     pub name: String,
+    #[serde(flatten)]
+    ifac: InterfaceIfacCommandFields,
 }
 
 fn default_tcp_name() -> String {
@@ -3501,6 +3598,7 @@ pub async fn add_tcp_connection(
     let host = sanitize_text(&args.host, 256);
     let port = args.port;
     let name = sanitize_text(&args.name, 64);
+    let ifac = ifac_settings_from_args(&args.ifac, None);
 
     if host.is_empty() || !(1..=65535).contains(&port) {
         emit_op_status_broadcast(
@@ -3530,7 +3628,13 @@ pub async fn add_tcp_connection(
             Some(&iface_name),
             candidate_public_server,
         )?;
-        if crate::rns_config::add_tcp_client(&config_dir, &iface_name, &host, port as u16) {
+        if crate::rns_config::add_tcp_client_with_ifac(
+            &config_dir,
+            &iface_name,
+            &host,
+            port as u16,
+            ifac.config_args(),
+        ) {
             Ok::<_, AppError>(true)
         } else {
             Ok(false)
@@ -3560,6 +3664,7 @@ pub async fn add_tcp_connection(
     let st = Arc::clone(&state_arc);
     let host_clone = host.clone();
     let iface_name_clone = iface_name.clone();
+    let ifac_clone = ifac.clone();
     let config_dir = config_dir.clone();
     tokio::spawn(async move {
         let rns_handle = st
@@ -3569,11 +3674,12 @@ pub async fn add_tcp_connection(
             .and_then(|r| r.as_ref().map(|mgr| mgr.handle.clone()));
         if let Some(handle) = rns_handle {
             teardown_live_interface_by_name(&st, &iface_name_clone, None).await;
-            match rns_runtime::reticulum::spawn_tcp_client_runtime(
+            match rns_runtime::reticulum::spawn_tcp_client_runtime_with_ifac(
                 &handle,
                 &iface_name_clone,
                 &host_clone,
                 port as u16,
+                ifac_clone.runtime_config(),
             )
             .await
             {
@@ -3636,6 +3742,8 @@ pub struct UpdateTcpConnectionArgs {
     pub port: i64,
     #[serde(default = "default_tcp_name")]
     pub name: String,
+    #[serde(flatten)]
+    ifac: InterfaceIfacCommandFields,
 }
 
 #[tauri::command]
@@ -3668,13 +3776,15 @@ pub async fn update_tcp_connection(
     let config_dir = active_rns_config_dir(&state_arc);
 
     let candidate_public_server = public_tcp_server_id(&host, port as u16);
-    let (old_runtime, old_config_content, config_written) =
+    let (old_runtime, old_config_content, config_written, ifac) =
         with_rns_config_lock(&state_arc, || {
             let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
             let old_entry = find_config_interface(&config_dir, "tcp_client", &old_name)
                 .ok_or_else(|| AppError::bad_request("Interface not found"))?;
             let old_runtime = tcp_client_config_from_entry(&old_entry)
                 .ok_or_else(|| AppError::bad_request("Invalid TCP config"))?;
+            let old_ifac = ifac_settings_from_entry(&old_entry);
+            let ifac = ifac_settings_from_args(&args.ifac, Some(&old_ifac));
             enforce_public_tcp_transport_connect_limit(
                 &state_arc,
                 &ifaces,
@@ -3683,14 +3793,15 @@ pub async fn update_tcp_connection(
             )?;
             let old_config_content =
                 crate::rns_config::read_config(&config_dir).unwrap_or_default();
-            let config_written = crate::rns_config::update_tcp_client(
+            let config_written = crate::rns_config::update_tcp_client_with_ifac(
                 &config_dir,
                 &old_name,
                 &name,
                 &host,
                 port as u16,
+                ifac.config_args(),
             );
-            Ok::<_, AppError>((old_runtime, old_config_content, config_written))
+            Ok::<_, AppError>((old_runtime, old_config_content, config_written, ifac))
         })?;
 
     if !config_written {
@@ -3716,6 +3827,7 @@ pub async fn update_tcp_connection(
         name: name.clone(),
         host,
         port: port as u16,
+        ifac,
     };
     emit_hub_interfaces(
         &state_arc,
@@ -4111,6 +4223,8 @@ pub struct BackboneConnectionArgs {
     pub max_reconnect_tries: Option<usize>,
     #[serde(default)]
     pub i2p_tunneled: bool,
+    #[serde(flatten)]
+    ifac: InterfaceIfacCommandFields,
 }
 
 #[tauri::command]
@@ -4122,6 +4236,7 @@ pub async fn add_backbone_connection(
     let host = sanitize_text(&args.host, 256);
     let port = args.port;
     let raw_name = sanitize_text(&args.name, 64);
+    let ifac = ifac_settings_from_args(&args.ifac, None);
 
     if host.is_empty() || !(1..=65535).contains(&port) {
         emit_op_status_broadcast(
@@ -4153,6 +4268,7 @@ pub async fn add_backbone_connection(
                 connect_timeout: args.connect_timeout,
                 max_reconnect_tries: args.max_reconnect_tries,
                 i2p_tunneled: args.i2p_tunneled,
+                ifac: ifac.config_args(),
             },
         )
     }) {
@@ -4176,6 +4292,7 @@ pub async fn add_backbone_connection(
     let prefer_ipv6 = args.prefer_ipv6;
     let connect_timeout = args.connect_timeout;
     let max_reconnect_tries = args.max_reconnect_tries;
+    let ifac_clone = ifac.clone();
     let config_dir = config_dir.clone();
     tokio::spawn(async move {
         let rns_handle = st
@@ -4185,7 +4302,7 @@ pub async fn add_backbone_connection(
             .and_then(|r| r.as_ref().map(|mgr| mgr.handle.clone()));
         if let Some(handle) = rns_handle {
             teardown_live_interface_by_name(&st, &iface_name_clone, None).await;
-            match rns_runtime::reticulum::spawn_backbone_client_runtime(
+            match rns_runtime::reticulum::spawn_backbone_client_runtime_with_ifac(
                 &handle,
                 &iface_name_clone,
                 &host_clone,
@@ -4193,6 +4310,7 @@ pub async fn add_backbone_connection(
                 prefer_ipv6,
                 connect_timeout,
                 max_reconnect_tries,
+                ifac_clone.runtime_config(),
             )
             .await
             {
@@ -4263,6 +4381,8 @@ pub struct UpdateBackboneConnectionArgs {
     pub max_reconnect_tries: Option<usize>,
     #[serde(default)]
     pub i2p_tunneled: bool,
+    #[serde(flatten)]
+    ifac: InterfaceIfacCommandFields,
 }
 
 #[tauri::command]
@@ -4293,12 +4413,14 @@ pub async fn update_backbone_connection(
     };
 
     let config_dir = active_rns_config_dir(&state_arc);
-    let (old_runtime, old_config_content, config_written) =
+    let (old_runtime, old_config_content, config_written, ifac) =
         with_rns_config_lock(&state_arc, || {
             let old_entry = find_config_interface(&config_dir, "backbone_client", &old_name)
                 .ok_or_else(|| AppError::bad_request("Interface not found"))?;
             let old_runtime = backbone_client_config_from_entry(&old_entry)
                 .ok_or_else(|| AppError::bad_request("Invalid Backbone config"))?;
+            let old_ifac = ifac_settings_from_entry(&old_entry);
+            let ifac = ifac_settings_from_args(&args.ifac, Some(&old_ifac));
             let old_config_content =
                 crate::rns_config::read_config(&config_dir).unwrap_or_default();
             let config_written = crate::rns_config::update_backbone_client(
@@ -4312,9 +4434,10 @@ pub async fn update_backbone_connection(
                     connect_timeout: args.connect_timeout,
                     max_reconnect_tries: args.max_reconnect_tries,
                     i2p_tunneled: args.i2p_tunneled,
+                    ifac: ifac.config_args(),
                 },
             );
-            Ok::<_, AppError>((old_runtime, old_config_content, config_written))
+            Ok::<_, AppError>((old_runtime, old_config_content, config_written, ifac))
         })?;
 
     if !config_written {
@@ -4337,6 +4460,7 @@ pub async fn update_backbone_connection(
         connect_timeout: args.connect_timeout,
         max_reconnect_tries: args.max_reconnect_tries,
         i2p_tunneled: args.i2p_tunneled,
+        ifac,
     };
     emit_hub_interfaces(
         &state_arc,

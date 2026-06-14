@@ -944,6 +944,56 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
 }
 
 #[test]
+fn tcp_connect_sheet_gates_backbone_and_ifac_behind_developer_mode() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("index html");
+    for expected in [
+        "id=\"connect-backbone-row\" style=\"display:none;\"",
+        "id=\"connect-ifac-row\" style=\"display:none;\"",
+        "id=\"connect-use-ifac\"",
+        "id=\"connect-ifac-network-name\"",
+        "id=\"connect-ifac-passphrase\"",
+    ] {
+        assert!(
+            index.contains(expected),
+            "missing IFAC connect UI token {expected}"
+        );
+    }
+    assert!(!index.contains("ifac_size"));
+
+    let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
+    assert!(modals_js.contains("function _syncConnectAdvancedVisibility()"));
+    assert!(modals_js.contains("if (bbRow) bbRow.style.display = dev ? '' : 'none';"));
+    assert!(modals_js.contains("if (ifacRow) ifacRow.style.display = showIfac ? '' : 'none';"));
+    assert!(modals_js.contains("if (!_developerModeEnabled()) return null;"));
+    assert!(modals_js.contains("args.ifac_enabled = ifac.ifac_enabled;"));
+    assert!(modals_js.contains("args.ifac_network_name = ifac.ifac_network_name;"));
+    assert!(modals_js.contains("args.ifac_passphrase = ifac.ifac_passphrase;"));
+    assert!(modals_js.contains("Enter an IFAC network name or passphrase"));
+    assert!(modals_js.contains("window.addEventListener('ratspeak-developer-mode-changed', _syncConnectAdvancedVisibility);"));
+    assert!(modals_js.contains("if (ifacCheckbox) ifacCheckbox.checked = false;"));
+    assert!(modals_js.contains("if (ifacNetworkName) ifacNetworkName.value = '';"));
+    assert!(modals_js.contains("if (ifacPassphrase) ifacPassphrase.value = '';"));
+
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    assert!(interfaces_rs.contains("struct InterfaceIfacCommandFields"));
+    assert!(interfaces_rs.contains("ifac_enabled: Option<bool>"));
+    assert!(interfaces_rs.contains("ifac_settings_from_args(&args.ifac, None)"));
+    assert!(interfaces_rs.contains("ifac_settings_from_args(&args.ifac, Some(&old_ifac))"));
+    assert!(interfaces_rs.contains("spawn_tcp_client_runtime_with_ifac"));
+    assert!(interfaces_rs.contains("spawn_backbone_client_runtime_with_ifac"));
+
+    let rns_config =
+        read_source(root.join("crates/ratspeak-runtime/src/rns_config.rs")).expect("rns config");
+    assert!(rns_config.contains("pub struct InterfaceIfacArgs"));
+    assert!(rns_config.contains("network_name = {network_name}"));
+    assert!(rns_config.contains("passphrase = {passphrase}"));
+    assert!(rns_config.contains("add_tcp_client_with_ifac"));
+    assert!(rns_config.contains("update_tcp_client_with_ifac"));
+}
+
+#[test]
 fn interface_pause_resume_is_config_backed_and_visible() {
     let root = repo_root();
 

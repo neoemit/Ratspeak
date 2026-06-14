@@ -794,12 +794,17 @@ function _rnodeDeveloperModeEnabled() {
         window.ratspeakDeveloperModeEnabled();
 }
 
+function _developerModeEnabled() {
+    return _rnodeDeveloperModeEnabled();
+}
+
 function _rnodeSyncInterfaceModeVisibility() {
     var field = document.getElementById('rnode-mode-field');
     if (field) field.style.display = _rnodeDeveloperModeEnabled() ? '' : 'none';
 }
 
 window.addEventListener('ratspeak-developer-mode-changed', _rnodeSyncInterfaceModeVisibility);
+window.addEventListener('ratspeak-developer-mode-changed', _syncConnectAdvancedVisibility);
 
 function openRnodeModal(mode, editIface) {
     mode = mode || 'ble';
@@ -1686,6 +1691,65 @@ function refreshConnectPublicServers(ifaces, opts) {
     });
 }
 
+function _ifaceIfacNetworkName(iface) {
+    return _ifaceString(iface, 'network_name', _ifaceString(iface, 'networkname', ''));
+}
+
+function _ifaceIfacPassphrase(iface) {
+    return _ifaceString(iface, 'passphrase', _ifaceString(iface, 'pass_phrase', ''));
+}
+
+function _ifaceHasIfac(iface) {
+    return !!(_ifaceIfacNetworkName(iface) || _ifaceIfacPassphrase(iface));
+}
+
+function _readConnectIfacValues() {
+    if (!_developerModeEnabled()) return null;
+    var useIfac = !!(document.getElementById('connect-use-ifac') || {}).checked;
+    var networkNameEl = document.getElementById('connect-ifac-network-name');
+    var passphraseEl = document.getElementById('connect-ifac-passphrase');
+    var networkName = networkNameEl ? networkNameEl.value.trim() : '';
+    var passphrase = passphraseEl ? passphraseEl.value.trim() : '';
+    return {
+        ifac_enabled: useIfac,
+        ifac_network_name: useIfac ? networkName : '',
+        ifac_passphrase: useIfac ? passphrase : ''
+    };
+}
+
+function _applyConnectIfacValuesToArgs(args) {
+    var ifac = _readConnectIfacValues();
+    if (!ifac) return args;
+    args.ifac_enabled = ifac.ifac_enabled;
+    args.ifac_network_name = ifac.ifac_network_name;
+    args.ifac_passphrase = ifac.ifac_passphrase;
+    return args;
+}
+
+function _syncConnectAdvancedVisibility() {
+    var dev = _developerModeEnabled();
+    var editContext = _normaliseConnectEditContext(_connectEditContext);
+    var isEdit = !!editContext;
+    var isBackboneEdit = isEdit && editContext.ifaceType === 'backbone_client';
+    var bbRow = document.getElementById('connect-backbone-row');
+    var bbCheckbox = document.getElementById('connect-use-backbone');
+    if (bbCheckbox) {
+        bbCheckbox.disabled = isEdit;
+        if (!dev && !isBackboneEdit) bbCheckbox.checked = false;
+    }
+    if (bbRow) bbRow.style.display = dev ? '' : 'none';
+
+    var ifacRow = document.getElementById('connect-ifac-row');
+    var ifacCheckbox = document.getElementById('connect-use-ifac');
+    var ifacFields = document.getElementById('connect-ifac-fields');
+    var showIfac = dev;
+    if (ifacRow) ifacRow.style.display = showIfac ? '' : 'none';
+    if (ifacFields) {
+        var enabled = showIfac && !!(ifacCheckbox && ifacCheckbox.checked);
+        ifacFields.style.display = enabled ? '' : 'none';
+    }
+}
+
 function openConnectModal(editContext) {
     _connectEditContext = _normaliseConnectEditContext(editContext);
     _connectPendingPublicServerKey = null;
@@ -1715,16 +1779,21 @@ function openConnectModal(editContext) {
         submitBtn.className = 'nr-btn w-full mt-4';
         submitBtn.disabled = false;
     }
-    // Backbone toggle is desktop-only, off by default.
-    var bbRow = document.getElementById('connect-backbone-row');
     var bbCheckbox = document.getElementById('connect-use-backbone');
     if (bbCheckbox) {
         bbCheckbox.checked = isBackboneEdit;
-        bbCheckbox.disabled = isEdit;
     }
-    if (bbRow) {
-        var isDesktop = typeof window !== 'undefined' && !!window.__RATSPEAK_DESKTOP__;
-        bbRow.style.display = (isDesktop || isBackboneEdit) ? '' : 'none';
+    var ifacCheckbox = document.getElementById('connect-use-ifac');
+    var ifacNetworkName = document.getElementById('connect-ifac-network-name');
+    var ifacPassphrase = document.getElementById('connect-ifac-passphrase');
+    var hasIfac = _ifaceHasIfac(iface);
+    if (ifacCheckbox) ifacCheckbox.checked = hasIfac;
+    if (ifacNetworkName) ifacNetworkName.value = iface ? _ifaceIfacNetworkName(iface) : '';
+    if (ifacPassphrase) ifacPassphrase.value = iface ? _ifaceIfacPassphrase(iface) : '';
+    _syncConnectAdvancedVisibility();
+    if (ifacCheckbox && !ifacCheckbox.dataset.bound) {
+        ifacCheckbox.dataset.bound = '1';
+        ifacCheckbox.addEventListener('change', _syncConnectAdvancedVisibility);
     }
     loadConnectionHistory();
     refreshConnectPublicServers();
@@ -1806,6 +1875,7 @@ function closeConnectModal() {
     if (quickField) quickField.style.display = '';
     setConnectTab('public');
     _connectEditContext = null;
+    _syncConnectAdvancedVisibility();
 }
 
 function quickConnect(host, port, name, opts) {
@@ -1817,6 +1887,13 @@ function quickConnect(host, port, name, opts) {
     _setConnectSubmitBase(submitBtn, 'Connect');
     var bbCheckbox = document.getElementById('connect-use-backbone');
     if (bbCheckbox && opts.publicServer) bbCheckbox.checked = false;
+    var ifacCheckbox = document.getElementById('connect-use-ifac');
+    var ifacNetworkName = document.getElementById('connect-ifac-network-name');
+    var ifacPassphrase = document.getElementById('connect-ifac-passphrase');
+    if (ifacCheckbox) ifacCheckbox.checked = false;
+    if (ifacNetworkName) ifacNetworkName.value = '';
+    if (ifacPassphrase) ifacPassphrase.value = '';
+    _syncConnectAdvancedVisibility();
     document.getElementById('connect-host').value = host;
     document.getElementById('connect-port').value = port;
     document.getElementById('connect-name').value = name;
@@ -1872,6 +1949,13 @@ function submitConnection() {
         return;
     }
 
+    var ifacValues = _readConnectIfacValues();
+    if (ifacValues && ifacValues.ifac_enabled &&
+        !ifacValues.ifac_network_name && !ifacValues.ifac_passphrase) {
+        showPreConditionToast('Enter an IFAC network name or passphrase');
+        return;
+    }
+
     var submitBtn = document.getElementById('connect-submit-btn');
     if (submitBtn) {
         submitBtn.textContent = 'Connecting...';
@@ -1899,7 +1983,7 @@ function submitConnection() {
     if (editContext && editContext.ifaceType === 'backbone_client') {
         var bb = editContext.iface || {};
         RS.invoke('update_backbone_connection', {
-            args: {
+            args: _applyConnectIfacValuesToArgs({
                 old_name: editContext.oldName,
                 host: host,
                 port: port,
@@ -1908,32 +1992,32 @@ function submitConnection() {
                 connect_timeout: _ifaceInt(bb, 'connect_timeout', null),
                 max_reconnect_tries: _ifaceInt(bb, 'max_reconnect_tries', null),
                 i2p_tunneled: _ifaceBool(bb, 'i2p_tunneled'),
-            }
+            })
         }).catch(function(err) { _handleConnectInvokeError(err, 'Save Changes'); });
     } else if (editContext) {
         RS.invoke('update_tcp_connection', {
-            args: {
+            args: _applyConnectIfacValuesToArgs({
                 old_name: editContext.oldName,
                 host: host,
                 port: port,
                 name: name || (host + ':' + port),
-            }
+            })
         }).catch(function(err) { _handleConnectInvokeError(err, 'Save Changes'); });
     } else if (useBackbone) {
         RS.invoke('add_backbone_connection', {
-            args: {
+            args: _applyConnectIfacValuesToArgs({
                 host: host,
                 port: port,
                 name: name || ('Backbone to ' + host + ':' + port),
-            }
+            })
         }).catch(function(err) { _handleConnectInvokeError(err, 'Connect'); });
     } else {
         RS.invoke('add_tcp_connection', {
-            args: {
+            args: _applyConnectIfacValuesToArgs({
                 host: host,
                 port: port,
                 name: name || (host + ':' + port),
-            }
+            })
         }).catch(function(err) { _handleConnectInvokeError(err, 'Connect'); });
     }
 }
