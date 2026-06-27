@@ -25,10 +25,10 @@ permissions:
   contents: write
 
 env:
-  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.1.0-rc.1
-  RATSPEAK_RSLXMF_REF: ratspeak-v1.1.0-rc.1
-  RATSPEAK_RSLXST_REF: ratspeak-v1.1.0-rc.1
-  RATSPEAK_LRGP_REF: ratspeak-v1.1.0-rc.1
+  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.21
+  RATSPEAK_RSLXMF_REF: v1.0.1
+  RATSPEAK_RSLXST_REF: ratspeak-v1.0.21
+  RATSPEAK_LRGP_REF: ratspeak-v1.0.21
 
 jobs:
   build:
