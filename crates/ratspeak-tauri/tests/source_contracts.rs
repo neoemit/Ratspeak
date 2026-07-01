@@ -27,6 +27,30 @@ fn read_source(path: impl AsRef<Path>) -> std::io::Result<String> {
     fs::read_to_string(path).map(|source| source.replace("\r\n", "\n").replace('\r', "\n"))
 }
 
+fn rust_struct_literal_blocks<'a>(source: &'a str, marker: &str) -> Vec<&'a str> {
+    source
+        .match_indices(marker)
+        .map(|(idx, _)| {
+            let tail = &source[idx..];
+            let start = tail.find('{').expect("struct literal start");
+            let mut depth = 0usize;
+            for (offset, ch) in tail[start..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth = depth.saturating_sub(1);
+                        if depth == 0 {
+                            return &tail[..start + offset + 1];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("unterminated struct literal for {marker}");
+        })
+        .collect()
+}
+
 #[test]
 fn privacy_announce_usage_setting_is_wired() {
     let root = repo_root();
@@ -63,6 +87,41 @@ fn privacy_announce_usage_setting_is_wired() {
         .and_then(|tail| tail.split("pub async fn api_identity_reset").next())
         .expect("reset database body");
     assert!(!reset_body.contains("\"settings\""));
+}
+
+#[test]
+fn ble_rnode_runtime_spawns_enable_flow_control() {
+    let root = repo_root();
+    let ble_rs =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("ble commands");
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+
+    let native_blocks = rust_struct_literal_blocks(&ble_rs, "BleRnodeRuntimeArgs");
+    assert_eq!(
+        native_blocks.len(),
+        1,
+        "Android native BLE RNode should have one runtime-args block"
+    );
+    for block in native_blocks {
+        assert!(
+            block.contains("flow_control: true"),
+            "Android native BLE RNode runtime args must opt into RNode CMD_READY flow control:\n{block}"
+        );
+    }
+
+    let interface_blocks = rust_struct_literal_blocks(&interfaces_rs, "BleRnodeRuntimeArgs");
+    assert_eq!(
+        interface_blocks.len(),
+        2,
+        "interface commands should have editable/add BLE RNode runtime-args blocks"
+    );
+    for block in interface_blocks {
+        assert!(
+            block.contains("flow_control: true"),
+            "BLE RNode runtime args must opt into RNode CMD_READY flow control:\n{block}"
+        );
+    }
 }
 
 #[test]

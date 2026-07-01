@@ -1061,7 +1061,7 @@ pub async fn ble_rnode_bridge_ready(
                         mode,
                         st_alock,
                         lt_alock,
-                        flow_control: false,
+                        flow_control: true,
                     },
                     tcp_port,
                 )
