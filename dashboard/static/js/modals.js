@@ -616,7 +616,6 @@ function _rnodePublicMapElements() {
     return {
         section: document.getElementById('rnode-public-map-section'),
         checkbox: document.getElementById('rnode-public-map-enabled'),
-        state: document.getElementById('rnode-public-map-state'),
         controls: document.getElementById('rnode-public-map-controls'),
         status: document.getElementById('rnode-public-map-status'),
         latitude: document.getElementById('rnode-public-map-latitude'),
@@ -637,11 +636,6 @@ function _rnodeSetPublicMapError(message) {
     }
 }
 
-function _rnodeSetPublicMapState(message) {
-    var state = document.getElementById('rnode-public-map-state');
-    if (state) state.textContent = message || 'Off';
-}
-
 function _rnodeSetPublicMapStatus() {
     var els = _rnodePublicMapElements();
     if (!els.status) return;
@@ -650,13 +644,11 @@ function _rnodeSetPublicMapStatus() {
     var lat = latRaw ? Number(latRaw) : NaN;
     var lon = lonRaw ? Number(lonRaw) : NaN;
     if (isNaN(lat) || isNaN(lon)) {
-        _rnodeSetPublicMapState('Location needed');
         els.status.textContent = 'Enter latitude and longitude manually.';
         return;
     }
     var latText = String(_rnodeApproxCoordinate(lat));
     var lonText = String(_rnodeApproxCoordinate(lon));
-    _rnodeSetPublicMapState('On');
     els.status.innerHTML = 'Approx. <code>' + escapeHtml(latText + ', ' + lonText) + '</code>';
 }
 
@@ -665,7 +657,6 @@ function _rnodeSetPublicMapEnabled(enabled) {
     if (els.checkbox) els.checkbox.checked = !!enabled;
     if (els.controls) els.controls.style.display = enabled ? '' : 'none';
     if (!enabled) {
-        _rnodeSetPublicMapState('Off');
         _rnodeSetPublicMapError('');
     } else {
         _rnodeSetPublicMapStatus();
@@ -747,7 +738,6 @@ function _rnodeReadPublicMapSettings() {
 function _rnodeRequestPublicMapLocation() {
     var els = _rnodePublicMapElements();
     _rnodeSetPublicMapError('');
-    _rnodeSetPublicMapState('Requesting location...');
     if (els.status) els.status.textContent = 'Requesting current approximate location...';
     if (!navigator.geolocation) {
         _rnodeSetPublicMapError('Location unavailable. Enter latitude and longitude manually.');
@@ -1125,8 +1115,6 @@ function openRnodeModal(mode, editIface) {
         };
         applyRadioSelection();
         catalogReady.then(applyRadioSelection).catch(function() {});
-        var summary = document.getElementById('rnode-device-summary');
-        if (summary) summary.textContent = _rnodeIsTcpPort(port) ? (_rnodeTcpInputValue(port) + ' via TCP') : (port || 'LoRa radio');
         if (step1) step1.style.display = 'none';
         if (step2) step2.style.display = '';
         var submit = document.getElementById('rnode-submit-btn');
@@ -1231,17 +1219,11 @@ function rnodeWizardNext() {
     var step2 = document.getElementById('rnode-step-2');
     if (!step1 || !step2) return;
 
-    var summary = document.getElementById('rnode-device-summary');
     var nameInput = document.getElementById('rnode-iface-name');
 
     if (_rnodeConnectionType === 'ble' && _bleSelectedDevice) {
-        summary.textContent = _bleSelectedDevice.name + ' via Bluetooth';
         if (!nameInput.value.trim()) nameInput.value = _bleSelectedDevice.name || 'LoRa Radio';
     } else if (_rnodeConnectionType === 'android-usb' && _androidUsbSelectedDevice) {
-        var usbLabel = _androidUsbSelectedDevice.product
-            || _androidUsbSelectedDevice.manufacturer
-            || _androidUsbSelectedDevice.device_name;
-        summary.textContent = usbLabel + ' via USB';
         if (!nameInput.value.trim()) nameInput.value = 'LoRa Radio';
     } else if (_rnodeConnectionType === 'tcp') {
         var tcpInput = document.getElementById('rnode-tcp-endpoint');
@@ -1252,11 +1234,8 @@ function rnodeWizardNext() {
             return;
         }
         if (tcpInput) tcpInput.value = tcpEndpoint.label;
-        summary.textContent = tcpEndpoint.label + ' via TCP';
         if (!nameInput.value.trim()) nameInput.value = 'LoRa Radio';
     } else if (_selectedSerialPort) {
-        var desc = _selectedSerialPort.description || _selectedSerialPort.device;
-        summary.textContent = desc + ' via USB';
         if (!nameInput.value.trim()) nameInput.value = 'LoRa Radio';
     }
 
