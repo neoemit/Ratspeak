@@ -181,6 +181,10 @@ fn rnode_public_map_is_edit_only_and_privacy_gated() {
         read_source(root.join("crates/ratspeak-runtime/src/rns_config.rs")).expect("rns config");
     let manifest = read_source(root.join("src-tauri/gen/android/app/src/main/AndroidManifest.xml"))
         .expect("android manifest");
+    let android_main = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .expect("android main activity");
 
     assert!(index.contains(r#"id="rnode-public-map-section" style="display:none;""#));
     assert!(index.contains(r#"id="rnode-public-map-enabled""#));
@@ -232,6 +236,23 @@ fn rnode_public_map_is_edit_only_and_privacy_gated() {
 
     assert!(manifest.contains(r#"android.permission.ACCESS_FINE_LOCATION" />"#));
     assert!(manifest.contains(r#"android.permission.ACCESS_COARSE_LOCATION" />"#));
+    assert!(android_main.contains(
+        "webView.webChromeClient = RatspeakWebChromeClient(this, RustWebChromeClient(this))"
+    ));
+    assert!(android_main.contains("private class RatspeakWebChromeClient("));
+    assert!(android_main.contains("delegate.onPermissionRequest(request)"));
+    assert!(
+        android_main
+            .contains("delegate.onShowFileChooser(webView, filePathCallback, fileChooserParams)")
+    );
+    assert!(android_main.contains("override fun onGeolocationPermissionsShowPrompt("));
+    assert!(
+        android_main
+            .contains("val coarsePermission = arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION)")
+    );
+    assert!(android_main.contains("PermissionHelper.hasPermissions(activity, coarsePermission)"));
+    assert!(android_main.contains("callback.invoke(origin, true, false)"));
+    assert!(android_main.contains("delegate.onGeolocationPermissionsShowPrompt(origin, callback)"));
 }
 
 #[test]
