@@ -25,7 +25,7 @@ permissions:
   contents: write
 
 env:
-  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.21
+  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.22
   RATSPEAK_RSLXMF_REF: v1.0.1
   RATSPEAK_RSLXST_REF: ratspeak-v1.0.21
   RATSPEAK_LRGP_REF: ratspeak-v1.0.21
@@ -203,8 +203,9 @@ jobs:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
           prerelease: ${{ contains(github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name, '-') }}
           body: |
-            - Fix direct delivery for peers over Bluetooth
-            - General fixes and improvements
+            - Restore BLE RNode stability on Android
+            - Add opt-in RNode public map display
+            - Improve RNode edit settings and location handling
           files: |
             Ratspeak/dist/android/*.apk
             Ratspeak/checksums-android.txt
