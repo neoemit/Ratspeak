@@ -51,8 +51,8 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        CFBundleShortVersionString: 1.0.22
-        CFBundleVersion: "1.0.22"
+        CFBundleShortVersionString: 1.0.23
+        CFBundleVersion: "1.0.23"
     entitlements:
       path: ratspeak_iOS/ratspeak_iOS.entitlements
     scheme:

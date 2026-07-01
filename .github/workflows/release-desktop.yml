@@ -284,9 +284,9 @@ jobs:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
           prerelease: ${{ contains(github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name, '-') }}
           body: |
-            - Restore BLE RNode stability on Android
-            - Add opt-in RNode public map display
-            - Improve RNode edit settings and location handling
+            - Fix Android startup crash introduced in v1.0.22
+            - Preserve opt-in public map approximate-location support
+            - Includes the v1.0.22 BLE RNode stability fixes
           files: |
             Ratspeak/dist/linux/*
             Ratspeak/checksums-linux.txt
